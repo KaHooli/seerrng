@@ -4,7 +4,7 @@ import PWAHeader from '@app/components/PWAHeader';
 import { InteractionProvider } from '@app/context/InteractionContext';
 import { LanguageContext } from '@app/context/LanguageContext';
 import { SettingsProvider } from '@app/context/SettingsContext';
-import { ThemeProvider } from '@app/context/ThemeContext';
+import { ThemeProvider, useTheme } from '@app/context/ThemeContext';
 import { UserContext } from '@app/context/UserContext';
 import useSettings from '@app/hooks/useSettings';
 import enMessages from '@app/i18n/locale/en.json';
@@ -118,11 +118,18 @@ type MessagesType = Record<string, string>;
 // to set the document title and PWA meta tags.
 const AppHead = () => {
   const { currentSettings } = useSettings();
+  const { assets, mode } = useTheme();
+  const favicon = mode === 'dark' ? assets?.faviconDark : assets?.faviconLight;
+  const touchIcon = mode === 'dark' ? assets?.iconDark : assets?.iconLight;
 
   return (
     <Head>
       <title>{currentSettings.applicationTitle}</title>
-      <PWAHeader applicationTitle={currentSettings.applicationTitle} />
+      <PWAHeader
+        applicationTitle={currentSettings.applicationTitle}
+        favicon={favicon}
+        touchIcon={touchIcon}
+      />
     </Head>
   );
 };
@@ -193,8 +200,8 @@ const CoreApp = ({ Component, pageProps, router }: AppProps) => {
           messages={loadedMessages}
         >
           <LoadingBar />
-          <ThemeProvider>
-            <SettingsProvider>
+          <SettingsProvider>
+            <ThemeProvider>
               <InteractionProvider>
                 <Head>
                   <meta
@@ -215,8 +222,8 @@ const CoreApp = ({ Component, pageProps, router }: AppProps) => {
                   }}
                 />
               </InteractionProvider>
-            </SettingsProvider>
-          </ThemeProvider>
+            </ThemeProvider>
+          </SettingsProvider>
         </IntlProvider>
       </LanguageContext.Provider>
     </SWRConfig>

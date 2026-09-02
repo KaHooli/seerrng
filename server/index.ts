@@ -26,6 +26,7 @@ import requestDispatchManager from '@server/lib/requestDispatch';
 import { getSettings } from '@server/lib/settings';
 import { runStartupMigrations } from '@server/lib/startupMigrations';
 import { setStaticAssetCacheControl } from '@server/lib/staticAssetCache';
+import { themeManager } from '@server/lib/themes';
 import logger from '@server/logger';
 import {
   formatApiErrorResponse,
@@ -168,6 +169,7 @@ app
 
     // Load Settings
     const settings = await getSettings().load();
+    await themeManager.reload();
     loadExternalRuntimeConfig();
     restartFlag.initializeSettings(settings);
 

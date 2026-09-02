@@ -895,12 +895,47 @@ const parseMainSettingsBody = (
     ['enableSpecialEpisodes', 'enableSpecialEpisodes'],
     ['cacheImages', 'cacheImages'],
     ['includeAdult', 'includeAdult'],
+    ['enforceTheme', 'enforceTheme'],
   ] as const) {
     const parsed = parseOptionalBooleanSetting(body[key], fieldName);
     if ('error' in parsed) {
       return parsed;
     }
     value[key] = parsed.value;
+  }
+
+  const defaultTheme = parsePatchBoundedString(body, 'defaultTheme', {
+    fieldName: 'defaultTheme',
+    maxLength: 48,
+  });
+  if ('error' in defaultTheme) {
+    return defaultTheme;
+  }
+  if (
+    defaultTheme.value !== undefined &&
+    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(defaultTheme.value)
+  ) {
+    return { error: 'defaultTheme must be a valid theme ID.' };
+  }
+  if (defaultTheme.value !== undefined) {
+    value.defaultTheme = defaultTheme.value;
+  }
+
+  const defaultThemeMode = parsePatchBoundedString(body, 'defaultThemeMode', {
+    fieldName: 'defaultThemeMode',
+    maxLength: 5,
+  });
+  if ('error' in defaultThemeMode) {
+    return defaultThemeMode;
+  }
+  if (
+    defaultThemeMode.value !== undefined &&
+    !['light', 'dark', 'auto'].includes(defaultThemeMode.value)
+  ) {
+    return { error: 'defaultThemeMode must be light, dark, or auto.' };
+  }
+  if (defaultThemeMode.value !== undefined) {
+    value.defaultThemeMode = defaultThemeMode.value;
   }
 
   for (const [key, fieldName, max] of [

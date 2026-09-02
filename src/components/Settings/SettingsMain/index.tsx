@@ -8,6 +8,7 @@ import RegionSelector from '@app/components/RegionSelector';
 import CopyButton from '@app/components/Settings/CopyButton';
 import SettingsBadge from '@app/components/Settings/SettingsBadge';
 import { availableLanguages } from '@app/context/LanguageContext';
+import { themePalettes } from '@app/context/ThemeContext';
 import useLocale from '@app/hooks/useLocale';
 import useToasts from '@app/hooks/useToasts';
 import { Permission, useUser } from '@app/hooks/useUser';
@@ -16,11 +17,13 @@ import defineMessages from '@app/utils/defineMessages';
 import { isValidURL } from '@app/utils/urlValidationHelper';
 import { ArrowDownOnSquareIcon } from '@heroicons/react/24/outline';
 import { ArrowPathIcon } from '@heroicons/react/24/solid';
+import type { ThemeListResponse } from '@server/interfaces/api/themeInterfaces';
 import type { UserSettingsGeneralResponse } from '@server/interfaces/api/userSettingsInterfaces';
 import type { MainSettings } from '@server/lib/settings';
 import type { AvailableLocale } from '@server/types/languages';
 import axios from 'axios';
 import { Field, Form, Formik } from 'formik';
+import { useState } from 'react';
 import { useIntl } from 'react-intl';
 import useSWR, { mutate } from 'swr';
 import * as Yup from 'yup';
@@ -93,6 +96,27 @@ const messages = defineMessages('components.Settings.SettingsMain', {
   youtubeApiKey: 'YouTube Data API Key',
   youtubeApiKeyTip:
     'A Google YouTube Data API v3 key is required for public YouTube playlists.',
+  appearance: 'Appearance',
+  appearanceDescription:
+    'Choose global theme defaults and manage theme packages installed in the application data folder.',
+  defaultTheme: 'Default Theme',
+  defaultThemeMode: 'Default Mode',
+  lightMode: 'Light',
+  darkMode: 'Dark',
+  autoMode: 'Automatic',
+  enforceTheme: 'Enforce Theme for All Users',
+  enforceThemeTip:
+    'Disable individual theme choices and apply the selected default to every user.',
+  themeSource: 'Install from GitHub',
+  themeSourceTip:
+    'Enter an HTTPS GitHub repository URL whose latest release contains a .tar.gz theme package.',
+  installTheme: 'Install Theme',
+  reloadThemes: 'Reload Themes',
+  updateTheme: 'Update',
+  removeTheme: 'Remove',
+  themeActionSuccess: 'Theme packages updated successfully.',
+  themeActionFailure: 'The theme package operation failed.',
+  themeValidationError: '{package}: {message}',
 });
 
 const SettingsMain = () => {
@@ -108,6 +132,29 @@ const SettingsMain = () => {
   const { data: userData } = useSWR<UserSettingsGeneralResponse>(
     currentUser ? `/api/v1/user/${currentUser.id}/settings/main` : null
   );
+  const { data: themeData, mutate: revalidateThemes } =
+    useSWR<ThemeListResponse>('/api/v1/themes');
+  const [themeSourceUrl, setThemeSourceUrl] = useState('');
+  const [themeActionPending, setThemeActionPending] = useState(false);
+
+  const runThemeAction = async (action: () => Promise<unknown>) => {
+    setThemeActionPending(true);
+    try {
+      await action();
+      await revalidateThemes();
+      addToast(intl.formatMessage(messages.themeActionSuccess), {
+        autoDismiss: true,
+        appearance: 'success',
+      });
+    } catch {
+      addToast(intl.formatMessage(messages.themeActionFailure), {
+        autoDismiss: true,
+        appearance: 'error',
+      });
+    } finally {
+      setThemeActionPending(false);
+    }
+  };
 
   const MainSettingsSchema = Yup.object().shape({
     applicationTitle: Yup.string().required(
@@ -205,6 +252,9 @@ const SettingsMain = () => {
             spotifyClientId: data?.spotifyClientId ?? '',
             spotifyClientSecret: data?.spotifyClientSecret ?? '',
             youtubeApiKey: data?.youtubeApiKey ?? '',
+            defaultTheme: data?.defaultTheme ?? 'aurora',
+            defaultThemeMode: data?.defaultThemeMode ?? 'auto',
+            enforceTheme: data?.enforceTheme ?? false,
           }}
           enableReinitialize
           validationSchema={MainSettingsSchema}
@@ -232,6 +282,9 @@ const SettingsMain = () => {
                 spotifyClientId: values.spotifyClientId,
                 spotifyClientSecret: values.spotifyClientSecret,
                 youtubeApiKey: values.youtubeApiKey,
+                defaultTheme: values.defaultTheme,
+                defaultThemeMode: values.defaultThemeMode,
+                enforceTheme: values.enforceTheme,
               });
               mutate('/api/v1/settings/public');
               mutate('/api/v1/status?checkUpdateAvailable=false');
@@ -748,6 +801,193 @@ const SettingsMain = () => {
                         ) => setFieldValue('youtubeApiKey', event.target.value)}
                       />
                     </div>
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div>
+                    <h3 className="heading">
+                      {intl.formatMessage(messages.appearance)}
+                    </h3>
+                    <p className="description">
+                      {intl.formatMessage(messages.appearanceDescription)}
+                    </p>
+                  </div>
+                </div>
+                <div className="form-row">
+                  <label htmlFor="defaultTheme" className="text-label">
+                    {intl.formatMessage(messages.defaultTheme)}
+                  </label>
+                  <div className="form-input-area">
+                    <div className="form-input-field">
+                      <Field as="select" id="defaultTheme" name="defaultTheme">
+                        <optgroup label="Built-in">
+                          {themePalettes.map((theme) => (
+                            <option key={theme.id} value={theme.id}>
+                              {theme.name}
+                            </option>
+                          ))}
+                        </optgroup>
+                        {!!themeData?.themes.length && (
+                          <optgroup label="Installed">
+                            {themeData.themes.map((theme) => (
+                              <option key={theme.id} value={theme.id}>
+                                {theme.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </Field>
+                    </div>
+                  </div>
+                </div>
+                <div className="form-row">
+                  <label htmlFor="defaultThemeMode" className="text-label">
+                    {intl.formatMessage(messages.defaultThemeMode)}
+                  </label>
+                  <div className="form-input-area">
+                    <div className="form-input-field">
+                      <Field
+                        as="select"
+                        id="defaultThemeMode"
+                        name="defaultThemeMode"
+                      >
+                        <option value="light">
+                          {intl.formatMessage(messages.lightMode)}
+                        </option>
+                        <option value="dark">
+                          {intl.formatMessage(messages.darkMode)}
+                        </option>
+                        <option value="auto">
+                          {intl.formatMessage(messages.autoMode)}
+                        </option>
+                      </Field>
+                    </div>
+                  </div>
+                </div>
+                <div className="form-row">
+                  <label htmlFor="enforceTheme" className="checkbox-label">
+                    <span>
+                      {intl.formatMessage(messages.enforceTheme)}
+                      <span className="label-tip">
+                        {intl.formatMessage(messages.enforceThemeTip)}
+                      </span>
+                    </span>
+                    <Field
+                      id="enforceTheme"
+                      name="enforceTheme"
+                      type="checkbox"
+                    />
+                  </label>
+                </div>
+                <div className="form-row">
+                  <label htmlFor="themeSourceUrl" className="text-label">
+                    <span>{intl.formatMessage(messages.themeSource)}</span>
+                    <span className="label-tip">
+                      {intl.formatMessage(messages.themeSourceTip)}
+                    </span>
+                  </label>
+                  <div className="form-input-area space-y-3">
+                    <div className="form-input-field">
+                      <input
+                        id="themeSourceUrl"
+                        type="url"
+                        value={themeSourceUrl}
+                        placeholder="https://github.com/owner/theme-repository"
+                        onChange={(event) =>
+                          setThemeSourceUrl(event.target.value)
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        buttonType="primary"
+                        disabled={themeActionPending || !themeSourceUrl}
+                        onClick={() =>
+                          void runThemeAction(async () => {
+                            await axios.post('/api/v1/themes/install', {
+                              sourceUrl: themeSourceUrl,
+                            });
+                            setThemeSourceUrl('');
+                          })
+                        }
+                      >
+                        {intl.formatMessage(messages.installTheme)}
+                      </Button>
+                      <Button
+                        type="button"
+                        disabled={themeActionPending}
+                        onClick={() =>
+                          void runThemeAction(() =>
+                            axios.post('/api/v1/themes/reload')
+                          )
+                        }
+                      >
+                        {intl.formatMessage(messages.reloadThemes)}
+                      </Button>
+                    </div>
+                    {!!themeData?.errors.length && (
+                      <div className="space-y-1 rounded border border-red-700/70 bg-red-950/30 p-3 text-sm text-red-200">
+                        {themeData.errors.map((themeError) => (
+                          <p
+                            key={`${themeError.package}-${themeError.message}`}
+                          >
+                            {intl.formatMessage(messages.themeValidationError, {
+                              package: themeError.package,
+                              message: themeError.message,
+                            })}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                    {!!themeData?.themes.length && (
+                      <div className="space-y-2">
+                        {themeData.themes.map((theme) => (
+                          <div
+                            key={theme.id}
+                            className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 p-3"
+                          >
+                            <span>
+                              <span className="block font-medium text-gray-100">
+                                {theme.name}
+                              </span>
+                              <span className="text-xs text-gray-400">
+                                {theme.version}
+                              </span>
+                            </span>
+                            <span className="flex gap-2">
+                              <Button
+                                type="button"
+                                buttonSize="sm"
+                                disabled={themeActionPending}
+                                onClick={() =>
+                                  void runThemeAction(() =>
+                                    axios.post(
+                                      `/api/v1/themes/${theme.id}/update`
+                                    )
+                                  )
+                                }
+                              >
+                                {intl.formatMessage(messages.updateTheme)}
+                              </Button>
+                              <Button
+                                type="button"
+                                buttonSize="sm"
+                                buttonType="danger"
+                                disabled={themeActionPending}
+                                onClick={() =>
+                                  void runThemeAction(() =>
+                                    axios.delete(`/api/v1/themes/${theme.id}`)
+                                  )
+                                }
+                              >
+                                {intl.formatMessage(messages.removeTheme)}
+                              </Button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="actions">

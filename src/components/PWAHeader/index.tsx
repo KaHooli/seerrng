@@ -1,30 +1,42 @@
 interface PWAHeaderProps {
   applicationTitle?: string;
+  favicon?: string;
+  touchIcon?: string;
 }
 
 const assetVersion = encodeURIComponent(process.env.commitTag ?? 'local');
 const versionedAsset = (path: string): string => `${path}?v=${assetVersion}`;
 
-const PWAHeader = ({ applicationTitle = 'SeerrNG' }: PWAHeaderProps) => {
+const PWAHeader = ({
+  applicationTitle = 'SeerrNG',
+  favicon,
+  touchIcon,
+}: PWAHeaderProps) => {
   return (
     <>
       <link
         rel="apple-touch-icon"
-        sizes="180x180"
-        href={versionedAsset('/apple-touch-icon.png')}
+        sizes={touchIcon ? undefined : '180x180'}
+        href={touchIcon ?? versionedAsset('/apple-touch-icon.png')}
       />
-      <link
-        rel="icon"
-        type="image/png"
-        sizes="32x32"
-        href={versionedAsset('/favicon-32x32.png')}
-      />
-      <link
-        rel="icon"
-        type="image/png"
-        sizes="16x16"
-        href={versionedAsset('/favicon-16x16.png')}
-      />
+      {favicon ? (
+        <link rel="icon" href={favicon} />
+      ) : (
+        <>
+          <link
+            rel="icon"
+            type="image/png"
+            sizes="32x32"
+            href={versionedAsset('/favicon-32x32.png')}
+          />
+          <link
+            rel="icon"
+            type="image/png"
+            sizes="16x16"
+            href={versionedAsset('/favicon-16x16.png')}
+          />
+        </>
+      )}
       <link
         rel="apple-touch-startup-image"
         href="/apple-splash-2048-2732.jpg"

@@ -9,6 +9,7 @@ import JellyfinLogin from '@app/components/Login/JellyfinLogin';
 import LocalLogin from '@app/components/Login/LocalLogin';
 import OidcLoginButton from '@app/components/Login/OidcLoginButton';
 import PlexLoginButton from '@app/components/Login/PlexLoginButton';
+import { useTheme } from '@app/context/ThemeContext';
 import useSettings from '@app/hooks/useSettings';
 import { useUser } from '@app/hooks/useUser';
 import defineMessages from '@app/utils/defineMessages';
@@ -38,6 +39,12 @@ const Login = ({ initialBackdrops }: { initialBackdrops?: string[] }) => {
   const router = useRouter();
   const settings = useSettings();
   const { user, revalidate } = useUser();
+  const { assets, mode } = useTheme();
+  const themeBackground =
+    mode === 'dark' ? assets?.backgroundDark : assets?.backgroundLight;
+  const themeLogo =
+    (mode === 'dark' ? assets?.logoDark : assets?.logoLight) ??
+    versionedAsset('/logo_stacked.svg');
 
   const [error, setError] = useState('');
   const [isProcessing, setProcessing] = useState(false);
@@ -196,9 +203,11 @@ const Login = ({ initialBackdrops }: { initialBackdrops?: string[] }) => {
       <PageTitle title={intl.formatMessage(messages.signin)} />
       <ImageFader
         backgroundImages={
-          backdrops?.map(
-            (backdrop) => `https://image.tmdb.org/t/p/w1280${backdrop}`
-          ) ?? []
+          themeBackground
+            ? [themeBackground]
+            : (backdrops?.map(
+                (backdrop) => `https://image.tmdb.org/t/p/w1280${backdrop}`
+              ) ?? [])
         }
       />
       <div className="absolute right-4 top-4 z-50">
@@ -207,9 +216,10 @@ const Login = ({ initialBackdrops }: { initialBackdrops?: string[] }) => {
       <div className="relative z-40 mt-10 flex flex-col items-center px-4 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="relative h-48 w-full max-w-full drop-shadow-[0_2px_8px_rgba(15,23,42,0.65)]">
           <Image
-            src={versionedAsset('/logo_stacked.svg')}
+            src={themeLogo}
             alt="Logo"
             fill
+            unoptimized={Boolean(assets)}
             priority
             fetchPriority="high"
             className="object-contain"

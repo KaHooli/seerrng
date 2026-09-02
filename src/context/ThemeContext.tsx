@@ -1,7 +1,14 @@
+import useSettings from '@app/hooks/useSettings';
 import {
   readLocalStorageValue,
   writeLocalStorageValue,
 } from '@app/utils/localStorage';
+import type {
+  InstalledTheme,
+  ThemeListResponse,
+  ThemeModePreference,
+} from '@server/interfaces/api/themeInterfaces';
+import axios from 'axios';
 import type { ReactNode } from 'react';
 import {
   createContext,
@@ -12,6 +19,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import useSWR from 'swr';
 
 export type ThemeMode = 'light' | 'dark';
 
@@ -19,9 +27,16 @@ export type ThemePalette = {
   id: string;
   name: string;
   swatches: string[];
-  surface: ThemeScaleName;
-  primary: ThemeScaleName;
-  secondary: ThemeScaleName;
+  surface?: ThemeScaleName;
+  primary?: ThemeScaleName;
+  secondary?: ThemeScaleName;
+  scales?: {
+    surface: readonly string[];
+    primary: readonly string[];
+    secondary: readonly string[];
+  };
+  assets?: InstalledTheme['assetUrls'];
+  installed?: boolean;
 };
 
 export const themePalettes: ThemePalette[] = [
@@ -593,8 +608,13 @@ const createSurfaceScale = (
 
 type ThemeContextValue = {
   mode: ThemeMode;
+  modePreference: ThemeModePreference;
   palette: string;
+  palettes: ThemePalette[];
+  assets?: InstalledTheme['assetUrls'];
+  enforced: boolean;
   setMode: (mode: ThemeMode) => void;
+  setModePreference: (mode: ThemeModePreference) => void;
   setPalette: (palette: string) => void;
   toggleMode: () => void;
 };
@@ -604,29 +624,54 @@ const THEME_PALETTE_KEY = 'seerr-theme-palette';
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
-const getStoredMode = (): ThemeMode => {
+const getStoredMode = (fallback: ThemeModePreference): ThemeModePreference => {
   const storedMode = readLocalStorageValue(THEME_MODE_KEY);
-  return storedMode === 'light' || storedMode === 'dark' ? storedMode : 'dark';
+  return storedMode === 'light' ||
+    storedMode === 'dark' ||
+    storedMode === 'auto'
+    ? storedMode
+    : fallback;
 };
 
-const getStoredPalette = (): string => {
+const getStoredPalette = (
+  palettes: ThemePalette[],
+  fallback: string
+): string => {
   const storedPalette = readLocalStorageValue(THEME_PALETTE_KEY);
   return storedPalette &&
-    themePalettes.some((palette) => palette.id === storedPalette)
+    palettes.some((palette) => palette.id === storedPalette)
     ? storedPalette
-    : themePalettes[0].id;
+    : fallback;
 };
 
-const getThemePalette = (palette: string): ThemePalette =>
-  themePalettes.find((themePalette) => themePalette.id === palette) ??
-  themePalettes[0];
+const getThemePalette = (
+  palette: string,
+  palettes: ThemePalette[] = themePalettes
+): ThemePalette =>
+  palettes.find((themePalette) => themePalette.id === palette) ?? palettes[0];
 
-export const getThemeTokens = (mode: ThemeMode, palette: string) => {
-  const activePalette = getThemePalette(palette);
-  const primaryScale = themeScales[activePalette.primary];
-  const secondaryScale = themeScales[activePalette.secondary];
+const getPaletteScales = (palette: ThemePalette) => {
+  if (palette.scales) {
+    return palette.scales;
+  }
+  return {
+    surface: themeScales[palette.surface ?? 'slate'],
+    primary: themeScales[palette.primary ?? 'indigo'],
+    secondary: themeScales[palette.secondary ?? 'purple'],
+  };
+};
+
+export const getThemeTokens = (
+  mode: ThemeMode,
+  palette: string,
+  palettes: ThemePalette[] = themePalettes
+) => {
+  const activePalette = getThemePalette(palette, palettes);
+  const scales = getPaletteScales(activePalette);
+  const primaryScale = scales.primary;
+  const secondaryScale = scales.secondary;
   const surfaceScale = createSurfaceScale(
-    themeScales[activePalette.surface],
+    scales.surface,
     primaryScale,
     secondaryScale,
     mode
@@ -665,12 +710,16 @@ export const getThemeTokens = (mode: ThemeMode, palette: string) => {
   };
 };
 
-const applyTheme = (mode: ThemeMode, palette: string) => {
+const applyTheme = (
+  mode: ThemeMode,
+  palette: string,
+  palettes: ThemePalette[] = themePalettes
+) => {
   if (typeof window === 'undefined') {
     return;
   }
 
-  const themeTokens = getThemeTokens(mode, palette);
+  const themeTokens = getThemeTokens(mode, palette, palettes);
 
   document.documentElement.dataset.themeMode = mode;
   document.documentElement.dataset.themePalette = themeTokens.activePaletteId;
@@ -686,14 +735,54 @@ const applyTheme = (mode: ThemeMode, palette: string) => {
     themeTokens.secondaryScale,
     mode
   );
-  writeLocalStorageValue(THEME_MODE_KEY, mode);
-  writeLocalStorageValue(THEME_PALETTE_KEY, themeTokens.activePaletteId);
 };
 
+const hexToRgb = (value: string): string => {
+  const hex = value.slice(1);
+  return [0, 2, 4]
+    .map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16))
+    .join(' ');
+};
+
+const toThemePalette = (theme: InstalledTheme): ThemePalette => ({
+  id: theme.id,
+  name: theme.name,
+  swatches: theme.swatches,
+  scales: {
+    surface: theme.colors.surface.map(hexToRgb),
+    primary: theme.colors.primary.map(hexToRgb),
+    secondary: theme.colors.secondary.map(hexToRgb),
+  },
+  assets: theme.assetUrls,
+  installed: true,
+});
+
+const resolveMode = (preference: ThemeModePreference): ThemeMode =>
+  preference === 'auto'
+    ? window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light'
+    : preference;
+
 export const ThemeProvider = ({ children }: { children: ReactNode }) => {
+  const { currentSettings } = useSettings();
+  const { data: installedThemeData } = useSWR<ThemeListResponse>(
+    '/api/v1/themes',
+    (url: string) =>
+      axios.get<ThemeListResponse>(url).then((response) => response.data)
+  );
+  const palettes = useMemo(
+    () => [
+      ...themePalettes,
+      ...(installedThemeData?.themes ?? []).map(toThemePalette),
+    ],
+    [installedThemeData]
+  );
   // The server and the client's first render must use the same values. Restore
   // browser preferences only after hydration to avoid replacing the SSR tree.
   const [mode, setModeState] = useState<ThemeMode>('dark');
+  const [modePreference, setModePreferenceState] =
+    useState<ThemeModePreference>('auto');
   const [palette, setPaletteState] = useState(themePalettes[0].id);
   const hasRestoredTheme = useRef(false);
 
@@ -702,56 +791,125 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
-    applyTheme(mode, palette);
-  }, [mode, palette]);
+    applyTheme(mode, palette, palettes);
+  }, [mode, palette, palettes]);
 
   useEffect(() => {
-    const storedMode = getStoredMode();
-    const storedPalette = getStoredPalette();
+    const fallbackPalette = palettes.some(
+      (candidate) => candidate.id === currentSettings.defaultTheme
+    )
+      ? currentSettings.defaultTheme
+      : themePalettes[0].id;
+    const storedMode = currentSettings.enforceTheme
+      ? currentSettings.defaultThemeMode
+      : getStoredMode(currentSettings.defaultThemeMode);
+    const storedPalette = currentSettings.enforceTheme
+      ? fallbackPalette
+      : getStoredPalette(palettes, fallbackPalette);
+    const resolvedMode = resolveMode(storedMode);
 
     hasRestoredTheme.current = true;
-    setModeState(storedMode);
+    setModePreferenceState(storedMode);
+    setModeState(resolvedMode);
     setPaletteState(storedPalette);
-    applyTheme(storedMode, storedPalette);
-  }, []);
+    applyTheme(resolvedMode, storedPalette, palettes);
+  }, [
+    currentSettings.defaultTheme,
+    currentSettings.defaultThemeMode,
+    currentSettings.enforceTheme,
+    palettes,
+  ]);
+
+  useEffect(() => {
+    if (modePreference !== 'auto') {
+      return;
+    }
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const update = () => setModeState(media.matches ? 'dark' : 'light');
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, [modePreference]);
 
   const setMode = useCallback(
     (nextMode: ThemeMode) => {
+      if (currentSettings.enforceTheme) {
+        return;
+      }
+      setModePreferenceState(nextMode);
       setModeState(nextMode);
-      applyTheme(nextMode, palette);
+      writeLocalStorageValue(THEME_MODE_KEY, nextMode);
+      applyTheme(nextMode, palette, palettes);
     },
-    [palette]
+    [currentSettings.enforceTheme, palette, palettes]
+  );
+
+  const setModePreference = useCallback(
+    (nextPreference: ThemeModePreference) => {
+      if (currentSettings.enforceTheme) {
+        return;
+      }
+      const resolvedMode = resolveMode(nextPreference);
+      setModePreferenceState(nextPreference);
+      setModeState(resolvedMode);
+      writeLocalStorageValue(THEME_MODE_KEY, nextPreference);
+      applyTheme(resolvedMode, palette, palettes);
+    },
+    [currentSettings.enforceTheme, palette, palettes]
   );
 
   const setPalette = useCallback(
     (nextPalette: string) => {
-      const activePalette = getThemePalette(nextPalette);
+      if (currentSettings.enforceTheme) {
+        return;
+      }
+      const activePalette = getThemePalette(nextPalette, palettes);
 
       setPaletteState(activePalette.id);
-      applyTheme(mode, activePalette.id);
+      writeLocalStorageValue(THEME_PALETTE_KEY, activePalette.id);
+      applyTheme(mode, activePalette.id, palettes);
     },
-    [mode]
+    [currentSettings.enforceTheme, mode, palettes]
   );
 
   const toggleMode = useCallback(() => {
+    if (currentSettings.enforceTheme) {
+      return;
+    }
     setModeState((currentMode) => {
       const nextMode = currentMode === 'dark' ? 'light' : 'dark';
 
-      applyTheme(nextMode, palette);
+      setModePreferenceState(nextMode);
+      writeLocalStorageValue(THEME_MODE_KEY, nextMode);
+      applyTheme(nextMode, palette, palettes);
 
       return nextMode;
     });
-  }, [palette]);
+  }, [currentSettings.enforceTheme, palette, palettes]);
 
   const value = useMemo(
     () => ({
       mode,
+      modePreference,
       palette,
+      palettes,
+      assets: getThemePalette(palette, palettes).assets,
+      enforced: currentSettings.enforceTheme,
       setMode,
+      setModePreference,
       setPalette,
       toggleMode,
     }),
-    [mode, palette, setMode, setPalette, toggleMode]
+    [
+      currentSettings.enforceTheme,
+      mode,
+      modePreference,
+      palette,
+      palettes,
+      setMode,
+      setModePreference,
+      setPalette,
+      toggleMode,
+    ]
   );
 
   return (

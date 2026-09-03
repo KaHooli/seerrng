@@ -190,7 +190,13 @@ jobs:
   build:
     name: Build cache (${{ matrix.platform }})
     timeout-minutes: 60
-    if: github.ref == 'refs/heads/main'
+    # The image and deployment pipeline runs on self-hosted runners labelled
+    # for the maintainer's build host. A fork without those runners leaves this
+    # job queued forever, and because the main concurrency group does not
+    # cancel in progress, every later push to main stacks up behind it. Gate it
+    # on an opt-in repository variable so a fork gets PR checks by default;
+    # set SEERRNG_ENABLE_RELEASE_PIPELINE to true where the runners exist.
+    if: github.ref == 'refs/heads/main' && vars.SEERRNG_ENABLE_RELEASE_PIPELINE == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -241,6 +247,9 @@ jobs:
   publish:
     name: Publish multi-arch image
     timeout-minutes: 90
+    # Skipped with build via needs, and stated explicitly so the gate survives
+    # any future change to this job's dependencies.
+    if: vars.SEERRNG_ENABLE_RELEASE_PIPELINE == 'true'
     needs: build
     runs-on:
       [self-hosted, seerrng, linux-build, linux-amd64, linux-arm64-cross]
@@ -378,7 +387,7 @@ jobs:
   deploy-main:
     name: Deploy main to seerr.home
     timeout-minutes: 30
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && vars.SEERRNG_ENABLE_RELEASE_PIPELINE == 'true'
     needs: publish
     runs-on: [self-hosted, seerrng, linux-build, kspls0]
     permissions:

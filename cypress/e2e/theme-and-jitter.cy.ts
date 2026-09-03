@@ -69,13 +69,29 @@ describe('Theme picker and seeded discovery refresh', () => {
     cy.contains('[data-testid=page-header]', 'Movies').should('be.visible');
     cy.get('html').should('have.attr', 'data-theme-palette', 'lagoon');
 
+    // The picker selects an explicit mode rather than toggling: each button
+    // applies the mode it names, and Automatic defers to the OS preference.
+    // The mode buttons are not menu items, so the panel stays open between them.
     cy.get('button[aria-label="Theme picker"]').click();
-    cy.contains('button', 'Dark mode').click();
+    cy.contains('button', 'Light mode').click();
     cy.get('html').should('have.attr', 'data-theme-mode', 'light');
     cy.window()
       .its('localStorage')
       .invoke('getItem', 'seerr-theme-mode')
       .should('eq', 'light');
+
+    cy.contains('button', 'Dark mode').click();
+    cy.get('html').should('have.attr', 'data-theme-mode', 'dark');
+    cy.window()
+      .its('localStorage')
+      .invoke('getItem', 'seerr-theme-mode')
+      .should('eq', 'dark');
+
+    cy.contains('button', 'Automatic').click();
+    cy.window()
+      .its('localStorage')
+      .invoke('getItem', 'seerr-theme-mode')
+      .should('eq', 'auto');
   });
 
   it('requests new seeded lineups for movies, series, music, and books after page reload', () => {

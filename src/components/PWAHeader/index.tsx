@@ -1,18 +1,51 @@
 interface PWAHeaderProps {
   applicationTitle?: string;
+  favicon?: string;
+  faviconType?: string;
+  touchIcon?: string;
+  touchIconType?: string;
 }
 
 const assetVersion = encodeURIComponent(process.env.commitTag ?? 'local');
 const versionedAsset = (path: string): string => `${path}?v=${assetVersion}`;
 
-const PWAHeader = ({ applicationTitle = 'SeerrNG' }: PWAHeaderProps) => {
+const PWAHeader = ({
+  applicationTitle = 'SeerrNG',
+  favicon,
+  faviconType,
+  touchIcon,
+  touchIconType,
+}: PWAHeaderProps) => {
   return (
     <>
+      {/*
+        A theme's icons are additions, never replacements. iOS ignores SVG for
+        apple-touch-icon and older Safari ignores SVG favicons, so dropping the
+        bundled PNGs left those clients with no icon at all. Declaring both lets
+        each browser pick the format it can actually decode; sizes="any" marks
+        the vector as the preferred choice where it is supported.
+      */}
+      {touchIcon && (
+        <link
+          rel="apple-touch-icon"
+          type={touchIconType}
+          href={touchIcon}
+          sizes={touchIconType === 'image/svg+xml' ? 'any' : undefined}
+        />
+      )}
       <link
         rel="apple-touch-icon"
         sizes="180x180"
         href={versionedAsset('/apple-touch-icon.png')}
       />
+      {favicon && (
+        <link
+          rel="icon"
+          type={faviconType}
+          href={favicon}
+          sizes={faviconType === 'image/svg+xml' ? 'any' : undefined}
+        />
+      )}
       <link
         rel="icon"
         type="image/png"

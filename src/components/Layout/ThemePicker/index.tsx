@@ -1,8 +1,9 @@
-import { themePalettes, useTheme } from '@app/context/ThemeContext';
+import { useTheme } from '@app/context/ThemeContext';
 import defineMessages from '@app/utils/defineMessages';
 import { Menu, Transition } from '@headlessui/react';
 import {
   CheckIcon,
+  ComputerDesktopIcon,
   MoonIcon,
   PaintBrushIcon,
   SunIcon,
@@ -15,15 +16,26 @@ const messages = defineMessages('components.Layout.ThemePicker', {
   darkMode: 'Dark mode',
   lightMode: 'Light mode',
   toggle: 'Toggle',
+  autoMode: 'Automatic',
+  enforced: 'Theme is managed by an administrator',
 });
 
 const ThemePicker = () => {
   const intl = useIntl();
-  const { mode, palette, setPalette, toggleMode } = useTheme();
+  const {
+    modePreference,
+    palette,
+    palettes,
+    setModePreference,
+    setPalette,
+    enforced,
+  } = useTheme();
 
   return (
     <Menu as="div" className="relative">
       <Menu.Button
+        disabled={enforced}
+        title={enforced ? intl.formatMessage(messages.enforced) : undefined}
         className="flex h-10 w-10 items-center justify-center rounded-full text-gray-200 ring-1 ring-gray-700 transition hover:bg-gray-800/80 hover:text-white hover:ring-gray-500 focus:outline-none focus:ring-gray-500"
         aria-label={intl.formatMessage(messages.themePicker)}
       >
@@ -41,27 +53,31 @@ const ThemePicker = () => {
       >
         <Menu.Items className="absolute right-0 z-50 mt-2 w-80 origin-top-right rounded-md shadow-lg">
           <div className="rounded-md bg-gray-800/95 p-3 ring-1 ring-gray-700 backdrop-blur">
-            <button
-              type="button"
-              onClick={toggleMode}
-              className="mb-3 flex w-full items-center justify-between rounded border border-gray-700 bg-gray-900/60 px-3 py-2 text-sm font-medium text-gray-200 transition hover:border-gray-500 hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <span className="flex items-center">
-                {mode === 'dark' ? (
-                  <MoonIcon className="mr-2 h-5 w-5" />
-                ) : (
-                  <SunIcon className="mr-2 h-5 w-5" />
-                )}
-                {mode === 'dark'
-                  ? intl.formatMessage(messages.darkMode)
-                  : intl.formatMessage(messages.lightMode)}
-              </span>
-              <span className="text-xs uppercase tracking-wide text-gray-400">
-                {intl.formatMessage(messages.toggle)}
-              </span>
-            </button>
+            <div className="mb-3 grid grid-cols-3 gap-2">
+              {(
+                [
+                  ['light', messages.lightMode, SunIcon],
+                  ['dark', messages.darkMode, MoonIcon],
+                  ['auto', messages.autoMode, ComputerDesktopIcon],
+                ] as const
+              ).map(([preference, label, Icon]) => (
+                <button
+                  key={preference}
+                  type="button"
+                  onClick={() => setModePreference(preference)}
+                  className={`flex items-center justify-center rounded border px-2 py-2 text-xs font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                    modePreference === preference
+                      ? 'border-indigo-500 bg-indigo-600/20 text-gray-100'
+                      : 'border-gray-700 bg-gray-900/60 text-gray-300 hover:border-gray-500 hover:bg-gray-700'
+                  }`}
+                >
+                  <Icon className="mr-1 h-4 w-4" />
+                  {intl.formatMessage(label)}
+                </button>
+              ))}
+            </div>
             <div className="grid max-h-96 grid-cols-2 gap-2 overflow-y-auto pr-1">
-              {themePalettes.map((themePalette) => (
+              {palettes.map((themePalette) => (
                 <Menu.Item
                   key={themePalette.id}
                   as="button"
@@ -78,9 +94,9 @@ const ThemePicker = () => {
                   }
                 >
                   <span className="mr-2 flex shrink-0 -space-x-1">
-                    {themePalette.swatches.map((swatch) => (
+                    {themePalette.swatches.map((swatch, swatchIndex) => (
                       <span
-                        key={`${themePalette.id}-${swatch}`}
+                        key={`${themePalette.id}-${swatchIndex}`}
                         className="h-4 w-4 rounded-full border border-gray-950/30"
                         style={{ backgroundColor: swatch }}
                       />

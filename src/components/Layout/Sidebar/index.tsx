@@ -1,5 +1,6 @@
 import Badge from '@app/components/Common/Badge';
 import VersionStatus from '@app/components/Layout/VersionStatus';
+import { useTheme } from '@app/context/ThemeContext';
 import useClickOutside from '@app/hooks/useClickOutside';
 import useSettings from '@app/hooks/useSettings';
 import { Permission, useUser } from '@app/hooks/useUser';
@@ -150,6 +151,10 @@ const Sidebar = ({
   const intl = useIntl();
   const { hasPermission } = useUser();
   const { currentSettings } = useSettings();
+  const { assets, mode } = useTheme();
+  const themeLogo =
+    (mode === 'dark' ? assets?.logoDark : assets?.logoLight) ??
+    versionedAsset('/logo_full.svg');
   useClickOutside(navRef, () => setClosed());
 
   const visibleSidebarLinks = SidebarLinks.filter(
@@ -223,9 +228,10 @@ const Sidebar = ({
                       <span className="w-full px-4 text-xl text-gray-50">
                         <Link href="/" className="relative block h-24 w-64">
                           <Image
-                            src={versionedAsset('/logo_full.svg')}
+                            src={themeLogo}
                             alt="Logo"
                             fill
+                            unoptimized={Boolean(assets)}
                             className="object-contain object-left"
                           />
                         </Link>
@@ -286,9 +292,10 @@ const Sidebar = ({
                 <span className="w-full px-4 py-2 text-2xl text-gray-50">
                   <Link href="/" className="relative block h-24">
                     <Image
-                      src={versionedAsset('/logo_full.svg')}
+                      src={themeLogo}
                       alt="Logo"
                       fill
+                      unoptimized={Boolean(assets)}
                       className="object-contain object-left"
                       loading="eager"
                     />

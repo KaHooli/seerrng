@@ -1,4 +1,5 @@
 import { MediaServerType } from '@server/constants/server';
+import type { ThemeModePreference } from '@server/interfaces/api/themeInterfaces';
 import { assertNoSymlinkDirectoryComponents } from '@server/lib/pathSecurity';
 import { Permission } from '@server/lib/permissions';
 import { runMigrations } from '@server/lib/settings/migrator';
@@ -209,6 +210,9 @@ export interface MainSettings {
   spotifyClientId?: string;
   spotifyClientSecret?: string;
   youtubeApiKey?: string;
+  defaultTheme: string;
+  defaultThemeMode: ThemeModePreference;
+  enforceTheme: boolean;
 }
 
 export interface ProxySettings {
@@ -272,6 +276,9 @@ interface FullPublicSettings extends PublicSettings {
   versionCheck: boolean;
   plexClientIdentifier: string;
   openIdProviders: PublicOidcProvider[];
+  defaultTheme: string;
+  defaultThemeMode: ThemeModePreference;
+  enforceTheme: boolean;
 }
 
 export interface NotificationAgentConfig {
@@ -511,6 +518,9 @@ class Settings {
         spotifyClientId: '',
         spotifyClientSecret: '',
         youtubeApiKey: '',
+        defaultTheme: 'aurora',
+        defaultThemeMode: 'auto',
+        enforceTheme: false,
       },
       plex: {
         name: '',
@@ -1014,6 +1024,9 @@ class Settings {
             logo: p.logo,
           }))
         : [],
+      defaultTheme: this.data.main.defaultTheme,
+      defaultThemeMode: this.data.main.defaultThemeMode,
+      enforceTheme: this.data.main.enforceTheme,
     };
   }
 
@@ -1233,6 +1246,9 @@ class Settings {
         locale: 'en',
         youtubeUrl: '',
         versionCheck: true,
+        defaultTheme: 'aurora',
+        defaultThemeMode: 'auto',
+        enforceTheme: false,
       },
       plex: {
         name: '',

@@ -7,6 +7,7 @@ import ImageFader from '@app/components/Common/ImageFader';
 import PageTitle from '@app/components/Common/PageTitle';
 import LanguagePicker from '@app/components/Layout/LanguagePicker';
 import SetupSteps from '@app/components/Setup/SetupSteps';
+import { useTheme } from '@app/context/ThemeContext';
 import useLocale from '@app/hooks/useLocale';
 import useSettings from '@app/hooks/useSettings';
 import useToasts from '@app/hooks/useToasts';
@@ -67,6 +68,17 @@ const Setup = () => {
   const router = useRouter();
   const { locale } = useLocale();
   const settings = useSettings();
+  const { assets, mode } = useTheme();
+  const themeBackground =
+    mode === 'dark' ? assets?.backgroundDark : assets?.backgroundLight;
+  // The bundled sign-in mark is a stacked 1.6:1 lockup while the sidebar mark is
+  // a wide 4.3:1 one. A theme that supplies only the wide logo would render as a
+  // thin strip here, so prefer its stacked variant and fall back to the wide one.
+  const themeLogo =
+    (mode === 'dark'
+      ? (assets?.logoStackedDark ?? assets?.logoDark)
+      : (assets?.logoStackedLight ?? assets?.logoLight)) ??
+    versionedAsset('/logo_stacked.svg');
   const toasts = useToasts();
   const libraryValidationController = useRef<AbortController | undefined>(
     undefined
@@ -223,9 +235,11 @@ const Setup = () => {
       <PageTitle title={intl.formatMessage(messages.setup)} />
       <ImageFader
         backgroundImages={
-          backdrops?.map(
-            (backdrop) => `https://image.tmdb.org/t/p/w1280${backdrop}`
-          ) ?? []
+          themeBackground
+            ? [themeBackground]
+            : (backdrops?.map(
+                (backdrop) => `https://image.tmdb.org/t/p/w1280${backdrop}`
+              ) ?? [])
         }
       />
       <div className="absolute right-4 top-4 z-50">
@@ -234,9 +248,10 @@ const Setup = () => {
       <div className="relative z-40 px-4 sm:mx-auto sm:w-full sm:max-w-4xl">
         <div className="relative mb-10 h-48 max-w-full sm:mx-auto sm:h-64 sm:max-w-md">
           <Image
-            src={versionedAsset('/logo_stacked.svg')}
+            src={themeLogo}
             alt="Logo"
             fill
+            unoptimized={Boolean(assets)}
             className="object-contain"
           />
         </div>

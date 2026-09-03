@@ -1,6 +1,7 @@
 import type { PublicOidcProvider } from '@server/lib/settings';
 import type { DnsEntries, DnsStats } from 'dns-caching';
 import type { PaginatedResponse } from './common';
+import type { ThemeModePreference } from './themeInterfaces';
 
 export type LogMessage = {
   timestamp: string;
@@ -54,6 +55,9 @@ export interface PublicSettingsResponse {
   versionCheck: boolean;
   plexClientIdentifier: string;
   openIdProviders: PublicOidcProvider[];
+  defaultTheme: string;
+  defaultThemeMode: ThemeModePreference;
+  enforceTheme: boolean;
 }
 
 export interface CacheItem {

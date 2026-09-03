@@ -42,6 +42,8 @@ tags:
     description: Blocklisted media from discovery page.
   - name: association
     description: Cross-medium related media graph endpoints.
+  - name: themes
+    description: External appearance theme package endpoints.
 servers:
   - url: '{server}/api/v1'
     variables:
@@ -305,6 +307,131 @@ components:
         versionCheck:
           type: boolean
           example: false
+        defaultTheme:
+          type: string
+          pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+          example: aurora
+        defaultThemeMode:
+          type: string
+          enum: [light, dark, auto]
+          example: auto
+        enforceTheme:
+          type: boolean
+          example: false
+    ThemeAssets:
+      type: object
+      additionalProperties: false
+      properties:
+        logoDark:
+          type: string
+        logoLight:
+          type: string
+        logoStackedDark:
+          type: string
+        logoStackedLight:
+          type: string
+        iconDark:
+          type: string
+        iconLight:
+          type: string
+        faviconDark:
+          type: string
+        faviconLight:
+          type: string
+        backgroundDark:
+          type: string
+        backgroundLight:
+          type: string
+    ThemeManifest:
+      type: object
+      required:
+        - schemaVersion
+        - id
+        - name
+        - version
+        - swatches
+        - colors
+        - assetUrls
+        - assetTypes
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+        id:
+          type: string
+          pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+        name:
+          type: string
+        version:
+          type: string
+        minimumSeerrVersion:
+          type: string
+        author:
+          type: string
+        swatches:
+          type: array
+          minItems: 2
+          maxItems: 6
+          items:
+            type: string
+        colors:
+          type: object
+          required: [surface, primary, secondary]
+          properties:
+            surface:
+              $ref: '#/components/schemas/ThemeColorScale'
+            primary:
+              $ref: '#/components/schemas/ThemeColorScale'
+            secondary:
+              $ref: '#/components/schemas/ThemeColorScale'
+        assets:
+          $ref: '#/components/schemas/ThemeAssets'
+        assetUrls:
+          $ref: '#/components/schemas/ThemeAssets'
+        assetTypes:
+          $ref: '#/components/schemas/ThemeAssets'
+          description: Media type of each declared asset.
+        sourceUrl:
+          type: string
+          format: uri
+          description: >-
+            Release the package was installed from. Absent for packages copied
+            into the configuration directory by hand, which cannot be updated
+            in place.
+    ThemeColorScale:
+      type: array
+      minItems: 11
+      maxItems: 11
+      items:
+        type: string
+        pattern: '^#[0-9a-fA-F]{6}$'
+    ThemeList:
+      type: object
+      required: [themes, errors]
+      properties:
+        themes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ThemeManifest'
+        errors:
+          type: array
+          items:
+            type: object
+            required: [package, message]
+            properties:
+              package:
+                type: string
+              message:
+                type: string
+    ThemeInstallResult:
+      type: object
+      required: [theme, sourceUrl]
+      properties:
+        theme:
+          $ref: '#/components/schemas/ThemeManifest'
+        sourceUrl:
+          type: string
+          format: uri
     PublicOidcProvider:
       type: object
       readOnly: true
@@ -804,6 +931,9 @@ components:
       required:
         - initialized
         - plexClientIdentifier
+        - defaultTheme
+        - defaultThemeMode
+        - enforceTheme
       properties:
         initialized:
           type: boolean
@@ -813,6 +943,17 @@ components:
           format: uuid
           description: Instance Plex OAuth client identifier
           example: 6919275e-142a-48d8-be6b-93594cbd4626
+        defaultTheme:
+          type: string
+          pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+          example: aurora
+        defaultThemeMode:
+          type: string
+          enum: [light, dark, auto]
+          example: auto
+        enforceTheme:
+          type: boolean
+          example: false
     MovieResult:
       type: object
       required:
@@ -2848,6 +2989,14 @@ components:
             - certification: 'PG'
               meaning: 'Some material may not be suitable for children under 10.'
               order: 2
+  parameters:
+    themeId:
+      in: path
+      name: themeId
+      required: true
+      schema:
+        type: string
+        pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
   securitySchemes:
     cookieAuth:
       type: apiKey
@@ -2969,6 +3118,122 @@ paths:
                   appDataPermissions:
                     type: boolean
                     example: true
+  /themes:
+    get:
+      summary: List installed themes
+      security: []
+      tags:
+        - themes
+      responses:
+        '200':
+          description: Installed themes and validation errors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThemeList'
+  /themes/reload:
+    post:
+      summary: Reload theme packages from the configuration directory
+      tags:
+        - themes
+      responses:
+        '200':
+          description: Reloaded themes and validation errors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThemeList'
+  /themes/install:
+    post:
+      summary: Install a theme from the latest GitHub release
+      tags:
+        - themes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceUrl]
+              additionalProperties: false
+              properties:
+                sourceUrl:
+                  type: string
+                  format: uri
+                  maxLength: 512
+      responses:
+        '201':
+          description: Theme installed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThemeInstallResult'
+        '400':
+          description: Theme source or package is invalid
+  /themes/{themeId}:
+    delete:
+      summary: Remove an installed theme
+      tags:
+        - themes
+      parameters:
+        - $ref: '#/components/parameters/themeId'
+      responses:
+        '200':
+          description: Remaining themes and validation errors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThemeList'
+  /themes/{themeId}/update:
+    post:
+      summary: Update a theme previously installed from GitHub
+      tags:
+        - themes
+      parameters:
+        - $ref: '#/components/parameters/themeId'
+      responses:
+        '200':
+          description: Theme updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThemeInstallResult'
+        '400':
+          description: Theme has no update source or the update is invalid
+  /themes/{themeId}/assets/{assetName}:
+    get:
+      summary: Get an installed theme asset
+      security: []
+      tags:
+        - themes
+      parameters:
+        - $ref: '#/components/parameters/themeId'
+        - in: path
+          name: assetName
+          required: true
+          schema:
+            type: string
+            enum:
+              - logoDark
+              - logoLight
+              - logoStackedDark
+              - logoStackedLight
+              - iconDark
+              - iconLight
+              - faviconDark
+              - faviconLight
+              - backgroundDark
+              - backgroundLight
+      responses:
+        '200':
+          description: Theme image asset
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Theme asset not found
   /settings/main:
     get:
       summary: Get main settings

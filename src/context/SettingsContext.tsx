@@ -37,6 +37,9 @@ const defaultSettings: PublicSettingsResponse = {
   versionCheck: true,
   plexClientIdentifier: '',
   openIdProviders: [],
+  defaultTheme: 'aurora',
+  defaultThemeMode: 'auto',
+  enforceTheme: false,
 };
 
 export const SettingsContext = React.createContext<SettingsContextProps>({

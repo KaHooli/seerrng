@@ -25,6 +25,7 @@ import { mapNetwork } from '@server/models/Tv';
 import { mapWatchProviderDetails } from '@server/models/common';
 import overrideRuleRoutes from '@server/routes/overrideRule';
 import settingsRoutes from '@server/routes/settings';
+import themesRoutes from '@server/routes/themes';
 import watchlistRoutes from '@server/routes/watchlist';
 import {
   appDataPath,
@@ -142,6 +143,7 @@ export const getCommitUpdateStatus = (
 
 router.use(checkUser);
 router.use(apiResponseCache);
+router.use('/themes', themesRoutes);
 
 router.get('/status/ready', publicStatusRateLimit, async (_req, res) => {
   try {

@@ -2,6 +2,7 @@ import Button from '@app/components/Common/Button';
 import ImageFader from '@app/components/Common/ImageFader';
 import SensitiveInput from '@app/components/Common/SensitiveInput';
 import LanguagePicker from '@app/components/Layout/LanguagePicker';
+import { useTheme } from '@app/context/ThemeContext';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import versionedAsset from '@app/utils/versionedAsset';
@@ -31,6 +32,17 @@ const messages = defineMessages('components.ResetPassword', {
 const ResetPassword = () => {
   const intl = useIntl();
   const router = useRouter();
+  const { assets, mode } = useTheme();
+  const themeBackground =
+    mode === 'dark' ? assets?.backgroundDark : assets?.backgroundLight;
+  // The bundled sign-in mark is a stacked 1.6:1 lockup while the sidebar mark is
+  // a wide 4.3:1 one. A theme that supplies only the wide logo would render as a
+  // thin strip here, so prefer its stacked variant and fall back to the wide one.
+  const themeLogo =
+    (mode === 'dark'
+      ? (assets?.logoStackedDark ?? assets?.logoDark)
+      : (assets?.logoStackedLight ?? assets?.logoLight)) ??
+    versionedAsset('/logo_stacked.svg');
   const [hasSubmitted, setSubmitted] = useState(false);
 
   const guid =
@@ -54,15 +66,19 @@ const ResetPassword = () => {
   return (
     <div className="relative flex min-h-screen flex-col bg-gray-900 py-14">
       <ImageFader
-        forceOptimize
-        backgroundImages={[
-          '/images/rotate1.jpg',
-          '/images/rotate2.jpg',
-          '/images/rotate3.jpg',
-          '/images/rotate4.jpg',
-          '/images/rotate5.jpg',
-          '/images/rotate6.jpg',
-        ]}
+        forceOptimize={!themeBackground}
+        backgroundImages={
+          themeBackground
+            ? [themeBackground]
+            : [
+                '/images/rotate1.jpg',
+                '/images/rotate2.jpg',
+                '/images/rotate3.jpg',
+                '/images/rotate4.jpg',
+                '/images/rotate5.jpg',
+                '/images/rotate6.jpg',
+              ]
+        }
       />
       <div className="absolute right-4 top-4 z-50">
         <LanguagePicker />
@@ -70,9 +86,10 @@ const ResetPassword = () => {
       <div className="relative z-40 mt-10 flex flex-col items-center px-4 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="relative h-48 w-full max-w-full drop-shadow-[0_2px_8px_rgba(15,23,42,0.65)]">
           <Image
-            src={versionedAsset('/logo_stacked.svg')}
+            src={themeLogo}
             alt="Logo"
             fill
+            unoptimized={Boolean(assets)}
             className="object-contain"
           />
         </div>

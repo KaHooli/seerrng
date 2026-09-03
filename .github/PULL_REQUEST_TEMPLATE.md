@@ -29,6 +29,9 @@
   A release note must say what changed, who is affected, which product area it
   belongs to, and what action is required (or explicitly say `action: none`).
   See `release-notes/README.md` for the complete schema and preview command.
+
+  Check exactly one of the first two options. The remaining boxes are
+  confirmations rather than options, so check any that apply.
 -->
 
 - [ ] I added a release-note fragment under `release-notes/`.

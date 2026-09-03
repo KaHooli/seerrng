@@ -61,10 +61,22 @@ const releaseNotesMatch = body.match(
 const releaseNotesContent = releaseNotesMatch
   ? stripComments(releaseNotesMatch[1]).trim()
   : '';
-const releaseNoteOptions =
+// Only the fragment/internal-only lines are mutually exclusive options. Every
+// other checkbox in the section is a confirmation that may be checked alongside
+// either option, so it must not count towards the "exactly one" rule.
+const RELEASE_NOTE_OPTION_PATTERNS = [
+  /\badded\b[^\n]*\bfragment\b/i,
+  /\binternal[- ]only\b/i,
+];
+
+const releaseNoteCheckboxes =
   releaseNotesContent.match(/- \[[ x]\][^\n]*/gi) || [];
-const checkedReleaseNoteOptions =
-  releaseNotesContent.match(/- \[x\][^\n]*/gi) || [];
+const releaseNoteOptions = releaseNoteCheckboxes.filter((line) =>
+  RELEASE_NOTE_OPTION_PATTERNS.some((pattern) => pattern.test(line))
+);
+const checkedReleaseNoteOptions = releaseNoteOptions.filter((line) =>
+  /^- \[x\]/i.test(line)
+);
 
 if (!releaseNotesContent) {
   issues.push('**Release Notes** section is missing or empty.');

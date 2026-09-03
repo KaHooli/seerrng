@@ -4,21 +4,23 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { THEMES_DIRECTORY, loadThemeDirectory, themeManager } from './index';
+import { loadThemeDirectory, themeManager } from './index';
+import { THEMES_DIRECTORY } from './paths';
+import { readRegistry, writeRegistry } from './registry';
 
 const MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
+const MAX_ASSET_REDIRECTS = 5;
+const ALLOWED_ASSET_HOSTS = [
+  'github.com',
+  'api.github.com',
+  'githubusercontent.com',
+];
 const MAX_EXTRACTED_BYTES = 64 * 1024 * 1024;
 const MAX_FILES = 64;
-const MAX_REGISTRY_BYTES = 64 * 1024;
-const REGISTRY_PATH = path.join(THEMES_DIRECTORY, '.registry.json');
+const MAX_ENTRIES = 512;
+const THEME_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const themeMutationLock = new AsyncLock();
 
-type RegistryEntry = {
-  sourceUrl: string;
-  installedVersion: string;
-  installedAt: string;
-};
-type ThemeRegistry = Record<string, RegistryEntry>;
 type GithubRelease = {
   assets: {
     name: string;
@@ -78,6 +80,81 @@ const fetchLatestRelease = async (
   return (await response.json()) as GithubRelease;
 };
 
+// A Content-Length header is advisory: it can be absent on a chunked response
+// and it can lie. Cap the transfer as it arrives so a hostile or broken host
+// cannot make the process buffer an unbounded body before the size is checked.
+const readCappedBody = async (
+  response: Response,
+  limit: number
+): Promise<Buffer> => {
+  if (!response.body) {
+    throw new Error('Theme download returned an empty response.');
+  }
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      total += value.byteLength;
+      if (total > limit) {
+        throw new Error('Theme package exceeds the download limit.');
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks, total);
+};
+
+const assertAllowedAssetHost = (url: URL) => {
+  if (
+    url.protocol !== 'https:' ||
+    !ALLOWED_ASSET_HOSTS.some(
+      (host) => url.hostname === host || url.hostname.endsWith(`.${host}`)
+    )
+  ) {
+    throw new Error('GitHub returned an unexpected release asset URL.');
+  }
+};
+
+// Release downloads redirect to a signed CDN URL. Following them with fetch's
+// own handling would leave every host after the first unchecked, so walk the
+// chain and re-check each hop. The credential is deliberately dropped after the
+// first request: the signed URL does not need it, and a redirect is the one
+// place it could otherwise reach a host that is not GitHub's API.
+const fetchReleaseAsset = async (
+  url: URL,
+  accept: string
+): Promise<Response> => {
+  let current = url;
+  for (let hop = 0; hop <= MAX_ASSET_REDIRECTS; hop += 1) {
+    assertAllowedAssetHost(current);
+    const response: Response = await fetch(current, {
+      headers:
+        hop === 0
+          ? githubHeaders(accept)
+          : { Accept: accept, 'User-Agent': 'SeerrNG-theme-installer' },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (response.status < 300 || response.status >= 400) {
+      return response;
+    }
+    const location = response.headers.get('location');
+    await response.body?.cancel().catch(() => undefined);
+    if (!location) {
+      throw new Error('Theme download returned an incomplete redirect.');
+    }
+    current = new URL(location, current);
+  }
+  throw new Error('Theme download followed too many redirects.');
+};
+
 const downloadReleaseAsset = async (
   release: GithubRelease
 ): Promise<Buffer> => {
@@ -94,24 +171,10 @@ const downloadReleaseAsset = async (
   const assetUrl = new URL(
     useApiDownload ? (asset.url as string) : asset.browser_download_url
   );
-  if (
-    assetUrl.protocol !== 'https:' ||
-    !['github.com', 'api.github.com', 'objects.githubusercontent.com'].some(
-      (host) =>
-        assetUrl.hostname === host || assetUrl.hostname.endsWith(`.${host}`)
-    )
-  ) {
-    throw new Error('GitHub returned an unexpected release asset URL.');
-  }
-  const response = await fetch(assetUrl, {
-    headers: githubHeaders(
-      useApiDownload
-        ? 'application/octet-stream'
-        : 'application/vnd.github+json'
-    ),
-    redirect: 'follow',
-    signal: AbortSignal.timeout(30_000),
-  });
+  const response = await fetchReleaseAsset(
+    assetUrl,
+    useApiDownload ? 'application/octet-stream' : 'application/vnd.github+json'
+  );
   if (!response.ok) {
     throw new Error(`Theme download failed (${response.status}).`);
   }
@@ -119,11 +182,7 @@ const downloadReleaseAsset = async (
   if (length > MAX_DOWNLOAD_BYTES) {
     throw new Error('Theme package exceeds the download limit.');
   }
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length > MAX_DOWNLOAD_BYTES) {
-    throw new Error('Theme package exceeds the download limit.');
-  }
-  return buffer;
+  return readCappedBody(response, MAX_DOWNLOAD_BYTES);
 };
 
 const readTarString = (buffer: Buffer, start: number, length: number) =>
@@ -165,6 +224,7 @@ export const extractThemeArchive = async (
   const destinationRoot = path.resolve(destination);
   await fs.mkdir(destinationRoot, { recursive: true, mode: 0o700 });
   let offset = 0;
+  let entryCount = 0;
   let fileCount = 0;
   let extractedBytes = 0;
 
@@ -182,6 +242,29 @@ export const extractThemeArchive = async (
     if (!Number.isSafeInteger(size) || size < 0) {
       throw new Error('Theme package contains an invalid file size.');
     }
+    const dataStart = offset + 512;
+    const dataEnd = dataStart + size;
+    if (dataEnd > tar.length) {
+      throw new Error('Theme package is truncated.');
+    }
+    const nextOffset = dataStart + Math.ceil(size / 512) * 512;
+
+    // Pax global ('g') and extended ('x') headers carry archive metadata, not
+    // package content. `git archive` always emits one, and bsdtar - the default
+    // `tar` on macOS - emits them for extended attributes, so rejecting them
+    // turned two ordinary ways of building a package into an opaque failure.
+    // Their contents stay deliberately unread: a pax `path` record therefore
+    // cannot redirect the following entry away from the ustar name validated
+    // below, which keeps this stricter than a conforming tar rather than looser.
+    if (type === 'g' || type === 'x') {
+      offset = nextOffset;
+      continue;
+    }
+
+    entryCount += 1;
+    if (entryCount > MAX_ENTRIES) {
+      throw new Error('Theme package exceeds extraction limits.');
+    }
     const normalized = path.posix.normalize(relativePath.replace(/^\.\//, ''));
     if (
       !normalized ||
@@ -194,11 +277,6 @@ export const extractThemeArchive = async (
     const outputPath = path.resolve(destinationRoot, ...normalized.split('/'));
     if (!outputPath.startsWith(`${destinationRoot}${path.sep}`)) {
       throw new Error('Theme package contains an unsafe path.');
-    }
-    const dataStart = offset + 512;
-    const dataEnd = dataStart + size;
-    if (dataEnd > tar.length) {
-      throw new Error('Theme package is truncated.');
     }
     if (type === '5') {
       await fs.mkdir(outputPath, { recursive: true, mode: 0o700 });
@@ -219,54 +297,11 @@ export const extractThemeArchive = async (
     } else {
       throw new Error('Theme package contains unsupported links or metadata.');
     }
-    offset = dataStart + Math.ceil(size / 512) * 512;
+    offset = nextOffset;
   }
   if (fileCount === 0) {
     throw new Error('Theme package is empty.');
   }
-};
-
-const readRegistry = async (): Promise<ThemeRegistry> => {
-  try {
-    const stat = await fs.lstat(REGISTRY_PATH);
-    if (
-      !stat.isFile() ||
-      stat.isSymbolicLink() ||
-      stat.size > MAX_REGISTRY_BYTES
-    ) {
-      throw new Error('Theme registry is not a valid regular file.');
-    }
-    const value: unknown = JSON.parse(await fs.readFile(REGISTRY_PATH, 'utf8'));
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('Theme registry is invalid.');
-    }
-    for (const [themeId, entry] of Object.entries(value)) {
-      if (
-        !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(themeId) ||
-        !entry ||
-        typeof entry !== 'object' ||
-        typeof (entry as RegistryEntry).sourceUrl !== 'string' ||
-        typeof (entry as RegistryEntry).installedVersion !== 'string' ||
-        typeof (entry as RegistryEntry).installedAt !== 'string'
-      ) {
-        throw new Error('Theme registry is invalid.');
-      }
-    }
-    return value as ThemeRegistry;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return {};
-    }
-    throw error;
-  }
-};
-
-const writeRegistry = async (registry: ThemeRegistry) => {
-  const temporary = `${REGISTRY_PATH}.${randomUUID()}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(registry, null, 2)}\n`, {
-    mode: 0o600,
-  });
-  await fs.rename(temporary, REGISTRY_PATH);
 };
 
 const installBuffer = async (
@@ -293,6 +328,9 @@ const installBuffer = async (
         path.join(packageDirectory, directories[0].name)
       );
     }
+    // Read the registry before anything on disk moves. Doing it afterwards let
+    // a registry problem fail the request while the package was already live.
+    const registry = await readRegistry();
     const destination = path.join(THEMES_DIRECTORY, loaded.manifest.id);
     const backup = `${destination}.previous-${randomUUID()}`;
     let hasBackup = false;
@@ -315,7 +353,6 @@ const installBuffer = async (
       }
       throw error;
     }
-    const registry = await readRegistry();
     registry[loaded.manifest.id] = {
       sourceUrl,
       installedVersion: loaded.manifest.version,
@@ -349,6 +386,19 @@ const installThemeFromGithubUnlocked = async (
   );
 };
 
+const removeThemeUnlocked = async (themeId: string) => {
+  if (!THEME_ID_PATTERN.test(themeId)) {
+    throw new Error('Invalid theme ID.');
+  }
+  await fs.rm(path.join(THEMES_DIRECTORY, themeId), {
+    recursive: true,
+    force: true,
+  });
+  const registry = await readRegistry();
+  delete registry[themeId];
+  await writeRegistry(registry);
+};
+
 export const installThemeFromGithub = async (
   sourceUrl: string
 ): Promise<ThemeInstallResponse> =>
@@ -365,20 +415,19 @@ export const updateInstalledTheme = async (
     if (!entry) {
       throw new Error('Theme was installed locally and has no update source.');
     }
-    return installThemeFromGithubUnlocked(entry.sourceUrl);
+    const result = await installThemeFromGithubUnlocked(entry.sourceUrl);
+    // A package may rename itself between releases. Without this the previous
+    // directory and registry entry survive as an orphan the admin never asked
+    // to keep, alongside the theme that replaced it.
+    if (result.theme.id !== themeId) {
+      await removeThemeUnlocked(themeId);
+      await themeManager.reload();
+    }
+    return result;
   });
 
 export const removeInstalledTheme = async (themeId: string) =>
   themeMutationLock.dispatch('themes', async () => {
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(themeId)) {
-      throw new Error('Invalid theme ID.');
-    }
-    await fs.rm(path.join(THEMES_DIRECTORY, themeId), {
-      recursive: true,
-      force: true,
-    });
-    const registry = await readRegistry();
-    delete registry[themeId];
-    await writeRegistry(registry);
+    await removeThemeUnlocked(themeId);
     return themeManager.reload();
   });

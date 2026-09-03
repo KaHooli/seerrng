@@ -1,4 +1,5 @@
 import type { ThemeAssetName } from '@server/interfaces/api/themeInterfaces';
+import { THEME_ASSET_NAMES } from '@server/interfaces/api/themeInterfaces';
 import { Permission } from '@server/lib/permissions';
 import { themeManager } from '@server/lib/themes';
 import {
@@ -12,16 +13,23 @@ import { Router } from 'express';
 import path from 'node:path';
 
 const themesRoutes = Router();
-const assetNames = new Set<ThemeAssetName>([
-  'logoDark',
-  'logoLight',
-  'iconDark',
-  'iconLight',
-  'faviconDark',
-  'faviconLight',
-  'backgroundDark',
-  'backgroundLight',
-]);
+const assetNames = new Set<ThemeAssetName>(THEME_ASSET_NAMES);
+
+// Theme packages are third-party content served from the application's own
+// origin. An SVG is a document, not just an image: opened directly it would run
+// its own inline script under the app-wide policy, which allows 'unsafe-inline'.
+// This policy replaces that one for asset responses only. It does not affect the
+// <img> tags that actually render these files - a response CSP applies to a
+// document created from the response, never to a subresource load.
+const ASSET_CONTENT_SECURITY_POLICY = [
+  "default-src 'none'",
+  "style-src 'unsafe-inline'",
+  "img-src 'self' data:",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+  'sandbox',
+].join('; ');
 
 themesRoutes.get('/', async (_req, res, next) => {
   try {
@@ -43,6 +51,7 @@ themesRoutes.get('/:themeId/assets/:assetName', async (req, res, next) => {
       return res.status(404).json({ message: 'Theme asset not found.' });
     }
     res.setHeader('Cache-Control', 'public, max-age=3600, must-revalidate');
+    res.setHeader('Content-Security-Policy', ASSET_CONTENT_SECURITY_POLICY);
     return res.sendFile(path.basename(assetPath), {
       root: path.dirname(assetPath),
     });

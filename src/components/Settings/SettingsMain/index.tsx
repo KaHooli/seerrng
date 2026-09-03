@@ -116,6 +116,7 @@ const messages = defineMessages('components.Settings.SettingsMain', {
   removeTheme: 'Remove',
   themeActionSuccess: 'Theme packages updated successfully.',
   themeActionFailure: 'The theme package operation failed.',
+  themeActionFailureReason: 'The theme package operation failed: {message}',
   themeValidationError: '{package}: {message}',
 });
 
@@ -146,11 +147,26 @@ const SettingsMain = () => {
         autoDismiss: true,
         appearance: 'success',
       });
-    } catch {
-      addToast(intl.formatMessage(messages.themeActionFailure), {
-        autoDismiss: true,
-        appearance: 'error',
-      });
+    } catch (error) {
+      // The API explains exactly why a package was rejected - no .tar.gz asset,
+      // a mismatched directory name, an unmet minimum version. Collapsing all of
+      // that into one generic string left admins with nothing to act on.
+      const reason =
+        axios.isAxiosError(error) &&
+        typeof error.response?.data?.message === 'string'
+          ? error.response.data.message
+          : undefined;
+      addToast(
+        reason
+          ? intl.formatMessage(messages.themeActionFailureReason, {
+              message: reason,
+            })
+          : intl.formatMessage(messages.themeActionFailure),
+        {
+          autoDismiss: true,
+          appearance: 'error',
+        }
+      );
     } finally {
       setThemeActionPending(false);
     }
@@ -956,20 +972,27 @@ const SettingsMain = () => {
                               </span>
                             </span>
                             <span className="flex gap-2">
-                              <Button
-                                type="button"
-                                buttonSize="sm"
-                                disabled={themeActionPending}
-                                onClick={() =>
-                                  void runThemeAction(() =>
-                                    axios.post(
-                                      `/api/v1/themes/${theme.id}/update`
+                              {/*
+                                Only packages installed from a release carry a
+                                source to update from. Offering the button for a
+                                hand-copied package guaranteed a failed request.
+                              */}
+                              {!!theme.sourceUrl && (
+                                <Button
+                                  type="button"
+                                  buttonSize="sm"
+                                  disabled={themeActionPending}
+                                  onClick={() =>
+                                    void runThemeAction(() =>
+                                      axios.post(
+                                        `/api/v1/themes/${theme.id}/update`
+                                      )
                                     )
-                                  )
-                                }
-                              >
-                                {intl.formatMessage(messages.updateTheme)}
-                              </Button>
+                                  }
+                                >
+                                  {intl.formatMessage(messages.updateTheme)}
+                                </Button>
+                              )}
                               <Button
                                 type="button"
                                 buttonSize="sm"

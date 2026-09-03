@@ -8,6 +8,7 @@ import type {
   ThemeListResponse,
   ThemeModePreference,
 } from '@server/interfaces/api/themeInterfaces';
+import { BUILT_IN_THEME_IDS } from '@server/interfaces/api/themeInterfaces';
 import axios from 'axios';
 import type { ReactNode } from 'react';
 import {
@@ -36,9 +37,12 @@ export type ThemePalette = {
     secondary: readonly string[];
   };
   assets?: InstalledTheme['assetUrls'];
+  assetTypes?: InstalledTheme['assetTypes'];
   installed?: boolean;
 };
 
+// Ordered to match BUILT_IN_THEME_IDS, which the server uses to stop an
+// installed package from claiming an id that a built-in palette already wins.
 export const themePalettes: ThemePalette[] = [
   {
     id: 'aurora',
@@ -209,6 +213,8 @@ export const themePalettes: ThemePalette[] = [
     secondary: 'sietchNeon',
   },
 ];
+
+export const builtInThemeIds: readonly string[] = BUILT_IN_THEME_IDS;
 
 const shades = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950];
 
@@ -612,6 +618,7 @@ type ThemeContextValue = {
   palette: string;
   palettes: ThemePalette[];
   assets?: InstalledTheme['assetUrls'];
+  assetTypes?: InstalledTheme['assetTypes'];
   enforced: boolean;
   setMode: (mode: ThemeMode) => void;
   setModePreference: (mode: ThemeModePreference) => void;
@@ -747,6 +754,7 @@ const hexToRgb = (value: string): string => {
 const toThemePalette = (theme: InstalledTheme): ThemePalette => ({
   id: theme.id,
   name: theme.name,
+  // A manifest may repeat a colour, so the index keeps swatch keys unique.
   swatches: theme.swatches,
   scales: {
     surface: theme.colors.surface.map(hexToRgb),
@@ -754,6 +762,7 @@ const toThemePalette = (theme: InstalledTheme): ThemePalette => ({
     secondary: theme.colors.secondary.map(hexToRgb),
   },
   assets: theme.assetUrls,
+  assetTypes: theme.assetTypes,
   installed: true,
 });
 
@@ -893,6 +902,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
       palette,
       palettes,
       assets: getThemePalette(palette, palettes).assets,
+      assetTypes: getThemePalette(palette, palettes).assetTypes,
       enforced: currentSettings.enforceTheme,
       setMode,
       setModePreference,

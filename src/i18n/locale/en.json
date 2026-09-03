@@ -1523,6 +1523,7 @@
   "components.Settings.SettingsMain.streamingRegion": "Streaming Region",
   "components.Settings.SettingsMain.streamingRegionTip": "Show streaming sites by regional availability",
   "components.Settings.SettingsMain.themeActionFailure": "The theme package operation failed.",
+  "components.Settings.SettingsMain.themeActionFailureReason": "The theme package operation failed: {message}",
   "components.Settings.SettingsMain.themeActionSuccess": "Theme packages updated successfully.",
   "components.Settings.SettingsMain.themeSource": "Install from GitHub",
   "components.Settings.SettingsMain.themeSourceTip": "Enter an HTTPS GitHub repository URL whose latest release contains a .tar.gz theme package.",

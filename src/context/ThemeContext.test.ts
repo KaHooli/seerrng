@@ -1,9 +1,19 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { getThemeTokens, themePalettes } from './ThemeContext';
+import { builtInThemeIds, getThemeTokens, themePalettes } from './ThemeContext';
 
 describe('themePalettes', () => {
+  it('matches the reserved ID list the installer rejects packages against', () => {
+    // The server refuses a package claiming one of these IDs, because the
+    // built-in palette always wins the lookup. If the two lists drift, a
+    // package could shadow a built-in or be rejected for no reason.
+    assert.deepEqual(
+      themePalettes.map((palette) => palette.id),
+      [...builtInThemeIds]
+    );
+  });
+
   it('includes the Sietch palette displayed by the theme picker', () => {
     assert.deepEqual(themePalettes.map((palette) => palette.id).slice(-3), [
       'violet',

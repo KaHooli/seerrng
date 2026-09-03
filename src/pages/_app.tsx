@@ -118,17 +118,19 @@ type MessagesType = Record<string, string>;
 // to set the document title and PWA meta tags.
 const AppHead = () => {
   const { currentSettings } = useSettings();
-  const { assets, mode } = useTheme();
-  const favicon = mode === 'dark' ? assets?.faviconDark : assets?.faviconLight;
-  const touchIcon = mode === 'dark' ? assets?.iconDark : assets?.iconLight;
+  const { assets, assetTypes, mode } = useTheme();
+  const faviconName = mode === 'dark' ? 'faviconDark' : 'faviconLight';
+  const touchIconName = mode === 'dark' ? 'iconDark' : 'iconLight';
 
   return (
     <Head>
       <title>{currentSettings.applicationTitle}</title>
       <PWAHeader
         applicationTitle={currentSettings.applicationTitle}
-        favicon={favicon}
-        touchIcon={touchIcon}
+        favicon={assets?.[faviconName]}
+        faviconType={assetTypes?.[faviconName]}
+        touchIcon={assets?.[touchIconName]}
+        touchIconType={assetTypes?.[touchIconName]}
       />
     </Head>
   );

@@ -48,6 +48,28 @@ describe('theme manifest schema', () => {
     );
   });
 
+  it('rejects an ID that collides with a built-in palette', () => {
+    assert.throws(
+      () => parseThemeManifest({ ...validManifest, id: 'aurora' }),
+      /built-in theme ID/i
+    );
+  });
+
+  it('accepts the stacked sign-in logo slots', () => {
+    const manifest = parseThemeManifest({
+      ...validManifest,
+      assets: {
+        logoDark: 'assets/logo-dark.svg',
+        logoStackedDark: 'assets/logo-stacked-dark.svg',
+        logoStackedLight: 'assets/logo-stacked-light.png',
+      },
+    });
+    assert.equal(
+      manifest.assets?.logoStackedDark,
+      'assets/logo-stacked-dark.svg'
+    );
+  });
+
   it('rejects unrecognized manifest properties', () => {
     assert.throws(() =>
       parseThemeManifest({ ...validManifest, executable: 'install.sh' })

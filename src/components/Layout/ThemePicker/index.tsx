@@ -94,9 +94,9 @@ const ThemePicker = () => {
                   }
                 >
                   <span className="mr-2 flex shrink-0 -space-x-1">
-                    {themePalette.swatches.map((swatch) => (
+                    {themePalette.swatches.map((swatch, swatchIndex) => (
                       <span
-                        key={`${themePalette.id}-${swatch}`}
+                        key={`${themePalette.id}-${swatchIndex}`}
                         className="h-4 w-4 rounded-full border border-gray-950/30"
                         style={{ backgroundColor: swatch }}
                       />

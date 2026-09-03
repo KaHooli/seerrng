@@ -326,6 +326,10 @@ components:
           type: string
         logoLight:
           type: string
+        logoStackedDark:
+          type: string
+        logoStackedLight:
+          type: string
         iconDark:
           type: string
         iconLight:
@@ -348,6 +352,7 @@ components:
         - swatches
         - colors
         - assetUrls
+        - assetTypes
       properties:
         schemaVersion:
           type: integer
@@ -383,6 +388,16 @@ components:
           $ref: '#/components/schemas/ThemeAssets'
         assetUrls:
           $ref: '#/components/schemas/ThemeAssets'
+        assetTypes:
+          $ref: '#/components/schemas/ThemeAssets'
+          description: Media type of each declared asset.
+        sourceUrl:
+          type: string
+          format: uri
+          description: >-
+            Release the package was installed from. Absent for packages copied
+            into the configuration directory by hand, which cannot be updated
+            in place.
     ThemeColorScale:
       type: array
       minItems: 11
@@ -3201,6 +3216,8 @@ paths:
             enum:
               - logoDark
               - logoLight
+              - logoStackedDark
+              - logoStackedLight
               - iconDark
               - iconLight
               - faviconDark

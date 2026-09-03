@@ -71,8 +71,13 @@ const Setup = () => {
   const { assets, mode } = useTheme();
   const themeBackground =
     mode === 'dark' ? assets?.backgroundDark : assets?.backgroundLight;
+  // The bundled sign-in mark is a stacked 1.6:1 lockup while the sidebar mark is
+  // a wide 4.3:1 one. A theme that supplies only the wide logo would render as a
+  // thin strip here, so prefer its stacked variant and fall back to the wide one.
   const themeLogo =
-    (mode === 'dark' ? assets?.logoDark : assets?.logoLight) ??
+    (mode === 'dark'
+      ? (assets?.logoStackedDark ?? assets?.logoDark)
+      : (assets?.logoStackedLight ?? assets?.logoLight)) ??
     versionedAsset('/logo_stacked.svg');
   const toasts = useToasts();
   const libraryValidationController = useRef<AbortController | undefined>(

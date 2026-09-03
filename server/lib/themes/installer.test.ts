@@ -118,6 +118,62 @@ describe('theme archive extraction', () => {
     );
   });
 
+  it('accepts pax global and extended headers around real entries', async () => {
+    const destination = await makeDestination();
+    await extractThemeArchive(
+      createArchive([
+        { name: 'pax_global_header', content: '52 comment=abc\n', type: 'g' },
+        {
+          name: 'PaxHeaders/theme.json',
+          content: '20 SCHILY.dev=1\n',
+          type: 'x',
+        },
+        { name: 'example/theme.json', content: '{}' },
+      ]),
+      destination
+    );
+    assert.equal(
+      await fs.readFile(path.join(destination, 'example/theme.json'), 'utf8'),
+      '{}'
+    );
+    assert.equal(
+      await fs
+        .access(path.join(destination, 'pax_global_header'))
+        .then(() => true)
+        .catch(() => false),
+      false
+    );
+  });
+
+  it('ignores a pax path record instead of honouring it', async () => {
+    const destination = await makeDestination();
+    // A conforming tar would extract this as ../escape.txt. Skipping pax data
+    // means the validated ustar name wins, which is stricter, not looser.
+    await extractThemeArchive(
+      createArchive([
+        { name: 'PaxHeaders/x', content: '25 path=../escape.txt\n', type: 'x' },
+        { name: 'example/theme.json', content: '{}' },
+      ]),
+      destination
+    );
+    assert.equal(
+      await fs.readFile(path.join(destination, 'example/theme.json'), 'utf8'),
+      '{}'
+    );
+  });
+
+  it('caps the total number of archive entries', async () => {
+    const entries = Array.from({ length: 600 }, (_, index) => ({
+      name: `example/dir-${index}/`,
+      content: '',
+      type: '5',
+    }));
+    await assert.rejects(
+      extractThemeArchive(createArchive(entries), await makeDestination()),
+      /extraction limits/i
+    );
+  });
+
   it('rejects archives with a modified tar header', async () => {
     const archive = createArchive([{ name: 'theme.json', content: '{}' }]);
     const tar = (await import('node:zlib')).gunzipSync(archive);

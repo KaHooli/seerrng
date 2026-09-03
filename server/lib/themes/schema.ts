@@ -1,5 +1,6 @@
 import {
   THEME_SHADE_COUNT,
+  isBuiltInThemeId,
   type ThemeManifest,
 } from '@server/interfaces/api/themeInterfaces';
 import { z } from 'zod';
@@ -26,7 +27,11 @@ export const themeManifestSchema = z
       .string()
       .min(1)
       .max(48)
-      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+      .refine(
+        (value) => !isBuiltInThemeId(value),
+        'must not reuse a built-in theme ID'
+      ),
     name: z.string().trim().min(1).max(64),
     version: z
       .string()
@@ -45,6 +50,8 @@ export const themeManifestSchema = z
       .object({
         logoDark: assetFile.optional(),
         logoLight: assetFile.optional(),
+        logoStackedDark: assetFile.optional(),
+        logoStackedLight: assetFile.optional(),
         iconDark: assetFile.optional(),
         iconLight: assetFile.optional(),
         faviconDark: assetFile.optional(),

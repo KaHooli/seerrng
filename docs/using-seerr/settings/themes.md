@@ -18,7 +18,9 @@ If an external default theme is removed or becomes invalid, Seerr falls back to 
 
 Paste an HTTPS GitHub repository URL into **Install from GitHub**. Seerr downloads the first `.tar.gz` asset from the repository's latest release, validates it, and installs it in the persistent configuration directory.
 
-The installer only accepts GitHub release assets. Packages have strict download, extraction, file-count, and asset-size limits. Absolute paths, parent-directory traversal, links, and unsupported archive entry types are rejected.
+The installer only accepts GitHub release assets. Packages have strict download, extraction, entry-count, file-count, and asset-size limits. Absolute paths, parent-directory traversal, and links are rejected. Pax headers are skipped rather than honoured, so archives produced by `git archive` or by the default `tar` on macOS install normally.
+
+Theme assets are served with a restrictive content security policy, so an SVG in a package cannot run script even if it is opened directly.
 
 For private repositories, set a `GITHUB_TOKEN` environment variable with read access to the repository.
 
@@ -32,7 +34,7 @@ You can also copy an extracted package to:
 
 For Docker installations, `/app/config` must be mapped to persistent storage and the container's `node` user must be able to read the package. Select **Reload Themes** after copying or changing files.
 
-Each package requires a `theme.json` manifest. Its directory name must exactly match the manifest's `id`:
+Each package requires a `theme.json` manifest. Its directory name must exactly match the manifest's `id`, and the `id` may not reuse one of the built-in palette names such as `aurora`:
 
 ```json
 {
@@ -51,6 +53,8 @@ Each package requires a `theme.json` manifest. Its directory name must exactly m
   "assets": {
     "logoDark": "assets/logo-dark.svg",
     "logoLight": "assets/logo-light.svg",
+    "logoStackedDark": "assets/logo-stacked-dark.png",
+    "logoStackedLight": "assets/logo-stacked-light.png",
     "iconDark": "assets/icon-dark.svg",
     "iconLight": "assets/icon-light.svg",
     "faviconDark": "assets/favicon-dark.svg",
@@ -61,6 +65,16 @@ Each package requires a `theme.json` manifest. Its directory name must exactly m
 }
 ```
 
-Each `surface`, `primary`, and `secondary` array must contain exactly eleven six-digit hexadecimal colours, ordered from shade 50 through 950. Assets are optional and must be safe relative paths within the package.
+Each `surface`, `primary`, and `secondary` array must contain exactly eleven six-digit hexadecimal colours, ordered from shade 50 through 950. Assets are optional and must be safe relative paths within the package. A path that leaves the package through a symlink is rejected, including when the package was extracted by hand.
 
-For GitHub installation, publish the theme directory as the single top-level directory in a ustar-format `.tar.gz` release asset.
+`logoDark` and `logoLight` replace the wide sidebar logo. `logoStackedDark` and `logoStackedLight` replace the taller sign-in, setup, and password-reset logo; when they are absent the wide logo is used there instead, which suits a stacked lockup better than a long wordmark.
+
+Supply `iconDark`, `iconLight`, `faviconDark`, and `faviconLight` as PNG or ICO where you need them on Apple devices: iOS ignores SVG home-screen icons, and older Safari ignores SVG favicons. The bundled icons stay declared as fallbacks either way.
+
+## Packaging a release
+
+Publish the theme directory as the single top-level directory in a `.tar.gz` release asset. Ustar, GNU, and pax archives are all accepted.
+
+## Updating a theme
+
+**Update** is offered only for packages installed from a release, because those are the only ones with a recorded source. Update a hand-copied package by replacing its directory and selecting **Reload Themes**. If a package changes its `id` between releases, the update installs the new ID and removes the old directory.

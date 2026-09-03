@@ -1,7 +1,9 @@
 interface PWAHeaderProps {
   applicationTitle?: string;
   favicon?: string;
+  faviconType?: string;
   touchIcon?: string;
+  touchIconType?: string;
 }
 
 const assetVersion = encodeURIComponent(process.env.commitTag ?? 'local');
@@ -10,33 +12,52 @@ const versionedAsset = (path: string): string => `${path}?v=${assetVersion}`;
 const PWAHeader = ({
   applicationTitle = 'SeerrNG',
   favicon,
+  faviconType,
   touchIcon,
+  touchIconType,
 }: PWAHeaderProps) => {
   return (
     <>
+      {/*
+        A theme's icons are additions, never replacements. iOS ignores SVG for
+        apple-touch-icon and older Safari ignores SVG favicons, so dropping the
+        bundled PNGs left those clients with no icon at all. Declaring both lets
+        each browser pick the format it can actually decode; sizes="any" marks
+        the vector as the preferred choice where it is supported.
+      */}
+      {touchIcon && (
+        <link
+          rel="apple-touch-icon"
+          type={touchIconType}
+          href={touchIcon}
+          sizes={touchIconType === 'image/svg+xml' ? 'any' : undefined}
+        />
+      )}
       <link
         rel="apple-touch-icon"
-        sizes={touchIcon ? undefined : '180x180'}
-        href={touchIcon ?? versionedAsset('/apple-touch-icon.png')}
+        sizes="180x180"
+        href={versionedAsset('/apple-touch-icon.png')}
       />
-      {favicon ? (
-        <link rel="icon" href={favicon} />
-      ) : (
-        <>
-          <link
-            rel="icon"
-            type="image/png"
-            sizes="32x32"
-            href={versionedAsset('/favicon-32x32.png')}
-          />
-          <link
-            rel="icon"
-            type="image/png"
-            sizes="16x16"
-            href={versionedAsset('/favicon-16x16.png')}
-          />
-        </>
+      {favicon && (
+        <link
+          rel="icon"
+          type={faviconType}
+          href={favicon}
+          sizes={faviconType === 'image/svg+xml' ? 'any' : undefined}
+        />
       )}
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="32x32"
+        href={versionedAsset('/favicon-32x32.png')}
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="16x16"
+        href={versionedAsset('/favicon-16x16.png')}
+      />
       <link
         rel="apple-touch-startup-image"
         href="/apple-splash-2048-2732.jpg"

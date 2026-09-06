@@ -31,6 +31,9 @@ import type {
   BulkMediaRequestResponse,
   MediaRequestBody,
   RequestResultsResponse,
+  RequestStatusDetailResponse,
+  RequestStatusResultsResponse,
+  RequestStatusUsersResponse,
 } from '@server/interfaces/api/requestInterfaces';
 import {
   isValidMusicBrainzResourceId,
@@ -42,7 +45,19 @@ import {
 } from '@server/lib/externalIds';
 import { getExternalRuntimeConfig } from '@server/lib/externalRuntimeConfig';
 import { hydrateMediaRequestRelations } from '@server/lib/mediaRequestHydration';
+import { aliasDownloadId } from '@server/lib/mediaResponse';
 import { Permission } from '@server/lib/permissions';
+import requestDispatchManager from '@server/lib/requestDispatch';
+import {
+  RequestStatusStage,
+  getRequestStatusHistory,
+  getRequestStatusPage,
+  recordRequestStatus,
+} from '@server/lib/requestStatus';
+import {
+  REQUEST_STATUS_SORT_FIELDS,
+  parseRequestStatusSort,
+} from '@server/lib/requestStatusSort';
 import { runWithCurrentServarrService } from '@server/lib/serviceAdmission';
 import {
   UserMutationActorUnauthorizedError,
@@ -51,6 +66,7 @@ import {
   runAuthorizedUserSecurityMutation,
   runUserSecurityMutation,
   runUserSecurityMutationWithActor,
+  runUserSecurityReadWithActor,
   type AuthorizedUserSecurityMutationLease,
 } from '@server/lib/userSecurityMutation';
 import logger from '@server/logger';
@@ -98,6 +114,14 @@ const requestStatusFilters = [
   'available',
   'deleted',
 ] as const;
+const requestTimelineStatusFilters = [
+  'all',
+  'active',
+  'attention',
+  'completed',
+  ...Object.values(RequestStatusStage),
+] as const;
+const requestStatusBookFormatFilters = ['ebook', 'audiobook'] as const;
 
 const getExpectedCredentialVersion = (
   req: Pick<Request, 'session' | 'user'>
@@ -125,6 +149,15 @@ const getRequestLogBody = (body: Partial<MediaRequestBody> | undefined) => ({
   authorId: body?.authorId,
   userId: body?.userId,
 });
+
+const protectRequestStatusDownloadId = <
+  T extends { downloadId: string | null },
+>(
+  status: T
+): T =>
+  status.downloadId
+    ? { ...status, downloadId: aliasDownloadId(status.downloadId) }
+    : status;
 
 const getBulkRequestLogBody = (
   body: Partial<BulkMediaRequestBody> | undefined
@@ -2128,6 +2161,268 @@ requestRoutes.get('/count', async (req, res, next) => {
   }
 });
 
+requestRoutes.get<
+  Record<string, unknown>,
+  RequestStatusResultsResponse | { status: number; message: string }
+>('/status', async (req, res, next) => {
+  try {
+    const { pageSize, skip } = parsePageParams(req.query, {
+      take: 25,
+      maxTake: 100,
+    });
+    const requestedBy = parseOptionalPositiveInt(req.query.requestedBy);
+    const parsedMediaType = parseOptionalAllowedString(req.query.mediaType, {
+      fieldName: 'Media type',
+      allowedValues: requestMediaTypeFilters,
+      maxLength: 16,
+    });
+    if ('error' in parsedMediaType) {
+      return next({ status: 400, message: parsedMediaType.error });
+    }
+    const parsedBookFormat = parseOptionalAllowedString(req.query.bookFormat, {
+      fieldName: 'Book format',
+      allowedValues: requestStatusBookFormatFilters,
+      maxLength: 16,
+    });
+    if ('error' in parsedBookFormat) {
+      return next({ status: 400, message: parsedBookFormat.error });
+    }
+    const selectedMediaType = parsedMediaType.value ?? 'all';
+    const mediaType =
+      parsedBookFormat.value && selectedMediaType === 'all'
+        ? 'book'
+        : selectedMediaType;
+    if (parsedBookFormat.value && mediaType !== 'book') {
+      return next({
+        status: 400,
+        message: 'Book format filtering requires mediaType=book.',
+      });
+    }
+    const parsedFilter = parseOptionalAllowedString(
+      req.query.filter ?? req.query.status,
+      {
+        fieldName: 'Status filter',
+        allowedValues: requestTimelineStatusFilters,
+        maxLength: 32,
+      }
+    );
+    if ('error' in parsedFilter) {
+      return next({ status: 400, message: parsedFilter.error });
+    }
+    const parsedSort = parseOptionalAllowedString(req.query.sort, {
+      fieldName: 'Sort field',
+      allowedValues: REQUEST_STATUS_SORT_FIELDS,
+      maxLength: 32,
+    });
+    if ('error' in parsedSort) {
+      return next({ status: 400, message: parsedSort.error });
+    }
+    const parsedSortDirection = parseOptionalAllowedString(
+      req.query.sortDirection,
+      {
+        fieldName: 'Sort direction',
+        allowedValues: ['asc', 'desc'] as const,
+        maxLength: 8,
+      }
+    );
+    if ('error' in parsedSortDirection) {
+      return next({ status: 400, message: parsedSortDirection.error });
+    }
+    const { field: sort, direction: sortDirection } = parseRequestStatusSort(
+      parsedSort.value,
+      parsedSortDirection.value
+    );
+
+    const actorId = req.user!.id;
+    return await runUserSecurityReadWithActor(
+      actorId,
+      requestedBy ?? actorId,
+      [Permission.MANAGE_REQUESTS, Permission.REQUEST_VIEW],
+      async (actor) => {
+        const canViewAllRequests = actor.hasPermission(
+          [Permission.MANAGE_REQUESTS, Permission.REQUEST_VIEW],
+          { type: 'or' }
+        );
+        const page = await getRequestStatusPage({
+          take: pageSize,
+          skip,
+          ownerId: canViewAllRequests ? (requestedBy ?? undefined) : actor.id,
+          mediaType: mediaType === 'all' ? undefined : (mediaType as MediaType),
+          bookFormat: parsedBookFormat.value,
+          filter: parsedFilter.value,
+          sort,
+          sortDirection,
+        });
+
+        return res.status(200).json({
+          ...page,
+          results: page.results.map(({ request, status }) => ({
+            request: filterEntityResponse(request, actor),
+            status: protectRequestStatusDownloadId(status),
+          })),
+        });
+      },
+      {
+        expectedCredentialVersion: getExpectedCredentialVersion(req),
+      }
+    );
+  } catch (error) {
+    if (error instanceof UserMutationActorUnauthorizedError) {
+      return next({ status: 403, message: 'Access denied.' });
+    }
+    logger.error('Something went wrong retrieving request status', {
+      label: 'API',
+      ...getErrorLogFields(error),
+    });
+    return next({ status: 500, message: 'Unable to retrieve request status.' });
+  }
+});
+
+requestRoutes.get<
+  Record<string, unknown>,
+  RequestStatusUsersResponse | { status: number; message: string }
+>('/status/users', async (req, res, next) => {
+  try {
+    if (!req.user) {
+      return next({ status: 403, message: 'Access denied.' });
+    }
+    const { pageSize, skip } = parsePageParams(req.query, {
+      take: 100,
+      maxTake: 100,
+    });
+
+    return await runUserSecurityReadWithActor(
+      req.user!.id,
+      req.user!.id,
+      [Permission.MANAGE_REQUESTS, Permission.REQUEST_VIEW],
+      async () => {
+        const [users, userCount] = await getRepository(User)
+          .createQueryBuilder('user')
+          .addSelect(
+            `CASE WHEN (user.username IS NULL OR user.username = '') THEN (
+              CASE WHEN (user.plexUsername IS NULL OR user.plexUsername = '') THEN (
+                CASE WHEN (user.jellyfinUsername IS NULL OR user.jellyfinUsername = '') THEN
+                  "user"."email"
+                ELSE
+                  LOWER(user.jellyfinUsername)
+                END)
+              ELSE
+                LOWER(user.plexUsername)
+              END)
+            ELSE
+              LOWER(user.username)
+            END`,
+            'displayname_sort_key'
+          )
+          .orderBy('displayname_sort_key', 'ASC')
+          .addOrderBy('user.id', 'ASC')
+          .take(pageSize)
+          .skip(skip)
+          .getManyAndCount();
+
+        return res.status(200).json({
+          pageInfo: {
+            pages: Math.ceil(userCount / pageSize),
+            pageSize,
+            results: userCount,
+            page: Math.floor(skip / pageSize) + 1,
+          },
+          results: users.map((user) => ({
+            id: user.id,
+            displayName: user.displayName,
+            avatar: user.avatar,
+          })),
+        });
+      },
+      {
+        requirePermission: true,
+        expectedCredentialVersion: getExpectedCredentialVersion(req),
+      }
+    );
+  } catch (error) {
+    if (error instanceof UserMutationActorUnauthorizedError) {
+      return next({ status: 403, message: 'Access denied.' });
+    }
+    logger.error('Something went wrong retrieving request status users', {
+      label: 'API',
+      ...getErrorLogFields(error),
+    });
+    return next({ status: 500, message: 'Unable to retrieve request users.' });
+  }
+});
+
+requestRoutes.get<
+  { requestId: string },
+  RequestStatusDetailResponse | { status: number; message: string }
+>('/status/:requestId', async (req, res, next) => {
+  try {
+    const requestId = parseRequestParamId(req.params.requestId);
+    if (!requestId) {
+      return next({ status: 404, message: 'Request not found.' });
+    }
+
+    const request = await getRepository(MediaRequest).findOne({
+      where: { id: requestId },
+      relations: {
+        media: { identifiers: true, seasons: true },
+        modifiedBy: true,
+        requestedBy: true,
+        seasons: true,
+      },
+    });
+    if (!request) {
+      return next({ status: 404, message: 'Request not found.' });
+    }
+
+    return await runUserSecurityReadWithActor(
+      req.user!.id,
+      request.requestedBy.id,
+      [Permission.MANAGE_REQUESTS, Permission.REQUEST_VIEW],
+      async (actor) => {
+        const canViewAllRequests = actor.hasPermission(
+          [Permission.MANAGE_REQUESTS, Permission.REQUEST_VIEW],
+          { type: 'or' }
+        );
+        if (!canViewAllRequests && request.requestedBy.id !== actor.id) {
+          return next({
+            status: 403,
+            message: 'You do not have permission to view this request.',
+          });
+        }
+
+        const current = await recordRequestStatus(request.id);
+        if (!current) {
+          return next({ status: 404, message: 'Request not found.' });
+        }
+        const history = await getRequestStatusHistory(request.id);
+        return res.status(200).json({
+          request: filterEntityResponse(request, actor),
+          current: protectRequestStatusDownloadId(current),
+          history: {
+            ...history,
+            results: history.results.map(protectRequestStatusDownloadId),
+          },
+        });
+      },
+      {
+        expectedCredentialVersion: getExpectedCredentialVersion(req),
+      }
+    );
+  } catch (error) {
+    if (error instanceof UserMutationActorUnauthorizedError) {
+      return next({ status: 403, message: 'Access denied.' });
+    }
+    logger.error('Something went wrong retrieving request status history', {
+      label: 'API',
+      ...getErrorLogFields(error),
+    });
+    return next({
+      status: 500,
+      message: 'Unable to retrieve request status history.',
+    });
+  }
+});
+
 requestRoutes.get('/:requestId', async (req, res, next) => {
   const requestRepository = getRepository(MediaRequest);
 
@@ -2605,78 +2900,109 @@ requestRoutes.delete('/:requestId', async (req, res, next) => {
 
 requestRoutes.post<{
   requestId: string;
-}>(
-  '/:requestId/retry',
-  isAuthenticated(Permission.MANAGE_REQUESTS),
-  async (req, res, next) => {
-    const requestRepository = getRepository(MediaRequest);
+}>('/:requestId/retry', isAuthenticated(), async (req, res, next) => {
+  const requestRepository = getRepository(MediaRequest);
 
-    try {
-      const requestId = parseRequestParamId(req.params.requestId);
-      if (!requestId) {
-        return next({ status: 404, message: 'Request not found.' });
-      }
-
-      return await runAuthorizedUserSecurityMutation(
-        req.user!.id,
-        req.user!.id,
-        Permission.MANAGE_REQUESTS,
-        (actor) =>
-          runWithRequestAdmission(
-            [getRequestMutationAdmissionKey(requestId)],
-            async () => {
-              const request = await requestRepository.findOneOrFail({
-                where: { id: requestId },
-                relations: { requestedBy: true, modifiedBy: true },
-              });
-
-              if (request.status !== MediaRequestStatus.FAILED) {
-                return next({
-                  status: 409,
-                  message: 'Only failed requests can be retried.',
-                });
-              }
-
-              // this also triggers updating the parent media's status & sending to *arr
-              validateExternalServiceConfiguration(
-                request.type,
-                request.serverId,
-                request.bookFormat,
-                request.is4k
-              );
-
-              request.status = MediaRequestStatus.APPROVED;
-              request.modifiedBy = actor;
-              await requestRepository.save(request);
-
-              return res
-                .status(200)
-                .json(filterEntityResponse(request, req.user));
-            }
-          ),
-        {
-          expectedCredentialVersion: getExpectedCredentialVersion(req),
-        }
-      );
-    } catch (e) {
-      if (e instanceof UserMutationActorUnauthorizedError) {
-        return next({
-          status: 403,
-          message: 'You do not have permission to retry this request.',
-        });
-      }
-      if (e instanceof ServiceConfigurationError) {
-        return next({ status: 400, message: e.message });
-      }
-
-      logger.error('Error processing request retry', {
-        label: 'Media Request',
-        message: e.message,
-      });
-      next({ status: 404, message: 'Request not found.' });
+  try {
+    const requestId = parseRequestParamId(req.params.requestId);
+    if (!requestId) {
+      return next({ status: 404, message: 'Request not found.' });
     }
+
+    const initialRequest = await requestRepository.findOne({
+      where: { id: requestId },
+      relations: { requestedBy: true },
+    });
+    if (!initialRequest) {
+      return next({ status: 404, message: 'Request not found.' });
+    }
+
+    return await runUserSecurityMutationWithActor(
+      req.user!.id,
+      initialRequest.requestedBy.id,
+      Permission.MANAGE_REQUESTS,
+      (actor) =>
+        runWithRequestAdmission(
+          [getRequestMutationAdmissionKey(requestId)],
+          async () => {
+            const request = await requestRepository.findOneOrFail({
+              where: { id: requestId },
+              relations: { requestedBy: true, modifiedBy: true },
+            });
+
+            if (
+              !actor.hasPermission(Permission.MANAGE_REQUESTS) &&
+              (request.requestedBy.id !== actor.id ||
+                !hasMediaRequestPermission(actor, request.type, request.is4k))
+            ) {
+              return next({
+                status: 403,
+                message: 'You do not have permission to retry this request.',
+              });
+            }
+
+            const currentStatus = await recordRequestStatus(request.id);
+            if (
+              !currentStatus ||
+              !currentStatus.retryable ||
+              (currentStatus.stage !== RequestStatusStage.FAILED &&
+                currentStatus.stage !== RequestStatusStage.UNAVAILABLE)
+            ) {
+              return next({
+                status: 409,
+                message: 'Only failed or unavailable requests can be retried.',
+              });
+            }
+
+            // this also triggers updating the parent media's status & sending to *arr
+            validateExternalServiceConfiguration(
+              request.type,
+              request.serverId,
+              request.bookFormat,
+              request.is4k
+            );
+
+            if (request.status === MediaRequestStatus.FAILED) {
+              request.status = MediaRequestStatus.APPROVED;
+            } else {
+              // An unavailable request is already APPROVED in the legacy
+              // request model. Refresh its event before re-enqueueing so the
+              // previous terminal observation cannot mask this attempt.
+              await recordRequestStatus(request.id, {
+                resetTerminalOverride: true,
+              });
+              await requestDispatchManager.enqueue(request.id);
+            }
+            request.modifiedBy = actor;
+            await requestRepository.save(request);
+
+            return res
+              .status(200)
+              .json(filterEntityResponse(request, req.user));
+          }
+        ),
+      {
+        expectedCredentialVersion: getExpectedCredentialVersion(req),
+      }
+    );
+  } catch (e) {
+    if (e instanceof UserMutationActorUnauthorizedError) {
+      return next({
+        status: 403,
+        message: 'You do not have permission to retry this request.',
+      });
+    }
+    if (e instanceof ServiceConfigurationError) {
+      return next({ status: 400, message: e.message });
+    }
+
+    logger.error('Error processing request retry', {
+      label: 'Media Request',
+      message: e.message,
+    });
+    next({ status: 404, message: 'Request not found.' });
   }
-);
+});
 
 requestRoutes.post<{
   requestId: string;

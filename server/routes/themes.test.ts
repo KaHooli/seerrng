@@ -5,8 +5,11 @@ import { after, before, describe, it } from 'node:test';
 
 import { THEMES_DIRECTORY, themeManager } from '@server/lib/themes';
 import express from 'express';
+import * as OpenApiValidator from 'express-openapi-validator';
 import request from 'supertest';
 import themesRoutes from './themes';
+
+const API_SPEC_PATH = path.join(__dirname, '../../seerr-api.yml');
 
 const themeDirectory = path.join(THEMES_DIRECTORY, 'route-test-theme');
 const scale = Array.from(
@@ -25,6 +28,34 @@ const createApp = () => {
     next();
   });
   app.use('/themes', themesRoutes);
+  return app;
+};
+
+// server/index.ts validates every API request against seerr-api.yml before the
+// router sees it, and rejects an undeclared query parameter with a 400. Mounting
+// the router on its own hides that layer, so the asset URLs the server generates
+// have to be exercised through it.
+const createValidatedApp = () => {
+  const app = express();
+  app.use(express.json());
+  app.use(
+    OpenApiValidator.middleware({
+      apiSpec: API_SPEC_PATH,
+      validateRequests: true,
+    })
+  );
+  app.use('/api/v1/themes', themesRoutes);
+  app.use(
+    (
+      error: { status?: number; message?: string },
+      _req: express.Request,
+      res: express.Response,
+      // Express identifies an error handler by its arity, so the unused fourth
+      // parameter is load-bearing.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      _next: express.NextFunction
+    ) => res.status(error.status ?? 500).json({ message: error.message })
+  );
   return app;
 };
 
@@ -74,5 +105,33 @@ describe('theme asset route', () => {
     await request(createApp())
       .get('/themes/route-test-theme/assets/notAnAsset')
       .expect(404);
+  });
+
+  it('serves the asset URL the theme list advertises', async () => {
+    // Driven from the generated URL rather than a hand-written one: the version
+    // cache-buster is part of the contract between the list response and the
+    // asset route, and a test that spells the path out by hand passes while
+    // every real request 400s on the undeclared query parameter.
+    const { themes } = await themeManager.ensureLoaded();
+    const assetUrl = themes.find((theme) => theme.id === 'route-test-theme')
+      ?.assetUrls.logoDark;
+
+    assert.ok(assetUrl, 'the theme list must advertise a logoDark URL');
+    assert.match(
+      assetUrl,
+      /\?v=/,
+      'the URL must carry a cache-busting version'
+    );
+
+    const response = await request(createValidatedApp()).get(assetUrl);
+
+    assert.equal(
+      response.status,
+      200,
+      `expected 200 for ${assetUrl}, got ${response.status} ${JSON.stringify(
+        response.body
+      )}`
+    );
+    assert.match(response.headers['content-type'], /image\/svg\+xml/);
   });
 });

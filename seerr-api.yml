@@ -3224,6 +3224,19 @@ paths:
               - faviconLight
               - backgroundDark
               - backgroundLight
+        # The asset URLs the server hands the client always carry the theme
+        # version, so a package update invalidates the hour-long cache entry
+        # instead of leaving a stale logo behind. Requests are validated against
+        # this document, and an undeclared query parameter is rejected outright,
+        # so omitting it here makes every asset request fail with a 400.
+        - in: query
+          name: v
+          required: false
+          description: >-
+            Theme version used to bust the asset cache when a package is
+            updated.
+          schema:
+            type: string
       responses:
         '200':
           description: Theme image asset

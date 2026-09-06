@@ -1,6 +1,8 @@
 import {
+  CHMOD_FAILURE_HINT,
   assertNoSymlinkDirectoryComponents,
   isTolerableChmodError,
+  shouldReportChmodFailure,
 } from '@server/lib/pathSecurity';
 import logger from '@server/logger';
 import fs from 'fs/promises';
@@ -36,9 +38,15 @@ const chmodHandleBestEffort = async (
     await handle.chmod(PRIVATE_SETTINGS_FILE_MODE);
   } catch (error) {
     if (!isTolerableChmodError(error)) throw error;
+    if (!shouldReportChmodFailure(filePath)) return;
     logger.warn(
       'Unable to set restrictive permissions on the settings file; continuing with its existing permissions.',
-      { label: 'Settings', filePath, errorMessage: (error as Error).message }
+      {
+        label: 'Settings',
+        filePath,
+        errorMessage: (error as Error).message,
+        hint: CHMOD_FAILURE_HINT,
+      }
     );
   }
 };
@@ -57,9 +65,15 @@ const enforcePrivateSettingsDirectory = async (
     await fs.chmod(directory, PRIVATE_SETTINGS_DIRECTORY_MODE);
   } catch (error) {
     if (!isTolerableChmodError(error)) throw error;
+    if (!shouldReportChmodFailure(directory)) return;
     logger.warn(
       'Unable to set restrictive permissions on the settings directory; continuing with its existing permissions.',
-      { label: 'Settings', directory, errorMessage: (error as Error).message }
+      {
+        label: 'Settings',
+        directory,
+        errorMessage: (error as Error).message,
+        hint: CHMOD_FAILURE_HINT,
+      }
     );
   }
 };

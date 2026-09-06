@@ -1,6 +1,8 @@
 import {
+  CHMOD_FAILURE_HINT,
   assertNoSymlinkDirectoryComponents,
   isTolerableChmodError,
+  shouldReportChmodFailure,
 } from '@server/lib/pathSecurity';
 import logger from '@server/logger';
 import AsyncLock from '@server/utils/asyncLock';
@@ -492,12 +494,18 @@ const chmodImageCacheDirectoryBestEffort = async (
     await promises.chmod(directory, PRIVATE_IMAGE_CACHE_DIRECTORY_MODE);
   } catch (error) {
     if (!isTolerableChmodError(error)) throw error;
+    // Every cached image hardens its own directory, so the report is keyed on
+    // the cache root rather than the per-image path: the failure is a property
+    // of the mount, and keying it per image would both repeat the warning for
+    // every image and grow the reported-path set without bound.
+    if (!shouldReportChmodFailure(baseCacheDirectory)) return;
     logger.warn(
       'Unable to set restrictive permissions on the image cache directory; continuing with its existing permissions.',
       {
         label: 'Image Proxy',
         directory,
         errorMessage: (error as Error).message,
+        hint: CHMOD_FAILURE_HINT,
       }
     );
   }

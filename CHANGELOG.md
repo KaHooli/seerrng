@@ -31,6 +31,109 @@ that are not called out here.
 
 # Changelog
 
+# Changelog
+
+# Changelog
+
+# Changelog
+
+# Changelog
+
+# Changelog
+
+## [3.15.0](https://github.com/snapetech/seerrng/compare/v3.14.0..v3.15.0) - 2026-09-06
+
+### User-facing changes
+
+#### Added
+
+- **Request Status:** Request Status now matches the full workflow view with per-user history, media-type and ebook/audiobook filters, and media-aware sorting across movies, series, music, and books.
+
+### 🚀 Features
+- *(requests)* Expand request status workflow view - ([53bd101](https://github.com/snapetech/seerrng/commit/53bd101c066411da6ba223439cc06cc0a8733777))
+
+## [3.14.0](https://github.com/snapetech/seerrng/compare/v3.13.3..v3.14.0) - 2026-09-06
+
+### User-facing changes
+
+#### Added
+
+- **Request Status:** A new Request Status page tracks requests from approval through download and library availability, preserves status history, and lets authorized users retry requests that need attention.
+  - **Action required:** upgrade
+
+#### Fixed
+
+- **Request Status:** Request Status detail responses now include the associated media and request metadata, so direct links and API clients have the same context as the status list.
+  - **Action required:** upgrade
+- **Request Status:** Book request status now names only the selected ebook or audiobook service, while mixed-format requests continue to show both services accurately.
+  - **Action required:** upgrade
+- **Request Status:** Request Status now keeps filtered results, TV season progress, mixed download queues, and status history aligned with the latest trustworthy media and download state. Request owners can also retry failed or unavailable requests when their media-request permission still applies.
+  - **Action required:** upgrade
+
+### 🚀 Features
+- *(requests)* Add request status timeline - ([5c83029](https://github.com/snapetech/seerrng/commit/5c8302904b7cee5f9928ef3c580a6e4adf9ec29d))
+
+### 🐛 Bug Fixes
+- *(requests)* Include media in status details - ([fee86fa](https://github.com/snapetech/seerrng/commit/fee86fa56db2dd36185f9b936d03008f8fb4a84c))
+- *(requests)* Scope book status services to format - ([0788f98](https://github.com/snapetech/seerrng/commit/0788f984c61e37c7f4d57398b56c5a502a84d657))
+- *(requests)* Reconcile status projections with live state - ([7d0ed62](https://github.com/snapetech/seerrng/commit/7d0ed62a0405f54195b3e8317e9c1d5bb3c9c91d))
+
+## [3.13.3](https://github.com/snapetech/seerrng/compare/v3.13.2..v3.13.3) - 2026-09-05
+
+### User-facing changes
+
+#### Fixed
+
+- **Packaging:** The binary AUR package now builds faster and ships runtime files readable by its dedicated service account, allowing the systemd service to start normally.
+  - **Action required:** upgrade
+
+### 🐛 Bug Fixes
+- *(aur)* Make the binary package runnable - ([b003341](https://github.com/snapetech/seerrng/commit/b00334135ce2be5559ed258736fb3e8fc21c6095))
+- *(release)* Publish Linux assets with service-readable modes - ([89cf235](https://github.com/snapetech/seerrng/commit/89cf235dd57bf0ad6909cb15a03c5badafce19c3))
+
+### 📖 Documentation
+- *(release)* Note Linux package permission fix - ([7e7d066](https://github.com/snapetech/seerrng/commit/7e7d066ad1e16e63b1dc88272c4db93fcc913cfc))
+
+### 🧪 Testing
+- *(cypress)* Reset network settings after specs - ([025bc95](https://github.com/snapetech/seerrng/commit/025bc952e1f2a2c735dd8d84ba3e1e6727c98f48))
+
+## [3.13.2](https://github.com/snapetech/seerrng/compare/v3.13.1..v3.13.2) - 2026-09-04
+
+### User-facing changes
+
+#### Fixed
+
+- **Deployment:** Main deployments now start cleanly when the target config directory is empty, allowing SeerrNG to create its initial settings before later upgrades export external configuration.
+- **Release Pipeline:** The `:main` container image on GHCR is now published as a real multi-arch (amd64 + arm64) manifest, fixing "exec format error" crashes on arm64 hosts.
+- **Playlist Requests:** Connecting Spotify and importing Spotify or YouTube playlists no longer fails with a "not found" error — every playlist-import endpoint was missing from the API contract and is now reachable.
+
+#### Security
+
+- **Authentication:** **Breaking:** Session cookies now require HTTPS, and the runtime and documentation dependencies have been updated to address current security advisories.
+  - **Action required:** Serve SeerrNG through HTTPS before upgrading.
+
+### 🐛 Bug Fixes
+- *(ci)* Allow first-start deployments - ([674ffa4](https://github.com/snapetech/seerrng/commit/674ffa449dc82f72c881c1c8d6a2442219f3078f))
+- *(ci)* Publish real multi-arch amd64+arm64 images for :main - ([45c0d84](https://github.com/snapetech/seerrng/commit/45c0d841032fdb23d675ad867a42817e7bcc1473))
+- *(security)* Make secure session cookies explicit - ([126289f](https://github.com/snapetech/seerrng/commit/126289f187cc20b448508de0d92907766b0ed87d))
+- *(security)* Require HTTPS sessions and update advisories - ([b675c55](https://github.com/snapetech/seerrng/commit/b675c559e75921b4b2a9321d602c8e39d25d1c1c))
+- *(server)* Declare playlist/Spotify routes in the OpenAPI spec - ([fe889bb](https://github.com/snapetech/seerrng/commit/fe889bbc691ef87de3bf1bb423c7cc0dcfbf1659))
+
+
+## New Contributors ❤️
+* @TrojanHorsePower made their first contribution
+
+## [3.13.1](https://github.com/snapetech/seerrng/compare/v3.13.0..v3.13.1) - 2026-09-03
+
+### User-facing changes
+
+#### Fixed
+
+- **Authentication:** Jellyfin and Emby setup now preserve custom server ports, allowing first-run connections to non-default ports to complete.
+
+### 🐛 Bug Fixes
+- *(setup)* Serialize Jellyfin port as a number - ([91b1c56](https://github.com/snapetech/seerrng/commit/91b1c56f8fb839f84e0d90adaea23b57569c8e57))
+
 ## [3.13.0](https://github.com/snapetech/seerrng/compare/v3.12.9..v3.13.0) - 2026-09-01
 
 ### User-facing changes

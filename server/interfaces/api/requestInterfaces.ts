@@ -1,5 +1,13 @@
 import type { MediaType } from '@server/constants/media';
 import type { MediaRequest } from '@server/entity/MediaRequest';
+import type {
+  RequestStatusHistoryItem,
+  RequestStatusSnapshot,
+} from '@server/lib/requestStatus';
+import type {
+  RequestStatusSortDirection,
+  RequestStatusSortField,
+} from '@server/lib/requestStatusSort';
 import type { NonFunctionProperties, PaginatedResponse } from './common';
 
 export interface RequestResultsResponse extends PaginatedResponse {
@@ -70,3 +78,42 @@ export type BulkMediaRequestResponse = {
   skipped: BulkMediaRequestResult[];
   failed: BulkMediaRequestResult[];
 };
+
+export interface RequestStatusResultsResponse extends PaginatedResponse {
+  results: {
+    request: NonFunctionProperties<MediaRequest>;
+    status: RequestStatusSnapshot;
+  }[];
+  counts: {
+    total: number;
+    active: number;
+    attention: number;
+    completed: number;
+  };
+}
+
+export interface RequestStatusUsersResponse extends PaginatedResponse {
+  results: {
+    id: number;
+    displayName: string;
+    avatar: string;
+  }[];
+}
+
+export type RequestStatusQuery = {
+  requestedBy?: number;
+  mediaType?: MediaType | 'all';
+  bookFormat?: 'ebook' | 'audiobook';
+  filter?: string;
+  sort?: RequestStatusSortField;
+  sortDirection?: RequestStatusSortDirection;
+};
+
+export interface RequestStatusDetailResponse {
+  request: NonFunctionProperties<MediaRequest>;
+  current: RequestStatusSnapshot;
+  history: {
+    results: RequestStatusHistoryItem[];
+    total: number;
+  };
+}

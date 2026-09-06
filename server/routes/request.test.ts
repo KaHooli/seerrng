@@ -23,6 +23,7 @@ import {
   MAX_BOOK_REQUEST_IDENTIFIER_CANDIDATES,
   MediaRequest,
 } from '@server/entity/MediaRequest';
+import MediaRequestStatusEvent from '@server/entity/MediaRequestStatusEvent';
 import OverrideRule from '@server/entity/OverrideRule';
 import Season from '@server/entity/Season';
 import SeasonRequest from '@server/entity/SeasonRequest';
@@ -30,6 +31,10 @@ import { User } from '@server/entity/User';
 import { Permission } from '@server/lib/permissions';
 import requestAdmissionCoordinator from '@server/lib/requestAdmission';
 import requestDispatchManager from '@server/lib/requestDispatch';
+import {
+  RequestStatusStage,
+  recordRequestStatusOverride,
+} from '@server/lib/requestStatus';
 import { getSettings } from '@server/lib/settings';
 import { runUserSecurityMutation } from '@server/lib/userSecurityMutation';
 import { checkUser } from '@server/middleware/auth';
@@ -392,6 +397,249 @@ describe('GET /request/count', () => {
   });
 });
 
+describe('GET /request/status', () => {
+  it('returns the owner-scoped lifecycle and durable history', async () => {
+    const mediaRequest = await seedRequest();
+    const agent = await loginAs('friend@seerr.dev', 'test1234');
+
+    const listResponse = await agent
+      .get('/request/status')
+      .query({ filter: 'requested' });
+
+    assert.strictEqual(listResponse.status, 200);
+    assert.strictEqual(listResponse.body.pageInfo.results, 1);
+    assert.strictEqual(listResponse.body.results.length, 1);
+    assert.strictEqual(listResponse.body.results[0].status.stage, 'requested');
+    assert.strictEqual(listResponse.body.counts.total, 1);
+    assert.strictEqual(listResponse.body.counts.active, 1);
+
+    const detailResponse = await agent.get(
+      `/request/status/${mediaRequest.id}`
+    );
+
+    assert.strictEqual(detailResponse.status, 200);
+    assert.strictEqual(
+      detailResponse.body.request.media.id,
+      mediaRequest.media.id
+    );
+    assert.strictEqual(detailResponse.body.current.stage, 'requested');
+    assert.ok(detailResponse.body.history.total >= 1);
+    assert.strictEqual(
+      detailResponse.body.history.results[0].stage,
+      'requested'
+    );
+  });
+
+  it('does not leak another user’s status history to an ordinary viewer', async () => {
+    await seedRequest();
+    const admin = await getRepository(User).findOneOrFail({
+      where: { email: 'admin@seerr.dev' },
+    });
+    const adminMedia = await getRepository(Media).save(
+      new Media({
+        mediaType: MediaType.MOVIE,
+        tmdbId: 12346,
+        status: MediaStatus.UNKNOWN,
+        status4k: MediaStatus.UNKNOWN,
+      })
+    );
+    const adminRequest = await getRepository(MediaRequest).save(
+      new MediaRequest({
+        type: MediaType.MOVIE,
+        status: MediaRequestStatus.PENDING,
+        media: adminMedia,
+        requestedBy: admin,
+        is4k: false,
+      })
+    );
+
+    const agent = await loginAs('friend@seerr.dev', 'test1234');
+    const listResponse = await agent.get('/request/status');
+    const forbiddenResponse = await agent.get(
+      `/request/status/${adminRequest.id}`
+    );
+
+    assert.strictEqual(listResponse.status, 200);
+    assert.strictEqual(listResponse.body.pageInfo.results, 1);
+    assert.strictEqual(listResponse.body.counts.total, 1);
+    assert.strictEqual(forbiddenResponse.status, 403);
+  });
+
+  it('applies live lifecycle filtering instead of trusting a stale event stage', async () => {
+    const mediaRequest = await seedRequest();
+    await getRepository(Media).update(mediaRequest.media.id, {
+      status: MediaStatus.AVAILABLE,
+    });
+
+    const agent = await loginAs('friend@seerr.dev', 'test1234');
+    const response = await agent
+      .get('/request/status')
+      .query({ filter: 'available' });
+
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(response.body.pageInfo.results, 1);
+    assert.strictEqual(response.body.results[0].status.stage, 'available');
+  });
+
+  it('evaluates selected TV seasons from the status page query', async () => {
+    const requestedBy = await getRepository(User).findOneByOrFail({ id: 2 });
+    const media = await getRepository(Media).save(
+      new Media({
+        mediaType: MediaType.TV,
+        tmdbId: 12347,
+        status: MediaStatus.PARTIALLY_AVAILABLE,
+        status4k: MediaStatus.UNKNOWN,
+        serviceId: 10,
+        externalServiceId: 20,
+        seasons: [
+          new Season({
+            seasonNumber: 1,
+            status: MediaStatus.AVAILABLE,
+            status4k: MediaStatus.UNKNOWN,
+          }),
+          new Season({
+            seasonNumber: 2,
+            status: MediaStatus.PROCESSING,
+            status4k: MediaStatus.UNKNOWN,
+          }),
+        ],
+      })
+    );
+    const mediaRequest = await getRepository(MediaRequest).save(
+      new MediaRequest({
+        type: MediaType.TV,
+        status: MediaRequestStatus.APPROVED,
+        media,
+        requestedBy,
+        is4k: false,
+        seasons: [
+          new SeasonRequest({
+            seasonNumber: 1,
+            status: MediaRequestStatus.APPROVED,
+          }),
+        ],
+      })
+    );
+
+    const agent = await loginAs('friend@seerr.dev', 'test1234');
+    const response = await agent
+      .get('/request/status')
+      .query({ filter: 'available' });
+
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(response.body.pageInfo.results, 1);
+    assert.strictEqual(response.body.results[0].request.id, mediaRequest.id);
+    assert.strictEqual(response.body.results[0].status.stage, 'available');
+  });
+
+  it('separates ebook and audiobook status filters while including both-format requests', async () => {
+    const requestedBy = await getRepository(User).findOneByOrFail({ id: 2 });
+    const mediaRepository = getRepository(Media);
+    const requestRepository = getRepository(MediaRequest);
+    const [ebookMedia, audiobookMedia, bothMedia] = await mediaRepository.save([
+      new Media({
+        mediaType: MediaType.BOOK,
+        tmdbId: 0,
+        status: MediaStatus.UNKNOWN,
+        status4k: MediaStatus.UNKNOWN,
+      }),
+      new Media({
+        mediaType: MediaType.BOOK,
+        tmdbId: 0,
+        status: MediaStatus.UNKNOWN,
+        status4k: MediaStatus.UNKNOWN,
+      }),
+      new Media({
+        mediaType: MediaType.BOOK,
+        tmdbId: 0,
+        status: MediaStatus.UNKNOWN,
+        status4k: MediaStatus.UNKNOWN,
+      }),
+    ]);
+    await requestRepository.save([
+      new MediaRequest({
+        type: MediaType.BOOK,
+        status: MediaRequestStatus.PENDING,
+        media: ebookMedia,
+        requestedBy,
+        is4k: false,
+        bookFormat: 'ebook',
+      }),
+      new MediaRequest({
+        type: MediaType.BOOK,
+        status: MediaRequestStatus.PENDING,
+        media: audiobookMedia,
+        requestedBy,
+        is4k: false,
+        bookFormat: 'audiobook',
+      }),
+      new MediaRequest({
+        type: MediaType.BOOK,
+        status: MediaRequestStatus.PENDING,
+        media: bothMedia,
+        requestedBy,
+        is4k: false,
+        bookFormat: 'both',
+      }),
+    ]);
+
+    const agent = await loginAs('friend@seerr.dev', 'test1234');
+    const ebookResponse = await agent
+      .get('/request/status')
+      .query({ mediaType: 'book', bookFormat: 'ebook' });
+    const audiobookResponse = await agent
+      .get('/request/status')
+      .query({ mediaType: 'book', bookFormat: 'audiobook' });
+
+    assert.strictEqual(ebookResponse.status, 200);
+    assert.strictEqual(audiobookResponse.status, 200);
+    assert.strictEqual(ebookResponse.body.pageInfo.results, 2);
+    assert.strictEqual(audiobookResponse.body.pageInfo.results, 2);
+    assert.deepStrictEqual(
+      ebookResponse.body.results
+        .map((result: { request: { id: number } }) => result.request.id)
+        .sort((left: number, right: number) => left - right),
+      [
+        (
+          await requestRepository.findOneByOrFail({
+            media: { id: ebookMedia.id },
+          })
+        ).id,
+        (
+          await requestRepository.findOneByOrFail({
+            media: { id: bothMedia.id },
+          })
+        ).id,
+      ].sort((left, right) => left - right)
+    );
+    assert.strictEqual(ebookResponse.body.counts.total, 2);
+    assert.strictEqual(audiobookResponse.body.counts.total, 2);
+  });
+
+  it('returns only safe user identities to status viewers', async () => {
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+
+    const response = await agent.get('/request/status/users');
+
+    assert.strictEqual(response.status, 200);
+    assert.ok(response.body.results.length >= 2);
+    assert.ok(
+      response.body.results.every(
+        (user: Record<string, unknown>) =>
+          typeof user.id === 'number' &&
+          typeof user.displayName === 'string' &&
+          typeof user.avatar === 'string' &&
+          user.email === undefined &&
+          user.permissions === undefined
+      )
+    );
+
+    const ordinaryUser = await loginAs('friend@seerr.dev', 'test1234');
+    const forbiddenResponse = await ordinaryUser.get('/request/status/users');
+    assert.strictEqual(forbiddenResponse.status, 403);
+  });
+});
+
 describe('DELETE /request/:requestId', () => {
   it('allows the owner to delete their own pending request', async () => {
     const mediaRequest = await seedRequest();
@@ -400,6 +648,11 @@ describe('DELETE /request/:requestId', () => {
     const res = await agent.delete(`/request/${mediaRequest.id}`);
 
     assert.strictEqual(res.status, 204);
+    const events = await getRepository(MediaRequestStatusEvent).find({
+      where: { requestId: mediaRequest.id },
+      order: { id: 'ASC' },
+    });
+    assert.strictEqual(events.at(-1)?.stage, 'cancelled');
   });
 
   it('allows an admin to delete any pending request', async () => {
@@ -4059,6 +4312,35 @@ describe('POST /request/:requestId/:status', () => {
 });
 
 describe('POST /request/:requestId/retry', () => {
+  it('allows the request owner to retry a failed request', async () => {
+    const failed = await seedRequest(MediaRequestStatus.FAILED);
+    const owner = await loginAs('friend@seerr.dev', 'test1234');
+
+    const res = await owner.post(`/request/${failed.id}/retry`);
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.status, MediaRequestStatus.APPROVED);
+    assert.strictEqual(res.body.modifiedBy.id, 2);
+  });
+
+  it('requeues an unavailable approved request for another search', async () => {
+    const pending = await seedRequest(MediaRequestStatus.APPROVED);
+    await recordRequestStatusOverride(
+      pending.id,
+      RequestStatusStage.UNAVAILABLE,
+      'No usable release is currently available.'
+    );
+    const owner = await loginAs('friend@seerr.dev', 'test1234');
+
+    const res = await owner.post(`/request/${pending.id}/retry`);
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.status, MediaRequestStatus.APPROVED);
+    const statusResponse = await owner.get(`/request/status/${pending.id}`);
+    assert.strictEqual(statusResponse.status, 200);
+    assert.strictEqual(statusResponse.body.current.stage, 'searching');
+  });
+
   it('re-approves a failed request and records the acting user', async () => {
     const repo = getRepository(MediaRequest);
     const failed = await seedRequest(MediaRequestStatus.FAILED);
@@ -4079,6 +4361,10 @@ describe('POST /request/:requestId/retry', () => {
     assert.strictEqual(persisted.status, MediaRequestStatus.APPROVED);
     assert.strictEqual(persisted.modifiedBy?.email, 'admin@seerr.dev');
     assert.ok(persisted.updatedAt > failed.updatedAt);
+
+    const statusResponse = await admin.get(`/request/status/${failed.id}`);
+    assert.strictEqual(statusResponse.status, 200);
+    assert.notStrictEqual(statusResponse.body.current.stage, 'failed');
   });
 
   it('allows only one concurrent retry of a failed request', async () => {

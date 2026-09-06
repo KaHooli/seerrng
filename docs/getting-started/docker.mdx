@@ -28,6 +28,18 @@ All official Seerr images are cryptographically signed and include a verified [S
 To confirm that the container image you are using is authentic and unmodified, please refer to the [Verifying Signed Artifacts](/using-seerr/advanced/verifying-signed-artifacts#verifying-signed-images) guide.
 :::
 
+:::note
+Images built by a fork
+
+A fork of this repository publishes its own image to that repository's GitHub Packages registry on every update to `main`, tagged `latest`, the branch name, and the commit SHA:
+
+```bash
+docker pull ghcr.io/<owner>/<repo>:main
+```
+
+These builds are `linux/amd64` only. Unlike the official images above they are neither signed nor accompanied by an SBOM, so the verification guide does not apply to them. Prefer an official image unless you specifically want the fork's changes.
+:::
+
 ## Unix (Linux, macOS)
 :::warning
 Be sure to replace `/path/to/appdata/config` in the below examples with a valid host directory path. If this volume mount is not configured correctly, your Seerr settings/data will not be persisted when the container is recreated (e.g., when updating the image or rebooting your machine).

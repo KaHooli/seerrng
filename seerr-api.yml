@@ -468,6 +468,8 @@ components:
         trustProxy:
           type: boolean
           example: false
+        tls:
+          $ref: '#/components/schemas/TlsSettings'
         proxy:
           type: object
           properties:
@@ -507,6 +509,39 @@ components:
             forceMaxTtl:
               type: number
               example: -1
+    TlsSettings:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [disabled, self-signed, provided]
+          example: disabled
+        httpsPort:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          example: 5056
+        hosts:
+          type: string
+          example: localhost,127.0.0.1,::1
+        certificateFile:
+          type: string
+          example: ''
+        keyFile:
+          type: string
+          example: ''
+        caFile:
+          type: string
+          example: ''
+        redirectHttpToHttps:
+          type: boolean
+          example: false
+        allowHttpAuth:
+          type: boolean
+          example: false
+        httpAuthAcknowledged:
+          type: boolean
+          example: false
     PlexLibrary:
       type: object
       properties:
@@ -1911,10 +1946,14 @@ components:
             - active
             - attention
             - completed
+        olderCount:
+          type: integer
+          description: Number of requests in the same scope that predate the selected rolling time window.
       required:
         - pageInfo
         - results
         - counts
+        - olderCount
     RequestStatusDetail:
       type: object
       properties:
@@ -3360,6 +3399,123 @@ paths:
           description: Application is ready to receive traffic
         '503':
           description: Application database is unavailable
+  /status/tls:
+    get:
+      summary: Get active browser transport configuration
+      description: Returns the configured HTTP/TLS mode, listener ports, allowed TLS hosts, and certificate fingerprint. This endpoint is public so the first-run UI can explain how browser authentication must be performed.
+      security: []
+      tags:
+        - public
+      responses:
+        '200':
+          description: Active transport configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - mode
+                  - httpPort
+                  - httpsPort
+                  - httpAuthAllowed
+                  - redirectsHttpToHttps
+                  - hosts
+                  - caDownloadAvailable
+                  - configuredMode
+                  - configuredHttpsPort
+                  - configuredHttpAuthAllowed
+                  - configuredRedirectsHttpToHttps
+                  - environmentOverrides
+                  - pendingRestart
+                  - setupRequired
+                properties:
+                  mode:
+                    type: string
+                    enum: [disabled, self-signed, provided]
+                  httpPort:
+                    type: integer
+                  httpsPort:
+                    type: integer
+                    nullable: true
+                  httpAuthAllowed:
+                    type: boolean
+                  redirectsHttpToHttps:
+                    type: boolean
+                  hosts:
+                    type: array
+                    items:
+                      type: string
+                  fingerprint:
+                    type: string
+                  caDownloadAvailable:
+                    type: boolean
+                  configuredMode:
+                    type: string
+                    enum: [disabled, self-signed, provided]
+                  configuredHttpsPort:
+                    type: integer
+                    nullable: true
+                  configuredHttpAuthAllowed:
+                    type: boolean
+                  configuredRedirectsHttpToHttps:
+                    type: boolean
+                  environmentOverrides:
+                    type: array
+                    items:
+                      type: string
+                  pendingRestart:
+                    type: boolean
+                  setupRequired:
+                    type: boolean
+  /status/tls/bootstrap:
+    post:
+      summary: Configure transport security before first-user setup
+      description: Saves the initial TLS or explicit HTTP-auth choice. This endpoint is available during incomplete first-run setup, or to an authenticated administrator before setup is finalized, and always requires a server restart before the selected listener configuration becomes active.
+      security: []
+      tags:
+        - public
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TlsSettings'
+      responses:
+        '200':
+          description: Transport configuration saved; restart is required
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - mode
+                  - pendingRestart
+                properties:
+                  mode:
+                    type: string
+                    enum: [disabled, self-signed, provided]
+                  pendingRestart:
+                    type: boolean
+        '400':
+          description: Invalid transport configuration
+        '403':
+          description: Bootstrap configuration is no longer available to this caller
+  /status/tls/ca:
+    get:
+      summary: Download the generated local CA certificate
+      description: Returns the public CA certificate for self-signed built-in TLS. The private CA and server keys are never exposed.
+      security: []
+      tags:
+        - public
+      responses:
+        '200':
+          description: PEM-encoded local CA certificate
+          content:
+            application/x-pem-file:
+              schema:
+                type: string
+        '404':
+          description: Built-in self-signed TLS is not active
   /status/appdata:
     get:
       summary: Get application data volume status
@@ -3555,7 +3711,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MainSettings'
+                $ref: '#/components/schemas/NetworkSettings'
     post:
       summary: Update network settings
       description: Updates network settings with the provided values.
@@ -6231,6 +6387,8 @@ paths:
             enum:
               - movie
               - tv
+              - music
+              - book
       responses:
         '200':
           description: Blocklist details in JSON
@@ -6254,6 +6412,8 @@ paths:
             enum:
               - movie
               - tv
+              - music
+              - book
       responses:
         '204':
           description: Succesfully removed media item
@@ -6364,6 +6524,8 @@ paths:
             enum:
               - movie
               - tv
+              - music
+              - book
       responses:
         '200':
           description: Blocklist details in JSON
@@ -6390,6 +6552,8 @@ paths:
             enum:
               - movie
               - tv
+              - music
+              - book
       responses:
         '204':
           description: Succesfully removed media item
@@ -7008,7 +7172,16 @@ paths:
               - album
               - artist
               - book
+              - music
             description: Filter results by media type. When omitted, all types are returned.
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum:
+              - ebook
+              - audiobook
+            description: Select the configured book service format. Valid only when type is book.
       responses:
         '200':
           description: Results
@@ -9035,6 +9208,13 @@ paths:
           schema:
             type: string
             enum: [ebook, audiobook]
+        - in: query
+          name: timeFrame
+          description: Restrict results to requests created in the selected rolling time window. Defaults to the last 7 days; use all for complete history.
+          schema:
+            type: string
+            enum: [7d, 14d, 30d, 1m, 6m, all]
+            default: 7d
         - in: query
           name: sort
           description: Sort field. Metadata-backed fields are resolved from the configured metadata provider and fall back safely when unavailable.

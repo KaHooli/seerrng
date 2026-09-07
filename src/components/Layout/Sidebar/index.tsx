@@ -252,7 +252,7 @@ const Sidebar = ({
                             href={sidebarLink.href}
                             as={sidebarLink.as}
                             prefetch={false}
-                            onClick={() => setClosed()}
+                            onClick={setClosed}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') {
                                 setClosed();

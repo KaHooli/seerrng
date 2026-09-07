@@ -1,12 +1,17 @@
 import Spinner from '@app/assets/spinner.svg';
 import AssociationBadge from '@app/components/Association/AssociationBadge';
+import BookFormatBadge, {
+  getBookFormatMessage,
+} from '@app/components/Common/BookFormatBadge';
 import Button from '@app/components/Common/Button';
 import CachedImage from '@app/components/Common/CachedImage';
+import MediaTypeBadge from '@app/components/Common/MediaTypeBadge';
 import StatusBadgeMini from '@app/components/Common/StatusBadgeMini';
 import Tooltip from '@app/components/Common/Tooltip';
 import ErrorCard from '@app/components/TitleCard/ErrorCard';
 import Placeholder from '@app/components/TitleCard/Placeholder';
 import { useIsTouch } from '@app/hooks/useIsTouch';
+import useSettings from '@app/hooks/useSettings';
 import useToasts from '@app/hooks/useToasts';
 import { Permission, UserType, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
@@ -56,8 +61,10 @@ interface TitleCardProps {
   userScore?: number;
   mediaType: MediaType;
   status?: MediaStatus;
+  status4k?: MediaStatus;
   canExpand?: boolean;
   inProgress?: boolean;
+  inProgress4k?: boolean;
   canRequestAdditionalFormat?: boolean;
   isAddedToWatchlist?: number | boolean;
   needsCoverArt?: boolean;
@@ -65,6 +72,7 @@ interface TitleCardProps {
   showText?: boolean;
   hideAssociationWhenEmpty?: boolean;
   priority?: boolean;
+  preferredBookFormat?: 'ebook' | 'audiobook';
 }
 
 const messages = defineMessages('components.TitleCard', {
@@ -75,6 +83,7 @@ const messages = defineMessages('components.TitleCard', {
     '<strong>{title}</strong> Removed from watchlist  successfully!',
   watchlistCancel: 'watchlist for <strong>{title}</strong> canceled.',
   watchlistError: 'Something went wrong. Please try again.',
+  requestBookFormat: 'Request {format}',
 });
 
 const TitleCard = ({
@@ -85,21 +94,26 @@ const TitleCard = ({
   title,
   artist,
   status,
+  status4k,
   mediaType,
   isAddedToWatchlist = false,
   inProgress = false,
+  inProgress4k = false,
   canRequestAdditionalFormat = false,
   canExpand = false,
   mutateParent,
   showText = false,
   hideAssociationWhenEmpty = false,
   priority = false,
+  preferredBookFormat,
 }: TitleCardProps) => {
   const isTouch = useIsTouch();
   const intl = useIntl();
+  const settings = useSettings();
   const { user, hasPermission } = useUser();
   const [isUpdating, setIsUpdating] = useState(false);
   const [currentStatus, setCurrentStatus] = useState(status);
+  const [currentStatus4k, setCurrentStatus4k] = useState(status4k);
   const [showDetail, setShowDetail] = useState(false);
   const [showRequestModal, setShowRequestModal] = useState(false);
   const { addToast } = useToasts();
@@ -117,10 +131,22 @@ const TitleCard = ({
     setCurrentStatus(status);
   }, [status]);
 
-  const requestComplete = useCallback((newStatus: MediaStatus) => {
-    setCurrentStatus(newStatus);
-    setShowRequestModal(false);
-  }, []);
+  useEffect(() => {
+    setCurrentStatus4k(status4k);
+  }, [status4k]);
+
+  const requestComplete = useCallback(
+    (newStatus: MediaStatus, is4k = false) => {
+      if (is4k) {
+        setCurrentStatus4k(newStatus);
+      } else {
+        setCurrentStatus(newStatus);
+      }
+      mutateParent?.();
+      setShowRequestModal(false);
+    },
+    [mutateParent]
+  );
 
   const requestUpdating = useCallback(
     (status: boolean) => setIsUpdating(status),
@@ -392,7 +418,12 @@ const TitleCard = ({
           : mediaType === 'album'
             ? `/music/${encodeApiPathSegment(canonicalId)}`
             : mediaType === 'book'
-              ? `/book/${encodeApiPathSegment(canonicalId)}`
+              ? {
+                  pathname: `/book/${encodeApiPathSegment(canonicalId)}`,
+                  query: preferredBookFormat
+                    ? { format: preferredBookFormat }
+                    : undefined,
+                }
               : `/artist/${encodeApiPathSegment(canonicalId)}`;
   const displayImage = getTmdbPosterImageUrl(image, 'w300_and_h450_face');
   const imageCacheType =
@@ -429,14 +460,45 @@ const TitleCard = ({
       type: 'or',
     }) &&
     (canUseVideoActions || isAlbum || isBook);
+  const canRequest4k =
+    ((mediaType === 'movie' && settings.currentSettings.movie4kEnabled) ||
+      (mediaType === 'tv' && settings.currentSettings.series4kEnabled)) &&
+    hasPermission(
+      [
+        Permission.REQUEST_4K,
+        mediaType === 'movie'
+          ? Permission.REQUEST_4K_MOVIE
+          : Permission.REQUEST_4K_TV,
+      ],
+      { type: 'or' }
+    ) &&
+    (!currentStatus4k ||
+      currentStatus4k === MediaStatus.UNKNOWN ||
+      currentStatus4k === MediaStatus.DELETED);
   const canShowRequestButton =
     showRequestButton &&
     (!currentStatus ||
       currentStatus === MediaStatus.UNKNOWN ||
       currentStatus === MediaStatus.DELETED ||
-      canRequestAdditionalFormat);
+      canRequestAdditionalFormat ||
+      canRequest4k);
+  const requestingAdditional4k =
+    canRequest4k &&
+    !!currentStatus &&
+    currentStatus !== MediaStatus.UNKNOWN &&
+    currentStatus !== MediaStatus.DELETED;
   const showTextOverlay = showText || !image || showDetail || showRequestModal;
   const showFullDetailOverlay = !image || showDetail || showRequestModal;
+  const requestLabel =
+    isBook && preferredBookFormat
+      ? intl.formatMessage(messages.requestBookFormat, {
+          format: intl.formatMessage(getBookFormatMessage(preferredBookFormat)),
+        })
+      : intl.formatMessage(
+          requestingAdditional4k
+            ? globalMessages.request4k
+            : globalMessages.request
+        );
 
   return (
     <div
@@ -458,6 +520,7 @@ const TitleCard = ({
           onComplete={requestComplete}
           onUpdating={requestUpdating}
           onCancel={closeModal}
+          initialIs4k={requestingAdditional4k}
           show4kSelector={mediaType === 'movie' || mediaType === 'tv'}
         />
       )}
@@ -492,6 +555,7 @@ const TitleCard = ({
           {isBook && typeof canonicalId === 'string' && (
             <RequestModal
               bookId={canonicalId}
+              initialBookFormat={preferredBookFormat}
               show={showRequestModal}
               type="book"
               onComplete={requestComplete}
@@ -537,31 +601,19 @@ const TitleCard = ({
           />
           <div className="absolute left-0 right-0 flex items-center justify-between p-2">
             <div className="flex items-center gap-1.5">
-              <div
-                className={`pointer-events-none z-40 self-start rounded-full border shadow-md ${
-                  mediaType === 'movie' || mediaType === 'collection'
-                    ? 'border-blue-500 bg-blue-600/80'
-                    : isAlbum
-                      ? 'border-emerald-500 bg-emerald-600/80'
-                      : isBook
-                        ? 'border-amber-500 bg-amber-600/80'
-                        : 'border-purple-600 bg-purple-600/80'
-                }`}
-              >
-                <div className="flex h-4 items-center px-2 py-2 text-center text-xs font-medium uppercase tracking-wider text-white sm:h-5">
-                  {mediaType === 'movie'
-                    ? intl.formatMessage(globalMessages.movie)
-                    : mediaType === 'collection'
-                      ? intl.formatMessage(globalMessages.collection)
-                      : mediaType === 'tv'
-                        ? intl.formatMessage(globalMessages.tvshow)
-                        : isAlbum
-                          ? intl.formatMessage(globalMessages.album)
-                          : isBook
-                            ? intl.formatMessage(globalMessages.book)
-                            : intl.formatMessage(globalMessages.artist)}
-                </div>
-              </div>
+              {isBook ? (
+                <BookFormatBadge
+                  format={preferredBookFormat}
+                  variant="card"
+                  className="pointer-events-none z-40 self-start"
+                />
+              ) : (
+                <MediaTypeBadge
+                  mediaType={mediaType === 'person' ? 'artist' : mediaType}
+                  variant="card"
+                  className="pointer-events-none z-40 self-start"
+                />
+              )}
               {currentStatus !== MediaStatus.BLOCKLISTED && (
                 <div className="z-40 flex items-center">
                   <AssociationBadge
@@ -633,15 +685,28 @@ const TitleCard = ({
                   </Button>
                 </Tooltip>
               )}
-            {currentStatus && currentStatus !== MediaStatus.UNKNOWN && (
-              <div className="flex flex-col items-center gap-1">
-                <div className="pointer-events-none z-40 flex">
-                  <StatusBadgeMini
-                    status={currentStatus}
-                    inProgress={inProgress}
-                    shrink
-                  />
-                </div>
+            {((currentStatus && currentStatus !== MediaStatus.UNKNOWN) ||
+              (currentStatus4k && currentStatus4k !== MediaStatus.UNKNOWN)) && (
+              <div className="flex flex-col items-end gap-1">
+                {currentStatus && currentStatus !== MediaStatus.UNKNOWN && (
+                  <div className="pointer-events-none z-40 flex">
+                    <StatusBadgeMini
+                      status={currentStatus}
+                      inProgress={inProgress}
+                      shrink
+                    />
+                  </div>
+                )}
+                {currentStatus4k && currentStatus4k !== MediaStatus.UNKNOWN && (
+                  <div className="pointer-events-none z-40 flex">
+                    <StatusBadgeMini
+                      status={currentStatus4k}
+                      is4k
+                      inProgress={inProgress4k}
+                      shrink
+                    />
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -739,7 +804,7 @@ const TitleCard = ({
                     className="h-7 w-full"
                   >
                     <ArrowDownTrayIcon />
-                    <span>{intl.formatMessage(globalMessages.request)}</span>
+                    <span>{requestLabel}</span>
                   </Button>
                 )}
               </div>

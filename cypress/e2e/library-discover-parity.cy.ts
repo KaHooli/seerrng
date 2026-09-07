@@ -100,10 +100,10 @@ describe('Books and Music discover parity', () => {
       results: [],
     });
 
-    cy.wrap(themePalettes).each((palette) => {
+    themePalettes.forEach((palette) => {
       cy.visit('/discover/movies', {
         onBeforeLoad(win) {
-          win.localStorage.setItem('seerr-theme-palette', palette as string);
+          win.localStorage.setItem('seerr-theme-palette', palette);
           win.localStorage.setItem('seerr-theme-mode', 'dark');
         },
       });
@@ -129,7 +129,7 @@ describe('Books and Music discover parity', () => {
 
         cy.visit('/discover/movies', {
           onBeforeLoad(win) {
-            win.localStorage.setItem('seerr-theme-palette', palette as string);
+            win.localStorage.setItem('seerr-theme-palette', palette);
             win.localStorage.setItem('seerr-theme-mode', 'light');
           },
         });
@@ -408,14 +408,31 @@ describe('Books and Music discover parity', () => {
       'be.visible'
     );
     cy.contains('button', 'Request').click();
-    cy.contains('[data-testid=modal-title]', 'Request Book').should(
+    cy.contains('[data-testid=modal-title]', 'Request Ebook').should(
       'be.visible'
     );
     cy.contains('[data-testid=modal-title]', 'Requestable Book').should(
       'be.visible'
     );
-    cy.contains('label', 'Format').should('be.visible');
-    cy.get('select[name=bookFormat]').should('be.visible');
+    cy.contains('legend', 'Format').should('be.visible');
+    cy.get('[role=radiogroup][aria-label=Format]').within(() => {
+      cy.get('[title=Ebook]')
+        .closest('[role=radio]')
+        .should('have.attr', 'aria-checked', 'true');
+      cy.get('[title=Audiobook]')
+        .closest('[role=radio]')
+        .click()
+        .should('have.attr', 'aria-checked', 'true');
+    });
+    cy.contains('[data-testid=modal-title]', 'Request Audiobook')
+      .scrollIntoView()
+      .should('be.visible');
+    cy.contains('[role=radio]', 'Ebook + Audiobook')
+      .click()
+      .should('have.attr', 'aria-checked', 'true');
+    cy.contains('[data-testid=modal-title]', 'Request Ebook + Audiobook')
+      .scrollIntoView()
+      .should('be.visible');
     cy.contains('label', 'Edition / ISBN').should('be.visible');
     cy.get('select[name=isbn]').should('be.visible');
     cy.contains('Automatic best match').should('be.visible');
@@ -588,26 +605,42 @@ describe('Books and Music discover parity', () => {
     cy.wait('@getBulkAuthor');
     cy.contains('h1', 'Bulk Author').should('be.visible');
     cy.contains('button', 'Request Bibliography').click();
-    cy.contains('[data-testid=modal-title]', 'Request Bibliography').should(
-      'be.visible'
-    );
+    cy.contains(
+      '[data-testid=modal-title]',
+      'Request Ebook Bibliography'
+    ).should('be.visible');
     cy.contains('Requestable Work').should('be.visible');
     cy.contains('Already Requested Work').should('be.visible');
     cy.contains('button', 'Load More').should('not.exist');
+    cy.get('[role="radiogroup"][aria-label="Format"] [role="radio"]')
+      .should('have.length', 3)
+      .filter('[aria-checked="true"]')
+      .should('contain', 'Ebook');
     cy.get('[role="dialog"] table')
       .contains('td', 'Already Requested Work')
       .parents('tr')
       .contains('Requested')
       .should('be.visible');
-    cy.contains('label', 'Format').find('select').select('Audiobook');
+    cy.get('[role="radiogroup"][aria-label="Format"]')
+      .contains('[role="radio"]', 'Ebook + Audiobook')
+      .click();
+    cy.get('[role="dialog"] table')
+      .contains('td', 'Already Requested Work')
+      .parents('tr')
+      .contains('Not Requested')
+      .should('be.visible');
+    cy.get('[role="radiogroup"][aria-label="Format"]')
+      .contains('[role="radio"]', 'Audiobook')
+      .click();
     cy.get('[data-testid=modal-ok-button]').should(
       'contain',
-      'Request 3 Items'
+      'Request 3 Items as Audiobook'
     );
     cy.get('[data-testid=modal-ok-button]').click();
-    cy.wait('@bulkBookRequest')
-      .its('request.body.items')
-      .should('have.length', 3);
+    cy.wait('@bulkBookRequest').then(({ request }) => {
+      expect(request?.body.format).to.equal('audiobook');
+      expect(request?.body.items).to.have.length(3);
+    });
     cy.contains('2 created, 1 skipped, 1 failed.').should('be.visible');
     cy.contains('Second Requestable Work').should('be.visible');
     cy.contains('No default Bookshelf server configured.').should('be.visible');
@@ -1417,7 +1450,7 @@ describe('Books and Music discover parity', () => {
       .first()
       .within(() => {
         cy.contains('Format').should('be.visible');
-        cy.contains('Both').should('be.visible');
+        cy.contains('Ebook + Audiobook').should('be.visible');
         cy.contains('Partial Bookshelf link').should('not.exist');
       });
     cy.contains('Partial Dual Book')
@@ -1599,7 +1632,7 @@ describe('Books and Music discover parity', () => {
       .parents('.relative.flex.w-full')
       .contains('.card-field', 'Status')
       .find('a')
-      .should('have.attr', 'href', '/book/OLFAILEDW?manage=1');
+      .should('have.attr', 'href', '/book/OLFAILEDW?manage=1&format=ebook');
     cy.contains('Failed Album')
       .parents('.relative.flex.w-full')
       .contains('.card-field', 'Status')
@@ -1656,8 +1689,8 @@ describe('Books and Music discover parity', () => {
     cy.wait('@getManagedBook');
     cy.contains('Manage Book').should('be.visible');
     cy.contains('Downloads').should('be.visible');
-    cy.contains('Managed Book (Ebook)').should('be.visible');
-    cy.contains('Managed Book (Audiobook)').should('be.visible');
+    cy.get('[title="Ebook"]').should('be.visible');
+    cy.get('[title="Audiobook"]').should('be.visible');
     cy.contains('Open Ebook in Bookshelf').should('be.visible');
     cy.get('body').type('{esc}');
 
@@ -1895,5 +1928,40 @@ describe('Books and Music discover parity', () => {
     cy.contains('[data-testid=title-card-title]', 'Global Book').should(
       'be.visible'
     );
+  });
+
+  it('keeps the selected book format visible from search through the request action', () => {
+    cy.intercept('GET', '/api/v1/search*', {
+      page: 1,
+      totalPages: 1,
+      totalResults: 1,
+      results: [
+        {
+          id: 'OLPRIDEW',
+          mediaType: 'book',
+          title: 'Pride and Prejudice',
+          author: 'Jane Austen',
+          firstPublishYear: 1813,
+          posterPath: null,
+        },
+      ],
+    }).as('bookSearch');
+
+    cy.visit('/search?query=pride%20and%20prejudice');
+    cy.wait('@bookSearch');
+    cy.contains('button', 'Audiobooks').click();
+    cy.wait('@bookSearch')
+      .its('request.url')
+      .should('include', 'type=book')
+      .and('include', 'format=audiobook');
+
+    cy.get('[data-testid=title-card]')
+      .first()
+      .within(() => {
+        cy.contains('Audiobook').should('be.visible');
+        cy.get('a[href*="format=audiobook"]').should('exist');
+      });
+    cy.get('[data-testid=title-card]').first().trigger('mouseover');
+    cy.contains('button', 'Request Audiobook').should('be.visible');
   });
 });

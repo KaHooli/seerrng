@@ -86,7 +86,7 @@ if (!releaseNotesContent) {
   );
 } else if (checkedReleaseNoteOptions.length !== 1) {
   issues.push(
-    '**Release Notes** must select exactly one of the two release-note options.'
+    '**Release Notes** must select exactly one primary option: add a release-note fragment or mark the change internal-only. Supporting confirmation boxes may also be checked.'
   );
 }
 

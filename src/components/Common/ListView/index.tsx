@@ -24,6 +24,7 @@ import type {
 } from '@server/models/Search';
 import { useMemo } from 'react';
 import { useIntl } from 'react-intl';
+import { twMerge } from 'tailwind-merge';
 
 type ListViewProps = {
   items?: (
@@ -41,6 +42,9 @@ type ListViewProps = {
   isReachingEnd?: boolean;
   onScrollBottom: () => void;
   mutateParent?: () => void;
+  preferredBookFormat?: 'ebook' | 'audiobook';
+  emptyMessage?: React.ReactNode;
+  emptyClassName?: string;
 };
 
 const ListView = ({
@@ -51,6 +55,9 @@ const ListView = ({
   isReachingEnd,
   plexItems,
   mutateParent,
+  preferredBookFormat,
+  emptyMessage,
+  emptyClassName,
 }: ListViewProps) => {
   const intl = useIntl();
   const { hasPermission } = useUser();
@@ -128,12 +135,16 @@ const ListView = ({
                 isAddedToWatchlist={title.mediaInfo?.watchlists?.length ?? 0}
                 image={title.posterPath}
                 status={title.mediaInfo?.status}
+                status4k={title.mediaInfo?.status4k}
                 summary={title.overview}
                 title={title.title}
                 userScore={title.voteAverage}
                 year={title.releaseDate}
                 mediaType={title.mediaType}
                 inProgress={(title.mediaInfo?.downloadStatus ?? []).length > 0}
+                inProgress4k={
+                  (title.mediaInfo?.downloadStatus4k ?? []).length > 0
+                }
                 canExpand
                 showText={visibility.movie === 'always'}
               />
@@ -147,12 +158,16 @@ const ListView = ({
                 isAddedToWatchlist={title.mediaInfo?.watchlists?.length ?? 0}
                 image={title.posterPath}
                 status={title.mediaInfo?.status}
+                status4k={title.mediaInfo?.status4k}
                 summary={title.overview}
                 title={title.name}
                 userScore={title.voteAverage}
                 year={title.firstAirDate}
                 mediaType={title.mediaType}
                 inProgress={(title.mediaInfo?.downloadStatus ?? []).length > 0}
+                inProgress4k={
+                  (title.mediaInfo?.downloadStatus4k ?? []).length > 0
+                }
                 canExpand
                 showText={visibility.tv === 'always'}
               />
@@ -240,6 +255,7 @@ const ListView = ({
                 canRequestAdditionalFormat={canRequestMissingBookFormat(title)}
                 canExpand
                 showText={visibility.book === 'always'}
+                preferredBookFormat={preferredBookFormat}
               />
             );
             break;
@@ -255,6 +271,7 @@ const ListView = ({
       visibility.book,
       visibility.movie,
       visibility.tv,
+      preferredBookFormat,
     ]
   );
   const hasRenderableItems =
@@ -278,8 +295,13 @@ const ListView = ({
   return (
     <>
       {effectiveIsEmpty && (
-        <div className="mt-64 w-full text-center text-2xl text-gray-400">
-          {intl.formatMessage(globalMessages.noresults)}
+        <div
+          className={twMerge(
+            'mt-64 w-full text-center text-2xl text-gray-400',
+            emptyClassName
+          )}
+        >
+          {emptyMessage ?? intl.formatMessage(globalMessages.noresults)}
         </div>
       )}
       <ul className="cards-vertical">

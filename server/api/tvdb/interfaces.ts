@@ -217,3 +217,20 @@ export function convertTmdbLanguageToTvdbWithFallback(
 
   return tvdbCode || fallback || 'eng'; // Default to English if no match found
 }
+
+/**
+ * One row of a TVDB v4 list. TVDB names the entity kind alongside a
+ * series/movie id, which is enough for import lists to route the lookup.
+ */
+export interface TvdbListEntity {
+  order?: number;
+  seriesId?: number | null;
+  movieId?: number | null;
+}
+
+export interface TvdbListExtended {
+  id?: number;
+  name?: string;
+  overview?: string;
+  entities?: TvdbListEntity[];
+}

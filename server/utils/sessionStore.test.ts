@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
 import request from 'supertest';
 import type { Repository } from 'typeorm';
+import { getSessionTransportOptions } from './sessionCookie';
 import { createSessionStore } from './sessionStore';
 
 const SECRET = '01234567890123456789012345678901';
@@ -52,12 +53,17 @@ describe('createSessionStore', () => {
       failingRepository(new Error('database is locked'))
     );
 
+    // Mirror the server's own transport options so the case under test is the
+    // production configuration, Secure cookie included.
+    const transport = getSessionTransportOptions(false, true);
     const app = express();
     app.use(
       session({
         secret: SECRET,
         resave: false,
         saveUninitialized: false,
+        cookie: transport.cookie,
+        proxy: transport.proxy,
         store,
       })
     );

@@ -61,19 +61,18 @@ import { configureHttpServer, parseListenPort } from '@server/utils/httpServer';
 import restartFlag from '@server/utils/restartFlag';
 import { getRateLimitKey } from '@server/utils/security';
 import { getSessionTransportOptions } from '@server/utils/sessionCookie';
+import { createSessionStore } from '@server/utils/sessionStore';
 import {
   createHttpsRedirectHandler,
   createHttpsUpgradeHandler,
   initializeTls,
 } from '@server/utils/tls';
 import compression from 'compression';
-import { TypeormStore } from 'connect-typeorm/out';
 import cookieParser from 'cookie-parser';
 import type { NextFunction, Request, Response } from 'express';
 import express from 'express';
 import * as OpenApiValidator from 'express-openapi-validator';
 import rateLimit from 'express-rate-limit';
-import type { Store } from 'express-session';
 import session from 'express-session';
 import fs from 'fs/promises';
 import http from 'http';
@@ -317,10 +316,7 @@ app
     // behind TypeORM session touches. Production retains durable sessions.
     const sessionStore = isE2eTest
       ? undefined
-      : (new TypeormStore({
-          cleanupLimit: 2,
-          ttl: 60 * 60 * 24 * 30,
-        }).connect(sessionRespository) as Store);
+      : createSessionStore(sessionRespository);
     server.use(
       '/api',
       session({

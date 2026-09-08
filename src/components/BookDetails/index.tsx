@@ -1,5 +1,10 @@
 import Spinner from '@app/assets/spinner.svg';
 import AssociationBadge from '@app/components/Association/AssociationBadge';
+import BookFormatBadge, {
+  getBookFormatMessage,
+  getRequestedBookFormat,
+  type RequestedBookFormat,
+} from '@app/components/Common/BookFormatBadge';
 import Button from '@app/components/Common/Button';
 import CachedImage from '@app/components/Common/CachedImage';
 import LoadingSpinner from '@app/components/Common/LoadingSpinner';
@@ -78,7 +83,13 @@ const messages = defineMessages('components.BookDetails', {
   removefromwatchlist: 'Remove From Watchlist',
   addtowatchlist: 'Add To Watchlist',
   viewrequest: 'View Request',
+  viewRequestFormat: 'View {format} request',
+  requestBookFormat: 'Request {format}',
   requestbibliography: 'Request Bibliography',
+  formatCoverage: 'Format coverage',
+  formatAvailable: 'Available',
+  formatRequested: 'Requested',
+  formatNotRequested: 'Not requested',
 });
 
 const BookDetails = () => {
@@ -100,6 +111,13 @@ const BookDetails = () => {
   const normalizedRouteBookId = bookId
     ? normalizeOpenLibraryWorkId(bookId)
     : undefined;
+  const routeBookFormat = getQueryParamString(router.query.format);
+  const preferredBookFormat: RequestedBookFormat | undefined =
+    routeBookFormat === 'audiobook' ||
+    routeBookFormat === 'ebook' ||
+    routeBookFormat === 'both'
+      ? routeBookFormat
+      : undefined;
 
   const {
     data,
@@ -207,6 +225,37 @@ const BookDetails = () => {
     data.mediaInfo?.issues?.filter(
       (issue) => issue.status === IssueStatus.OPEN
     ) ?? [];
+  const requestedBookFormat: RequestedBookFormat =
+    preferredBookFormat ??
+    (!hasEbookServiceLink && !hasActiveEbookRequest ? 'ebook' : 'audiobook');
+  const requestLabel = intl.formatMessage(messages.requestBookFormat, {
+    format: intl.formatMessage(getBookFormatMessage(requestedBookFormat)),
+  });
+  const activeRequestLabel = activeBookRequest
+    ? intl.formatMessage(messages.viewRequestFormat, {
+        format: intl.formatMessage(
+          getBookFormatMessage(
+            getRequestedBookFormat(activeBookRequest.bookFormat)
+          )
+        ),
+      })
+    : intl.formatMessage(messages.viewrequest);
+  const formatCoverage: {
+    format: 'ebook' | 'audiobook';
+    available: boolean;
+    requested: boolean;
+  }[] = [
+    {
+      format: 'ebook',
+      available: hasEbookServiceLink,
+      requested: hasActiveEbookRequest,
+    },
+    {
+      format: 'audiobook',
+      available: hasAudiobookServiceLink,
+      requested: hasActiveAudiobookRequest,
+    },
+  ];
 
   const blocklistBook = async () => {
     setIsBlocklisting(true);
@@ -320,7 +369,10 @@ const BookDetails = () => {
             setShowManager(false);
             router.push({
               pathname: router.pathname,
-              query: { bookId },
+              query: {
+                bookId,
+                ...(preferredBookFormat ? { format: preferredBookFormat } : {}),
+              },
             });
           }}
           revalidate={() => revalidate()}
@@ -351,6 +403,7 @@ const BookDetails = () => {
       {showRequestModal && (
         <RequestModal
           bookId={openLibraryWorkId}
+          initialBookFormat={preferredBookFormat}
           editRequest={editRequest}
           show={showRequestModal}
           type="book"
@@ -404,9 +457,11 @@ const BookDetails = () => {
         </div>
         <div className="min-w-0 flex-1 text-gray-300">
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-amber-500 bg-amber-600/80 px-3 py-1 text-xs font-medium uppercase tracking-wider text-white">
-              {intl.formatMessage(messages.book)}
-            </span>
+            <BookFormatBadge
+              format={preferredBookFormat}
+              variant="card"
+              className="px-3 py-1 text-xs"
+            />
             {data.mediaInfo?.status &&
               data.mediaInfo.status !== MediaStatus.UNKNOWN && (
                 <StatusBadge
@@ -414,6 +469,7 @@ const BookDetails = () => {
                   downloadItem={bookDownloadStatus}
                   inProgress={bookDownloadStatus.length > 0}
                   mediaType="book"
+                  bookFormat={requestedBookFormat}
                   externalId={openLibraryWorkId}
                   serviceUrl={
                     data.mediaInfo.serviceUrl ??
@@ -526,6 +582,34 @@ const BookDetails = () => {
               </div>
             )}
           </div>
+          {data.mediaInfo && (
+            <div className="mt-5 max-w-4xl rounded-lg border border-gray-700 bg-gray-800/60 p-3">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+                {intl.formatMessage(messages.formatCoverage)}
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {formatCoverage.map(({ format, available, requested }) => (
+                  <div
+                    key={format}
+                    className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-gray-700 bg-gray-900/40 px-3 py-2"
+                  >
+                    <BookFormatBadge format={format} variant="compact" />
+                    <span
+                      className={`shrink-0 text-xs ${available ? 'text-emerald-300' : requested ? 'text-indigo-200' : 'text-gray-500'}`}
+                    >
+                      {intl.formatMessage(
+                        available
+                          ? messages.formatAvailable
+                          : requested
+                            ? messages.formatRequested
+                            : messages.formatNotRequested
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {(canWatchlist ||
             canShowRequest ||
             canReportIssue ||
@@ -570,7 +654,7 @@ const BookDetails = () => {
                   }}
                 >
                   <ArrowDownTrayIcon />
-                  <span>{intl.formatMessage(globalMessages.request)}</span>
+                  <span>{requestLabel}</span>
                 </Button>
               )}
               {canRequest && data.authorId && (
@@ -593,7 +677,7 @@ const BookDetails = () => {
                   }}
                 >
                   <InformationCircleIcon />
-                  <span>{intl.formatMessage(messages.viewrequest)}</span>
+                  <span>{activeRequestLabel}</span>
                 </Button>
               )}
               {canManage && (

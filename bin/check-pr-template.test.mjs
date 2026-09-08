@@ -18,7 +18,7 @@ const templatePath = path.join(
 );
 
 const EXCLUSIVITY_ISSUE =
-  '**Release Notes** must select exactly one of the two release-note options.';
+  '**Release Notes** must select exactly one primary option: add a release-note fragment or mark the change internal-only. Supporting confirmation boxes may also be checked.';
 const MISSING_OPTION_ISSUE =
   '**Release Notes** must select a release-note fragment or the internal-only opt-out.';
 

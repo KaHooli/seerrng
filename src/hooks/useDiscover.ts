@@ -1,11 +1,13 @@
 import useToasts from '@app/hooks/useToasts';
 import globalMessages from '@app/i18n/globalMessages';
+import { readDiscoverScrollEntry } from '@app/utils/discoverScrollRestoration';
 import {
   setPersistentResponse,
   usePersistentResponse,
 } from '@app/utils/swrCache';
 import { MediaRequestStatus, MediaStatus } from '@server/constants/media';
 import { buildDiscoverQueryString } from '@server/utils/discoverQuery';
+import { useRouter } from 'next/router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useIntl } from 'react-intl';
 import useSWRInfinite from 'swr/infinite';
@@ -40,11 +42,13 @@ interface BaseMedia {
 interface DiscoverResult<T, S> {
   isLoadingInitialData: boolean;
   isLoadingMore: boolean;
+  isValidating: boolean;
   fetchMore: () => void;
   isEmpty: boolean;
   isReachingEnd: boolean;
   error: unknown;
   titles: T[];
+  shuffleSeed: string;
   firstResultData?: BaseSearchResult<T> & S;
   mutate?: () => void;
 }
@@ -140,13 +144,19 @@ const useDiscover = <
     hideAvailable = true,
     hideBlocklisted = true,
     randomizeOrder = false,
+    showErrorToast = true,
+    shouldRetryOnError = true,
   } = {}
 ): DiscoverResult<T, S> => {
   const settings = useSettings();
   const { hasPermission, user } = useUser();
   const { addToast } = useToasts();
   const intl = useIntl();
-  const [shuffleSeed, setShuffleSeed] = useState(getShuffleSeed);
+  const router = useRouter();
+  const [shuffleSeed, setShuffleSeed] = useState(
+    () =>
+      readDiscoverScrollEntry(router.asPath)?.shuffleSeed ?? getShuffleSeed()
+  );
   const fallbackCacheKey = useMemo(
     () =>
       `discover-view:${user?.id ?? 'anonymous'}:${endpoint}:${buildDiscoverQueryString(
@@ -156,7 +166,7 @@ const useDiscover = <
   );
   const persistentFallbackData =
     usePersistentResponse<(BaseSearchResult<T> & S)[]>(fallbackCacheKey);
-  // A randomized view gets a new seed on each mount. Restoring results produced
+  // A randomized view gets a new seed on fresh visits. Restoring results produced
   // with the previous seed would paint one lineup and then replace it as soon as
   // the current request completes.
   const fallbackData = randomizeOrder ? undefined : persistentFallbackData;
@@ -196,6 +206,7 @@ const useDiscover = <
       dedupingInterval: 30000,
       revalidateOnFocus: false,
       fallbackData,
+      shouldRetryOnError,
     }
   );
 
@@ -334,22 +345,24 @@ const useDiscover = <
   }, [data, fallbackCacheKey, randomizeOrder, titles.length]);
 
   useEffect(() => {
-    if (error && titles.length) {
+    if (showErrorToast && error && titles.length) {
       addToast(intl.formatMessage(globalMessages.error), {
         appearance: 'error',
         autoDismiss: true,
       });
     }
-  }, [data, error, addToast, intl, titles.length]);
+  }, [data, error, addToast, intl, showErrorToast, titles.length]);
 
   return {
     isLoadingInitialData,
     isLoadingMore,
+    isValidating,
     fetchMore,
     isEmpty,
     isReachingEnd,
     error: error && titles.length ? null : error,
     titles,
+    shuffleSeed,
     firstResultData: data?.[0],
     mutate,
   };

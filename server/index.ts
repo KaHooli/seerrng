@@ -61,6 +61,11 @@ import { configureHttpServer, parseListenPort } from '@server/utils/httpServer';
 import restartFlag from '@server/utils/restartFlag';
 import { getRateLimitKey } from '@server/utils/security';
 import { getSessionTransportOptions } from '@server/utils/sessionCookie';
+import {
+  createHttpsRedirectHandler,
+  createHttpsUpgradeHandler,
+  initializeTls,
+} from '@server/utils/tls';
 import compression from 'compression';
 import { TypeormStore } from 'connect-typeorm/out';
 import cookieParser from 'cookie-parser';
@@ -72,6 +77,7 @@ import type { Store } from 'express-session';
 import session from 'express-session';
 import fs from 'fs/promises';
 import http from 'http';
+import https from 'https';
 import yaml from 'js-yaml';
 import next from 'next';
 import path from 'path';
@@ -170,6 +176,11 @@ app
     // Load Settings
     const settings = await getSettings().load();
     await themeManager.reload();
+    const port = parseListenPort(process.env.PORT);
+    const tlsConfiguration = await initializeTls({
+      httpPort: port,
+      settings: settings.network.tls,
+    });
     loadExternalRuntimeConfig();
     restartFlag.initializeSettings(settings);
 
@@ -298,7 +309,8 @@ app
     const sessionRespository = getRepository(Session);
     const sessionTransportOptions = getSessionTransportOptions(
       dev,
-      settings.network.csrfProtection
+      settings.network.csrfProtection,
+      tlsConfiguration.httpAuthAllowed
     );
     // Cypress drives many concurrent API requests through one SQLite session
     // row. Keep E2E session state process-local so those requests cannot queue
@@ -317,9 +329,6 @@ app
         saveUninitialized: false,
         cookie: {
           ...sessionTransportOptions.cookie,
-          // Keep the transport guarantee explicit for security analysis and
-          // for anyone reviewing the session middleware configuration here.
-          secure: true,
         },
         proxy: sessionTransportOptions.proxy,
         ...(sessionStore ? { store: sessionStore } : {}),
@@ -378,30 +387,86 @@ app
       }
     );
 
-    const port = parseListenPort(process.env.PORT);
     const host = process.env.HOST;
-    const listener = configureHttpServer(http.createServer(server));
-    if (host) {
-      listener.listen(port, host, () => {
-        logger.info(`Server ready on ${host} port ${port}`, {
-          label: 'Server',
+    const listener = configureHttpServer(
+      tlsConfiguration.mode === 'disabled'
+        ? http.createServer(server)
+        : http.createServer(
+            (tlsConfiguration.redirectsHttpToHttps
+              ? createHttpsRedirectHandler
+              : createHttpsUpgradeHandler)(
+              tlsConfiguration.httpsPort!,
+              tlsConfiguration.hosts
+            )
+          )
+    );
+    const secureListener = tlsConfiguration.httpsOptions
+      ? configureHttpServer(
+          https.createServer(tlsConfiguration.httpsOptions, server)
+        )
+      : undefined;
+    const listeners = secureListener ? [listener, secureListener] : [listener];
+
+    const listen = (
+      target: typeof listener,
+      targetPort: number,
+      message: string
+    ) => {
+      if (host) {
+        target.listen(targetPort, host, () => {
+          logger.info(message, { label: 'Server' });
         });
-      });
+      } else {
+        target.listen(targetPort, () => {
+          logger.info(message, { label: 'Server' });
+        });
+      }
+    };
+
+    if (tlsConfiguration.mode === 'disabled') {
+      listen(
+        listener,
+        port,
+        `Server ready on ${host ? `${host} ` : ''}port ${port}`
+      );
+      if (tlsConfiguration.httpAuthAllowed) {
+        logger.warn(
+          'SEERR_ALLOW_HTTP_AUTH is enabled. Browser sessions may be intercepted by anyone who can observe this HTTP connection; use built-in HTTPS or an HTTPS reverse proxy when possible.',
+          { label: 'Security' }
+        );
+      }
     } else {
-      listener.listen(port, () => {
-        logger.info(`Server ready on port ${port}`, {
-          label: 'Server',
-        });
-      });
+      listen(
+        listener,
+        port,
+        `${tlsConfiguration.redirectsHttpToHttps ? 'HTTP redirect' : 'HTTP upgrade'} listener ready on ${host ? `${host} ` : ''}port ${port}`
+      );
+      listen(
+        secureListener!,
+        tlsConfiguration.httpsPort!,
+        `HTTPS server ready on ${host ? `${host} ` : ''}port ${tlsConfiguration.httpsPort}`
+      );
+      logger.warn(
+        `Built-in HTTPS is enabled. Trust the local CA before signing in. Certificate fingerprint: ${tlsConfiguration.runtime.fingerprint}`,
+        {
+          label: 'Security',
+          tlsMode: tlsConfiguration.mode,
+          tlsHosts: tlsConfiguration.hosts,
+          caCertificatePath: tlsConfiguration.caCertificatePath,
+          httpsPort: tlsConfiguration.httpsPort,
+        }
+      );
     }
 
-    listener.on('error', (err: Error) => {
-      logger.error('Failed to start server', {
-        label: 'Server',
-        message: err.message,
+    for (const target of listeners) {
+      target.on('error', (err: Error) => {
+        logger.error('Failed to start server', {
+          label: 'Server',
+          message: err.message,
+        });
+        process.exit(1);
       });
-      process.exit(1);
-    });
+    }
 
     let stoppingJobs: Promise<void> | undefined;
     const shutdownController = createProcessShutdownController({
@@ -416,7 +481,7 @@ app
       },
       drain: () =>
         drainForShutdown({
-          server: listener,
+          server: listeners,
           tasks: [
             {
               name: 'scheduled jobs and background tasks',

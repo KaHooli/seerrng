@@ -83,6 +83,7 @@ import gravatarUrl from 'gravatar-url';
 import { findIndex, sortBy } from 'lodash';
 import type { EntityManager, FindOptionsWhere } from 'typeorm';
 import { EntityNotFoundError, In, Not, Raw } from 'typeorm';
+import importListRoutes from './importlists';
 import userSettingsRoutes from './usersettings';
 
 const router = Router();
@@ -1296,6 +1297,7 @@ router.get<{ jellyfinUserId: string }>(
 );
 
 router.use('/:id/settings', userSettingsRoutes);
+router.use('/:id/importlists', importListRoutes);
 
 router.get<{ id: string }, UserRequestsResponse>(
   '/:id/requests',

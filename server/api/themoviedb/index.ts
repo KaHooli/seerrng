@@ -271,6 +271,14 @@ const sanitizeTmdbSearchResult = (
   return result;
 };
 
+export interface TmdbUserList {
+  id: number;
+  name: string;
+  description?: string;
+  item_count?: number;
+  items: Record<string, unknown>[];
+}
+
 const sanitizeTmdbLookupResults = (value: unknown): Record<string, unknown>[] =>
   boundedTmdbRecords(value, MAX_TMDB_LOOKUP_RESULTS).flatMap((result) => {
     const normalized = sanitizeTmdbSearchResult(result);
@@ -1728,6 +1736,53 @@ class TheMovieDb extends ExternalAPI implements TvShowProvider {
       } as unknown as TmdbCollection;
     } catch (e) {
       throw new Error(`[TMDB] Failed to fetch collection: ${e.message}`, {
+        cause: e,
+      });
+    }
+  }
+
+  /**
+   * A TMDB v3 user list. Used by import lists; the response is heterogeneous
+   * (each item names its own media_type) so it is sanitized the same way
+   * search results are.
+   */
+  public async getList({
+    listId,
+    page = 1,
+    language = this.locale,
+  }: {
+    listId: number;
+    page?: number;
+    language?: string;
+  }): Promise<TmdbUserList> {
+    try {
+      const data = await this.get<Record<string, unknown>>(`/list/${listId}`, {
+        params: { page, language },
+      });
+
+      if (!isRecord(data)) {
+        throw new Error('TMDB returned an invalid list response.');
+      }
+
+      return {
+        id:
+          typeof data.id === 'number' && Number.isSafeInteger(data.id)
+            ? data.id
+            : listId,
+        name: typeof data.name === 'string' ? data.name.slice(0, 1_000) : '',
+        description:
+          typeof data.description === 'string'
+            ? data.description.slice(0, 20_000)
+            : undefined,
+        item_count:
+          typeof data.item_count === 'number' &&
+          Number.isSafeInteger(data.item_count)
+            ? data.item_count
+            : undefined,
+        items: sanitizeTmdbLookupResults(data.items),
+      };
+    } catch (e) {
+      throw new Error(`[TMDB] Failed to fetch list: ${e.message}`, {
         cause: e,
       });
     }

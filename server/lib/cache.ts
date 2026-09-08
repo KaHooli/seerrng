@@ -20,7 +20,8 @@ export type AvailableCacheIds =
   | 'openlibrary'
   | 'wikidata'
   | 'tadb'
-  | 'associations';
+  | 'associations'
+  | 'importlist';
 
 const DEFAULT_TTL = 300;
 const DEFAULT_CHECK_PERIOD = 120;
@@ -173,6 +174,10 @@ class CacheManager {
     associations: new Cache('associations', 'Cross-Medium Associations', {
       stdTtl: 43200,
       checkPeriod: 60 * 30,
+    }),
+    importlist: new Cache('importlist', 'Import List Sources', {
+      stdTtl: 3600,
+      checkPeriod: 60 * 10,
     }),
   };
 

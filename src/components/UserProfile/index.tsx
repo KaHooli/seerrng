@@ -6,6 +6,7 @@ import RequestCard from '@app/components/RequestCard';
 import Slider from '@app/components/Slider';
 import TitleCard from '@app/components/TitleCard';
 import TmdbTitleCard from '@app/components/TitleCard/TmdbTitleCard';
+import ImportListsSummary from '@app/components/UserProfile/ImportListsSummary';
 import ProfileHeader from '@app/components/UserProfile/ProfileHeader';
 import { getPositiveQueryParamNumber } from '@app/hooks/useUpdateQueryParams';
 import { Permission, UserType, useUser } from '@app/hooks/useUser';
@@ -407,6 +408,17 @@ const UserProfile = () => {
             </dl>
           </div>
         )}
+      {(user.id === currentUser?.id ||
+        currentHasPermission(Permission.MANAGE_IMPORT_LISTS)) && (
+        <ImportListsSummary
+          userId={user.id}
+          settingsHref={
+            user.id === currentUser?.id
+              ? '/profile/settings/import-lists'
+              : `/users/${user.id}/settings/import-lists`
+          }
+        />
+      )}
       {(user.id === currentUser?.id ||
         currentHasPermission(
           [Permission.MANAGE_REQUESTS, Permission.REQUEST_VIEW],

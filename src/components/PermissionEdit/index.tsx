@@ -73,6 +73,9 @@ export const messages = defineMessages('components.PermissionEdit', {
   autorequestMusic: 'Auto-Request Music',
   autorequestMusicDescription:
     'Grant permission to automatically submit music requests via watchlists.',
+  manageImportLists: 'Manage Import Lists',
+  manageImportListsDescription:
+    'Grant permission to subscribe to external lists (IMDb, Trakt, Letterboxd and others). New items on a list are requested as this user, under their own permissions and quota.',
   autorequestBooks: 'Auto-Request Books',
   autorequestBooksDescription:
     'Grant permission to automatically submit book requests via watchlists.',
@@ -331,6 +334,12 @@ export const PermissionEdit = ({
           ],
         },
       ],
+    },
+    {
+      id: 'manageimportlists',
+      name: intl.formatMessage(messages.manageImportLists),
+      description: intl.formatMessage(messages.manageImportListsDescription),
+      permission: Permission.MANAGE_IMPORT_LISTS,
     },
     {
       id: 'request4k',

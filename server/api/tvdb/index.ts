@@ -11,6 +11,8 @@ import {
   convertTmdbLanguageToTvdbWithFallback,
   type TvdbBaseResponse,
   type TvdbEpisode,
+  type TvdbListEntity,
+  type TvdbListExtended,
   type TvdbLoginResponse,
   type TvdbSeasonDetails,
   type TvdbTvDetails,
@@ -315,6 +317,26 @@ class Tvdb extends ExternalAPI implements TvShowProvider {
       });
       return tmdbTvShow;
     }
+  }
+
+  /**
+   * A TVDB v4 list, as used by import lists. The extended form embeds the
+   * entities themselves, so one call yields the whole list.
+   */
+  public async getList(listId: number): Promise<TvdbListEntity[]> {
+    await this.refreshToken();
+
+    const resp = await this.get<TvdbBaseResponse<TvdbListExtended>>(
+      `/lists/${listId}/extended`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+        },
+      },
+      Tvdb.DEFAULT_CACHE_TTL
+    );
+
+    return Array.isArray(resp?.data?.entities) ? resp.data.entities : [];
   }
 
   private async fetchTvdbShowData(tvdbId: number): Promise<TvdbTvDetails> {

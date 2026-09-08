@@ -35,6 +35,9 @@ export enum Permission {
   AUTO_APPROVE_BOOK = 17179869184,
   REQUEST_BOOK = 34359738368,
   AUTO_REQUEST_BOOK = 68719476736,
+  // 2^37. Deliberately not the free 2^29 gap between MANAGE_BLOCKLIST and
+  // VIEW_BLOCKLIST: this fork merges from upstream, which may yet claim it.
+  MANAGE_IMPORT_LISTS = 137438953472,
 }
 
 export const MAX_PERMISSION_VALUE = Object.values(Permission)

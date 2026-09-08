@@ -268,13 +268,11 @@ describe('import list routes: update, delete and sync', () => {
     const list = await seedList(2);
     const agent = await loginAs(FRIEND_EMAIL);
 
-    const res = await agent
-      .put(`/user/2/importlists/${list.id}`)
-      .send({
-        name: 'Popular movies',
-        mode: ImportListMode.WATCHLIST,
-        enabled: false,
-      });
+    const res = await agent.put(`/user/2/importlists/${list.id}`).send({
+      name: 'Popular movies',
+      mode: ImportListMode.WATCHLIST,
+      enabled: false,
+    });
 
     assert.equal(res.status, 200);
     assert.equal(res.body.name, 'Popular movies');

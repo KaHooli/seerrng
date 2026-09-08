@@ -34,6 +34,7 @@ import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import { runUserSecurityMutation } from '@server/lib/userSecurityMutation';
 import logger from '@server/logger';
+import { mapWithConcurrency } from '@server/utils/concurrency';
 
 type MediaRequestFormat = 'ebook' | 'audiobook' | 'both';
 
@@ -151,29 +152,36 @@ class ImportListSync {
 
       logger.info(`Syncing ${lists.length} import list(s)`, { label: LABEL });
 
-      for (const list of lists) {
-        if (this.cancelRequested) {
-          logger.info(
-            'Import list sync cancelled before completing all lists',
-            {
-              label: LABEL,
-            }
-          );
-          break;
-        }
-
-        try {
-          await this.runList(list);
-        } catch (e) {
-          if (e instanceof SyncCancelledError) {
-            break;
+      // Lists run concurrently up to the configured limit. Requesting is safe
+      // to overlap: MediaRequest.request takes its own per-user lock, so two of
+      // one user's lists cannot race each other's quota.
+      await mapWithConcurrency(
+        lists,
+        Math.max(1, settings.syncConcurrency),
+        async (list) => {
+          if (this.cancelRequested) {
+            return;
           }
-          logger.error('Unhandled failure while syncing an import list', {
-            label: LABEL,
-            listId: list.id,
-            errorMessage: e instanceof Error ? e.message : 'unknown error',
-          });
+
+          try {
+            await this.runList(list);
+          } catch (e) {
+            if (e instanceof SyncCancelledError) {
+              return;
+            }
+            logger.error('Unhandled failure while syncing an import list', {
+              label: LABEL,
+              listId: list.id,
+              errorMessage: e instanceof Error ? e.message : 'unknown error',
+            });
+          }
         }
+      );
+
+      if (this.cancelRequested) {
+        logger.info('Import list sync cancelled before completing all lists', {
+          label: LABEL,
+        });
       }
     } finally {
       this.running = false;

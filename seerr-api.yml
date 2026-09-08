@@ -46,6 +46,8 @@ tags:
     description: Endpoints for importing Spotify and YouTube playlists as music requests.
   - name: themes
     description: External appearance theme package endpoints.
+  - name: importlists
+    description: Per-user subscriptions to external lists (IMDb, Trakt, Letterboxd and others).
 servers:
   - url: '{server}/api/v1'
     variables:
@@ -67,6 +69,150 @@ components:
         userId:
           type: number
           example: 1
+    ImportList:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+          readOnly: true
+        provider:
+          type: string
+          enum:
+            [
+              imdb,
+              trakt,
+              tmdb,
+              tmdb-collection,
+              tvdb,
+              letterboxd,
+              anilist,
+              mdblist,
+              stevenlu,
+              goodreads,
+              openlibrary,
+            ]
+          example: imdb
+        providerLabel:
+          type: string
+          example: IMDb
+          readOnly: true
+        listId:
+          type: string
+          description: The canonical identifier, normalized from whatever was submitted.
+          example: chart:top
+        name:
+          type: string
+          example: IMDb Top 250
+        enabled:
+          type: boolean
+          example: true
+        mode:
+          type: string
+          enum: [request, watchlist]
+          example: request
+        is4k:
+          type: boolean
+          example: false
+        bookFormat:
+          type: string
+          nullable: true
+          enum: [ebook, audiobook, both]
+        lastSyncedAt:
+          type: string
+          nullable: true
+          example: '2026-09-08T10:00:27.000Z'
+          readOnly: true
+        lastSyncStatus:
+          type: string
+          enum: [never, success, partial, error]
+          example: success
+          readOnly: true
+        lastSyncError:
+          type: string
+          nullable: true
+          readOnly: true
+        itemCount:
+          type: integer
+          example: 250
+          readOnly: true
+        lastRequestedCount:
+          type: integer
+          example: 3
+          readOnly: true
+        lastSkippedCount:
+          type: integer
+          example: 247
+          readOnly: true
+        lastErrorCount:
+          type: integer
+          example: 0
+          readOnly: true
+        createdAt:
+          type: string
+          example: '2026-09-08T10:00:27.000Z'
+          readOnly: true
+    ImportListProviderInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          example: trakt
+        label:
+          type: string
+          example: Trakt
+        mediaKinds:
+          type: array
+          items:
+            type: string
+            enum: [movie, tv, book]
+        example:
+          type: string
+          example: https://trakt.tv/users/username/lists/my-list
+        configured:
+          type: boolean
+          description: False when an administrator has not supplied a credential this provider needs.
+        requiresBookshelf:
+          type: boolean
+    ImportListSyncResult:
+      type: object
+      properties:
+        listId:
+          type: integer
+        status:
+          type: string
+          enum: [never, success, partial, error]
+        itemCount:
+          type: integer
+        requested:
+          type: integer
+        skipped:
+          type: integer
+        errored:
+          type: integer
+        error:
+          type: string
+    ImportListSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          example: true
+        maxItemsPerList:
+          type: integer
+          example: 500
+        syncConcurrency:
+          type: integer
+          example: 2
+        defaultMode:
+          type: string
+          enum: [request, watchlist]
+        traktClientId:
+          type: string
+        tvdbApiKey:
+          type: string
+        mdblistApiKey:
+          type: string
     Watchlist:
       type: object
       properties:
@@ -4440,6 +4586,81 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PublicSettings'
+  /settings/importlists:
+    get:
+      summary: Get import list settings
+      description: Returns the global settings that apply to every user's import lists.
+      tags:
+        - settings
+        - importlists
+      responses:
+        '200':
+          description: Import list settings returned
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ImportListSettings'
+                  - type: object
+                    properties:
+                      providers:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            label:
+                              type: string
+                            configured:
+                              type: boolean
+    post:
+      summary: Update import list settings
+      description: |
+        Saves the global import list settings. The sync frequency is not set
+        here — it belongs to the `import-list-sync` job, under
+        `/settings/jobs/import-list-sync/schedule`.
+      tags:
+        - settings
+        - importlists
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportListSettings'
+      responses:
+        '200':
+          description: Settings saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportListSettings'
+        '400':
+          description: A setting was outside its permitted range
+  /settings/importlists/test/trakt:
+    post:
+      summary: Test a Trakt client ID
+      description: |
+        Verifies a Trakt client ID against the Trakt API before it is saved.
+        Omit the body to test the currently saved credential.
+      tags:
+        - settings
+        - importlists
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                traktClientId:
+                  type: string
+      responses:
+        '200':
+          description: Trakt accepted the client ID
+        '400':
+          description: No client ID was supplied, or Trakt rejected it
   /settings/jobs:
     get:
       summary: Get scheduled jobs
@@ -6691,6 +6912,301 @@ paths:
                           type: string
                         title:
                           type: string
+  /user/{userId}/importlists:
+    get:
+      summary: Get a user's import lists
+      description: |
+        Returns the external lists a user subscribes to, along with the
+        providers available on this install. Requires the `MANAGE_IMPORT_LISTS`
+        permission, and `MANAGE_USERS` as well when viewing another user.
+      tags:
+        - users
+        - importlists
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: number
+      responses:
+        '200':
+          description: Import lists returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ImportList'
+                  providers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ImportListProviderInfo'
+                  bookshelfConfigured:
+                    type: boolean
+                    description: Whether book providers are usable on this install.
+        '403':
+          description: Insufficient permissions
+    post:
+      summary: Add an import list for a user
+      description: |
+        Adds a list. The submitted `listId` may be a full URL or the provider's
+        own short form; both normalize to the same stored identifier. Returns
+        400 when the provider cannot read the identifier, and 409 when the user
+        already subscribes to that list.
+      tags:
+        - users
+        - importlists
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - provider
+                - listId
+              properties:
+                provider:
+                  type: string
+                  example: imdb
+                listId:
+                  type: string
+                  example: https://www.imdb.com/chart/top/
+                name:
+                  type: string
+                mode:
+                  type: string
+                  enum: [request, watchlist]
+                is4k:
+                  type: boolean
+                bookFormat:
+                  type: string
+                  enum: [ebook, audiobook, both]
+                enabled:
+                  type: boolean
+      responses:
+        '201':
+          description: Import list created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportList'
+        '400':
+          description: Unknown provider, or an identifier the provider cannot read
+        '409':
+          description: That list is already configured for this user
+  /user/{userId}/importlists/summary:
+    get:
+      summary: Summarize a user's import lists
+      description: Aggregate status used by the import list card on a user's profile.
+      tags:
+        - users
+        - importlists
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: number
+      responses:
+        '200':
+          description: Summary returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total:
+                    type: integer
+                  enabled:
+                    type: integer
+                  errored:
+                    type: integer
+                  lastSyncedAt:
+                    type: string
+                    nullable: true
+                  lastRequestedCount:
+                    type: integer
+                  itemCount:
+                    type: integer
+                  lists:
+                    type: array
+                    items:
+                      type: object
+  /user/{userId}/importlists/{listId}:
+    put:
+      summary: Update an import list
+      description: |
+        Updates the fields a list owner controls. The provider and the list
+        identifier are fixed once created; delete and re-add to change them.
+      tags:
+        - users
+        - importlists
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: number
+        - in: path
+          name: listId
+          required: true
+          schema:
+            type: number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                mode:
+                  type: string
+                  enum: [request, watchlist]
+                is4k:
+                  type: boolean
+                bookFormat:
+                  type: string
+                  enum: [ebook, audiobook, both]
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Import list updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportList'
+        '404':
+          description: Import list not found for this user
+    delete:
+      summary: Delete an import list
+      description: Removes the list and everything recorded about its previous syncs.
+      tags:
+        - users
+        - importlists
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: number
+        - in: path
+          name: listId
+          required: true
+          schema:
+            type: number
+      responses:
+        '204':
+          description: Import list deleted
+        '404':
+          description: Import list not found for this user
+  /user/{userId}/importlists/{listId}/items:
+    get:
+      summary: Get the items an import list has processed
+      description: Returns the most recently processed items and their outcomes.
+      tags:
+        - users
+        - importlists
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: number
+        - in: path
+          name: listId
+          required: true
+          schema:
+            type: number
+      responses:
+        '200':
+          description: Items returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        mediaType:
+                          type: string
+                          enum: [movie, tv, book]
+                        tmdbId:
+                          type: integer
+                          nullable: true
+                        externalId:
+                          type: string
+                          nullable: true
+                        title:
+                          type: string
+                        year:
+                          type: integer
+                          nullable: true
+                        status:
+                          type: string
+                          enum:
+                            [
+                              requested,
+                              already_available,
+                              already_requested,
+                              watchlisted,
+                              not_found,
+                              skipped,
+                              request_failed,
+                            ]
+                        message:
+                          type: string
+                          nullable: true
+                        processedAt:
+                          type: string
+  /user/{userId}/importlists/{listId}/sync:
+    post:
+      summary: Sync one import list now
+      description: |
+        Runs a single list immediately, outside the scheduled job, and returns
+        what the run did.
+      tags:
+        - users
+        - importlists
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: number
+        - in: path
+          name: listId
+          required: true
+          schema:
+            type: number
+      responses:
+        '200':
+          description: Sync completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportListSyncResult'
+        '404':
+          description: Import list not found for this user
+        '502':
+          description: The list source could not be read
   /user/{userId}/settings/main:
     get:
       summary: Get general settings for a user

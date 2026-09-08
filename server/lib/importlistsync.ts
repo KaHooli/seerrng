@@ -19,7 +19,10 @@ import {
   RequestPermissionError,
 } from '@server/entity/MediaRequest';
 import { User } from '@server/entity/User';
-import { Watchlist } from '@server/entity/Watchlist';
+import {
+  DuplicateWatchlistRequestError,
+  Watchlist,
+} from '@server/entity/Watchlist';
 import { getExternalRuntimeConfig } from '@server/lib/externalRuntimeConfig';
 import { getImportListProvider } from '@server/lib/importlists/providers';
 import type { ResolvedImportListEntry } from '@server/lib/importlists/resolver';
@@ -89,6 +92,23 @@ const identityKey = (resolved: ResolvedImportListEntry): string =>
   resolved.mediaType === MediaType.BOOK
     ? `${MediaType.BOOK}:${resolved.openLibraryId}`
     : `${resolved.mediaType}:${resolved.tmdbId}`;
+
+/**
+ * The same key, derived from an entry the resolver has not seen yet — but only
+ * when the source already handed us an id. That is what lets a settled item be
+ * skipped without paying for its lookup; anything vaguer has to be resolved
+ * before we know what it is.
+ */
+const provisionalIdentityKey = (entry: ImportListEntry): string | undefined => {
+  if (entry.mediaType === MediaType.BOOK) {
+    return entry.openLibraryId
+      ? `${MediaType.BOOK}:${entry.openLibraryId}`
+      : undefined;
+  }
+  return entry.tmdbId && entry.mediaType
+    ? `${entry.mediaType}:${entry.tmdbId}`
+    : undefined;
+};
 
 /** Statuses that mean "this item has been dealt with; don't retry it". */
 const SETTLED_STATUSES = new Set<ImportListItemStatus>([
@@ -322,6 +342,17 @@ class ImportListSync {
     for (const entry of entries) {
       this.throwIfCancelled();
 
+      // An entry whose id we already know, and that a previous run settled,
+      // needs neither a lookup nor a request.
+      const provisionalKey = provisionalIdentityKey(entry);
+      if (provisionalKey && settledKeys.has(provisionalKey)) {
+        if (!seen.has(provisionalKey)) {
+          seen.add(provisionalKey);
+          skipped += 1;
+        }
+        continue;
+      }
+
       const resolved = await resolveImportListEntry(entry);
 
       if (!resolved) {
@@ -510,7 +541,7 @@ class ImportListSync {
     } catch (e) {
       // A title already on the watchlist is the expected steady state, not a
       // failure worth reporting.
-      if (e instanceof Error && e.name === 'DuplicateWatchlistRequestError') {
+      if (e instanceof DuplicateWatchlistRequestError) {
         return { status: ImportListItemStatus.ALREADY_REQUESTED };
       }
 
@@ -593,13 +624,20 @@ class ImportListSync {
 
     for (const row of rows) {
       try {
+        // An unresolved row has no id, so the table's unique constraints do
+        // not deduplicate it — without matching on the title instead, every
+        // sync would add another row for the same unmatchable entry.
+        const identity = row.tmdbId
+          ? { tmdbId: row.tmdbId }
+          : row.externalId
+            ? { externalId: row.externalId }
+            : { title: row.title };
+
         const existing = await itemRepository.findOne({
           where: {
             importList: { id: list.id },
             mediaType: row.mediaType,
-            ...(row.tmdbId
-              ? { tmdbId: row.tmdbId }
-              : { externalId: row.externalId ?? undefined }),
+            ...identity,
           },
         });
 

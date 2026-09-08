@@ -15,7 +15,10 @@ import {
   QuotaRestrictedError,
 } from '@server/entity/MediaRequest';
 import { User } from '@server/entity/User';
-import { Watchlist } from '@server/entity/Watchlist';
+import {
+  DuplicateWatchlistRequestError,
+  Watchlist,
+} from '@server/entity/Watchlist';
 import * as providerRegistry from '@server/lib/importlists/providers';
 import * as resolver from '@server/lib/importlists/resolver';
 import { ImportListUnavailableError } from '@server/lib/importlists/types';
@@ -363,6 +366,75 @@ describe('import list sync', () => {
     assert.equal(request.mock.callCount(), 0);
     assert.equal(getRelatedMedia.mock.callCount(), 0);
     assert.equal(outcome.skipped, 1);
+  });
+
+  it('treats a title already on the watchlist as settled, not failed', async () => {
+    const owner = await makeOwner();
+    const list = await makeList(owner, { mode: ImportListMode.WATCHLIST });
+
+    stubProvider([{ title: 'Arrival' }]);
+    stubResolver(A_MOVIE);
+    mock.method(Media, 'getRelatedMedia', async () => []);
+    mock.method(Watchlist, 'createWatchlist', async () => {
+      throw new DuplicateWatchlistRequestError();
+    });
+
+    const outcome = await importListSync.syncSingleList(list.id);
+
+    assert.equal(outcome.errored, 0);
+    assert.equal(outcome.skipped, 1);
+    assert.equal(outcome.status, ImportListSyncStatus.SUCCESS);
+
+    const items = await getRepository(ImportListItem).find();
+    assert.equal(items[0].status, ImportListItemStatus.ALREADY_REQUESTED);
+  });
+
+  it('skips a settled entry without resolving it again', async () => {
+    const owner = await makeOwner();
+    const list = await makeList(owner);
+
+    await getRepository(ImportListItem).save(
+      new ImportListItem({
+        importList: list,
+        mediaType: MediaType.MOVIE,
+        tmdbId: 329865,
+        title: 'Arrival',
+        status: ImportListItemStatus.REQUESTED,
+      })
+    );
+
+    // The entry already carries its id, so resolution is avoidable entirely.
+    stubProvider([
+      { tmdbId: 329865, mediaType: MediaType.MOVIE, title: 'Arrival' },
+    ]);
+    const resolve = mock.method(
+      resolver,
+      'resolveImportListEntry',
+      async () => A_MOVIE
+    );
+
+    const outcome = await importListSync.syncSingleList(list.id);
+
+    assert.equal(resolve.mock.callCount(), 0);
+    assert.equal(outcome.skipped, 1);
+  });
+
+  it('keeps one row per unmatchable title across repeated syncs', async () => {
+    const owner = await makeOwner();
+    const list = await makeList(owner);
+
+    stubProvider([{ title: 'Something Obscure', year: 1974 }]);
+    stubResolver(undefined);
+
+    await importListSync.syncSingleList(list.id);
+    await importListSync.syncSingleList(list.id);
+    await importListSync.syncSingleList(list.id);
+
+    // An unresolved row has no id for the unique constraints to key on, so
+    // without title matching this would be three rows.
+    const items = await getRepository(ImportListItem).find();
+    assert.equal(items.length, 1);
+    assert.equal(items[0].status, ImportListItemStatus.NOT_FOUND);
   });
 
   it('deduplicates a title that appears twice in one list', async () => {

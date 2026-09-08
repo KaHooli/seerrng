@@ -13,6 +13,7 @@ import {
   ImportListIdentifierError,
   ImportListUnavailableError,
   asHttpUrl,
+  assertUnderstoodResponse,
   requireNonEmptyIdentifier,
 } from '@server/lib/importlists/types';
 import { normalizeValidIsbn } from '@server/lib/isbn';
@@ -104,7 +105,7 @@ export const goodreadsItemToEntry = (
 /** Parses a Goodreads shelf RSS document into entries. */
 export const parseGoodreadsFeed = async (
   xml: string
-): Promise<ImportListEntry[]> => {
+): Promise<{ entries: ImportListEntry[]; received: number }> => {
   const parsed = await xml2js.parseStringPromise(xml, {
     explicitArray: true,
     trim: true,
@@ -112,9 +113,12 @@ export const parseGoodreadsFeed = async (
 
   const items: GoodreadsRssItem[] = parsed?.rss?.channel?.[0]?.item ?? [];
 
-  return items
-    .map(goodreadsItemToEntry)
-    .filter((entry): entry is ImportListEntry => entry !== undefined);
+  return {
+    entries: items
+      .map(goodreadsItemToEntry)
+      .filter((entry): entry is ImportListEntry => entry !== undefined),
+    received: items.length,
+  };
 };
 
 class GoodreadsImportListProvider implements ImportListProvider {
@@ -192,7 +196,16 @@ class GoodreadsImportListProvider implements ImportListProvider {
     try {
       for (let page = 1; page <= MAX_PAGES; page++) {
         const xml = await api.getShelfFeed(userId, shelf, page);
-        const pageEntries = await parseGoodreadsFeed(xml);
+        const { entries: pageEntries, received } =
+          await parseGoodreadsFeed(xml);
+
+        if (page === 1) {
+          assertUnderstoodResponse({
+            received,
+            parsed: pageEntries.length,
+            source: 'Goodreads',
+          });
+        }
 
         if (!pageEntries.length) {
           break;
@@ -201,13 +214,16 @@ class GoodreadsImportListProvider implements ImportListProvider {
         entries.push(...pageEntries);
 
         if (
-          pageEntries.length < GOODREADS_PAGE_SIZE ||
+          received < GOODREADS_PAGE_SIZE ||
           entries.length >= options.maxItems
         ) {
           break;
         }
       }
     } catch (e) {
+      if (e instanceof ImportListUnavailableError) {
+        throw e;
+      }
       throw new ImportListUnavailableError(
         `Goodreads did not return the shelf: ${
           e instanceof Error ? e.message : 'unknown error'

@@ -130,6 +130,11 @@ on the user's profile.
 | **Synced with problems** | The list was read, but some items could not be matched or requested. |
 | **Failed** | The list itself could not be read. The reason is shown beneath the status. |
 
+A list that returns items SeerrNG cannot interpret is reported as **Failed**,
+not as an empty success. That distinction matters: a provider changing its
+response format would otherwise look identical to "your list is empty", and
+nothing would ever be requested again without any sign of a problem.
+
 A user hitting their quota is not a failure: those items are recorded as skipped
 and picked up on a later run, once the quota window has moved.
 

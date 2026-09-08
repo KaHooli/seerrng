@@ -96,6 +96,38 @@ export class ImportListNotConfiguredError extends Error {
   }
 }
 
+/**
+ * Guards the failure mode that matters most for providers with no API contract
+ * to hold them to: a response whose shape has changed still parses, it just
+ * yields nothing. Left alone that reads to the user as "synced fine, your list
+ * is empty" while nothing is ever requested again.
+ *
+ * So: rows arrived but none were understood => the shape moved, say so. No rows
+ * at all => the list really is empty, which is a perfectly good outcome.
+ *
+ * @param received rows the source returned
+ * @param parsed rows this provider turned into entries
+ */
+export const assertUnderstoodResponse = ({
+  received,
+  parsed,
+  source,
+  detail,
+}: {
+  received: number;
+  parsed: number;
+  source: string;
+  detail?: string;
+}): void => {
+  if (received > 0 && parsed === 0) {
+    throw new ImportListUnavailableError(
+      `${source} returned ${received} item(s) in a format this version could not read${
+        detail ? `. ${detail}` : '.'
+      }`
+    );
+  }
+};
+
 /** Trims and collapses whitespace, then rejects empty input. */
 export const requireNonEmptyIdentifier = (input: string): string => {
   const trimmed = input.trim();

@@ -3,7 +3,11 @@ import { describe, it } from 'node:test';
 
 import { ImportListProviderId } from '@server/constants/importList';
 import { MediaType } from '@server/constants/media';
-import { ImportListIdentifierError } from '@server/lib/importlists/types';
+import {
+  assertUnderstoodResponse,
+  ImportListIdentifierError,
+  ImportListUnavailableError,
+} from '@server/lib/importlists/types';
 import anilistProvider from './anilist';
 import goodreadsProvider from './goodreads';
 import imdbProvider, {
@@ -17,7 +21,7 @@ import letterboxdProvider, {
 } from './letterboxd';
 import mdblistProvider, { mdbListItemToEntry } from './mdblist';
 import openLibraryProvider from './openlibrary';
-import stevenLuProvider from './stevenlu';
+import stevenLuProvider, { stevenLuMovieToEntry } from './stevenlu';
 import { tmdbCollectionProvider, tmdbListProvider } from './tmdb';
 import traktProvider, { traktItemToEntry } from './trakt';
 import tvdbProvider, { tvdbEntityToEntry } from './tvdb';
@@ -419,6 +423,82 @@ describe('Steven Lu identifier', () => {
     assert.throws(
       () => stevenLuProvider.parse('popular-movies'),
       ImportListIdentifierError
+    );
+  });
+});
+
+describe('Steven Lu feed shape', () => {
+  // Captured from the live feed at https://s3.amazonaws.com/popular-movies/movies.json
+  const LIVE_ROW = {
+    title: 'Spider-Man: Brand New Day',
+    tmdb_id: 969681,
+    imdb_id: 'tt22084616',
+    poster_url:
+      'http://image.tmdb.org/t/p/w500/bjiS5ipwxb9JFy3XRRN4OAilSeX.jpg',
+    genres: ['science_fiction', 'action', 'adventure'],
+  };
+
+  it('takes the TMDB id the feed already provides', () => {
+    const entry = stevenLuMovieToEntry(LIVE_ROW);
+
+    // Carrying tmdb_id spares the resolver a /find lookup per item.
+    assert.equal(entry?.tmdbId, 969681);
+    assert.equal(entry?.imdbId, 'tt22084616');
+    assert.equal(entry?.title, 'Spider-Man: Brand New Day');
+    assert.equal(entry?.mediaType, MediaType.MOVIE);
+  });
+
+  it('still works if the feed drops back to an IMDb id alone', () => {
+    const entry = stevenLuMovieToEntry({
+      title: 'Arrival',
+      imdb_id: 'tt2543164',
+    });
+
+    assert.equal(entry?.tmdbId, undefined);
+    assert.equal(entry?.imdbId, 'tt2543164');
+  });
+
+  it('drops a row carrying no usable identity', () => {
+    assert.equal(stevenLuMovieToEntry({}), undefined);
+    assert.equal(stevenLuMovieToEntry({ poster_url: 'x' }), undefined);
+  });
+});
+
+describe('unreadable-response guard', () => {
+  it('raises when rows arrived but none were understood', () => {
+    assert.throws(
+      () =>
+        assertUnderstoodResponse({
+          received: 40,
+          parsed: 0,
+          source: 'Trakt',
+        }),
+      ImportListUnavailableError
+    );
+  });
+
+  it('stays quiet for a genuinely empty list', () => {
+    assert.doesNotThrow(() =>
+      assertUnderstoodResponse({ received: 0, parsed: 0, source: 'Trakt' })
+    );
+  });
+
+  it('stays quiet when some rows were understood', () => {
+    assert.doesNotThrow(() =>
+      assertUnderstoodResponse({ received: 40, parsed: 3, source: 'Trakt' })
+    );
+  });
+
+  it('names the source and count so the status line is actionable', () => {
+    assert.throws(
+      () =>
+        assertUnderstoodResponse({
+          received: 250,
+          parsed: 0,
+          source: 'MDBList',
+          detail: 'Extra context.',
+        }),
+      /MDBList returned 250 item\(s\).*Extra context\./s
     );
   });
 });

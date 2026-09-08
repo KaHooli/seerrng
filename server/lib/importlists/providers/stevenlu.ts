@@ -28,7 +28,10 @@ const STEVENLU_LIST_NAME = 'Steven Lu Popular Movies';
 interface StevenLuMovie {
   title?: string;
   imdb_id?: string;
+  /** Present on every row of the live feed, so no lookup is needed. */
+  tmdb_id?: number;
   poster_url?: string;
+  genres?: string[];
 }
 
 class StevenLuAPI extends ExternalAPI {
@@ -50,14 +53,23 @@ export const stevenLuMovieToEntry = (
 ): ImportListEntry | undefined => {
   const title = typeof movie.title === 'string' ? movie.title.trim() : '';
   const imdbId = isImdbId(movie.imdb_id) ? movie.imdb_id : undefined;
+  const tmdbId =
+    typeof movie.tmdb_id === 'number' &&
+    Number.isSafeInteger(movie.tmdb_id) &&
+    movie.tmdb_id > 0
+      ? movie.tmdb_id
+      : undefined;
 
-  if (!title && !imdbId) {
+  if (!title && !imdbId && !tmdbId) {
     return undefined;
   }
 
   return {
     title: title || undefined,
     imdbId,
+    // The feed names the TMDB id outright, so carrying it here spares the
+    // resolver a /find lookup for every item in the list.
+    tmdbId,
     mediaType: MediaType.MOVIE,
   };
 };

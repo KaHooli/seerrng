@@ -13,6 +13,7 @@ import {
   ImportListIdentifierError,
   ImportListUnavailableError,
   asHttpUrl,
+  assertUnderstoodResponse,
   requireNonEmptyIdentifier,
 } from '@server/lib/importlists/types';
 
@@ -284,6 +285,15 @@ class AniListImportListProvider implements ImportListProvider {
         entries.push(entry);
       }
     }
+
+    assertUnderstoodResponse({
+      received: lists.reduce(
+        (total, group) => total + (group.entries?.length ?? 0),
+        0
+      ),
+      parsed: entries.length,
+      source: 'AniList',
+    });
 
     return {
       entries: entries.slice(0, options.maxItems),

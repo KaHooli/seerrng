@@ -13,6 +13,7 @@ import {
   ImportListIdentifierError,
   ImportListUnavailableError,
   asHttpUrl,
+  assertUnderstoodResponse,
   requireNonEmptyIdentifier,
 } from '@server/lib/importlists/types';
 
@@ -110,6 +111,14 @@ class TvdbImportListProvider implements ImportListProvider {
     const entries = entities
       .map(tvdbEntityToEntry)
       .filter((entry): entry is ImportListEntry => entry !== undefined);
+
+    assertUnderstoodResponse({
+      received: entities.length,
+      parsed: entries.length,
+      source: 'TVDB',
+      detail:
+        'TVDB movie IDs have no TMDB equivalent, so a list of only movies cannot be synced.',
+    });
 
     return {
       entries: entries.slice(0, options.maxItems),

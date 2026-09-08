@@ -12,6 +12,7 @@ import {
   ImportListIdentifierError,
   ImportListUnavailableError,
   asHttpUrl,
+  assertUnderstoodResponse,
   requireNonEmptyIdentifier,
   yearFromDate,
 } from '@server/lib/importlists/types';
@@ -167,11 +168,21 @@ class TmdbListImportListProvider implements ImportListProvider {
           break;
         }
 
+        const before = entries.length;
         for (const item of response.items) {
           const entry = tmdbResultToEntry(item);
           if (entry) {
             entries.push(entry);
           }
+        }
+
+        if (page === 1) {
+          assertUnderstoodResponse({
+            received: response.items.length,
+            parsed: entries.length - before,
+            source: 'TMDB',
+            detail: 'A list of only people has nothing requestable in it.',
+          });
         }
 
         if (response.items.length < TMDB_LIST_PAGE_SIZE) {
@@ -184,6 +195,9 @@ class TmdbListImportListProvider implements ImportListProvider {
         (itemCount === undefined || entries.length < itemCount)
       );
     } catch (e) {
+      if (e instanceof ImportListUnavailableError) {
+        throw e;
+      }
       throw new ImportListUnavailableError(
         `TMDB did not return the list: ${
           e instanceof Error ? e.message : 'unknown error'
@@ -243,12 +257,21 @@ class TmdbCollectionImportListProvider implements ImportListProvider {
         )
         .filter((entry): entry is ImportListEntry => entry !== undefined);
 
+      assertUnderstoodResponse({
+        received: parts.length,
+        parsed: entries.length,
+        source: 'TMDB',
+      });
+
       return {
         entries: entries.slice(0, options.maxItems),
         name: collection.name?.trim() || undefined,
         truncated: entries.length > options.maxItems,
       };
     } catch (e) {
+      if (e instanceof ImportListUnavailableError) {
+        throw e;
+      }
       throw new ImportListUnavailableError(
         `TMDB did not return the collection: ${
           e instanceof Error ? e.message : 'unknown error'

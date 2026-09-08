@@ -19,6 +19,7 @@ import type {
 } from '@server/lib/importlists/types';
 import {
   asHttpUrl,
+  assertUnderstoodResponse,
   ImportListIdentifierError,
   ImportListNotConfiguredError,
   ImportListUnavailableError,
@@ -289,11 +290,22 @@ class TraktImportListProvider implements ImportListProvider {
             : MediaType.TV
           : undefined;
 
+      const before = entries.length;
       for (const item of items) {
         const entry = traktItemToEntry(item, fallback);
         if (entry) {
           entries.push(entry);
         }
+      }
+
+      // Judge on the first page only: later pages are the same shape, and a
+      // trailing page of oddities should not fail a list that already read.
+      if (page === 1) {
+        assertUnderstoodResponse({
+          received: items.length,
+          parsed: entries.length - before,
+          source: 'Trakt',
+        });
       }
 
       if (items.length < limit) {

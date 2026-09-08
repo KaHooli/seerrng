@@ -225,6 +225,16 @@ class LetterboxdImportListProvider implements ImportListProvider {
         const pageRefs = parseLetterboxdListPage(html);
 
         if (!pageRefs.length) {
+          // Letterboxd serves a full page even for an empty list, so there is
+          // no signal here that separates "the list is empty" from "the poster
+          // markup moved again". Report rather than guess: a silently empty
+          // sync of a list someone deliberately added is the worse outcome, and
+          // this at least names both possibilities.
+          if (page === 1 && html.length > 0) {
+            throw new ImportListUnavailableError(
+              'No films were found on the first page of this Letterboxd list. Either the list is empty, or Letterboxd has changed its page markup.'
+            );
+          }
           break;
         }
 
@@ -243,6 +253,9 @@ class LetterboxdImportListProvider implements ImportListProvider {
         }
       }
     } catch (e) {
+      if (e instanceof ImportListUnavailableError) {
+        throw e;
+      }
       throw new ImportListUnavailableError(
         `Letterboxd did not return the list: ${
           e instanceof Error ? e.message : 'unknown error'

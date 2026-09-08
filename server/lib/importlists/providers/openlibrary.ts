@@ -14,6 +14,7 @@ import {
   ImportListIdentifierError,
   ImportListUnavailableError,
   asHttpUrl,
+  assertUnderstoodResponse,
   requireNonEmptyIdentifier,
 } from '@server/lib/importlists/types';
 
@@ -233,12 +234,20 @@ class OpenLibraryImportListProvider implements ImportListProvider {
       if (list.listId.includes('/')) {
         const [username, listId] = list.listId.split('/');
         const response = await api.getListSeeds(username, listId);
-        for (const seed of response.entries ?? []) {
+        const seeds = response.entries ?? [];
+        for (const seed of seeds) {
           const entry = seedToEntry(seed);
           if (entry) {
             entries.push(entry);
           }
         }
+        assertUnderstoodResponse({
+          received: seeds.length,
+          parsed: entries.length,
+          source: 'Open Library',
+          detail:
+            'A list holding only authors or subjects has no books to request.',
+        });
       } else {
         const [username, shelf] = list.listId.split(':');
         if (!isShelf(shelf)) {
@@ -253,11 +262,19 @@ class OpenLibraryImportListProvider implements ImportListProvider {
           if (!rows.length) {
             break;
           }
+          const before = entries.length;
           for (const row of rows) {
             const entry = readingLogEntryToEntry(row);
             if (entry) {
               entries.push(entry);
             }
+          }
+          if (page === 1) {
+            assertUnderstoodResponse({
+              received: rows.length,
+              parsed: entries.length - before,
+              source: 'Open Library',
+            });
           }
           if (rows.length < OPENLIBRARY_PAGE_SIZE) {
             break;
@@ -265,7 +282,10 @@ class OpenLibraryImportListProvider implements ImportListProvider {
         }
       }
     } catch (e) {
-      if (e instanceof ImportListIdentifierError) {
+      if (
+        e instanceof ImportListIdentifierError ||
+        e instanceof ImportListUnavailableError
+      ) {
         throw e;
       }
       throw new ImportListUnavailableError(

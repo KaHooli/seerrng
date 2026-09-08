@@ -13,6 +13,7 @@ import {
   ImportListIdentifierError,
   ImportListUnavailableError,
   asHttpUrl,
+  assertUnderstoodResponse,
   isImdbId,
   requireNonEmptyIdentifier,
   titleizeSlug,
@@ -222,11 +223,20 @@ class MdbListImportListProvider implements ImportListProvider {
           break;
         }
 
+        const before = entries.length;
         for (const item of items) {
           const entry = mdbListItemToEntry(item);
           if (entry) {
             entries.push(entry);
           }
+        }
+
+        if (offset === 0) {
+          assertUnderstoodResponse({
+            received: items.length,
+            parsed: entries.length - before,
+            source: 'MDBList',
+          });
         }
 
         if (!api.paginates || items.length < limit) {
@@ -236,6 +246,9 @@ class MdbListImportListProvider implements ImportListProvider {
         offset += items.length;
       } while (entries.length < options.maxItems);
     } catch (e) {
+      if (e instanceof ImportListUnavailableError) {
+        throw e;
+      }
       throw new ImportListUnavailableError(
         `MDBList did not return the list: ${
           e instanceof Error ? e.message : 'unknown error'

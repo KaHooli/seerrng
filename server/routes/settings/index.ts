@@ -101,6 +101,7 @@ import { rescheduleJob } from 'node-schedule';
 import path from 'path';
 import semver from 'semver';
 import { URL } from 'url';
+import importListSettingsRoutes from './importlists';
 import lidarrRoutes from './lidarr';
 import metadataRoutes from './metadata';
 import notificationRoutes from './notifications';
@@ -1380,6 +1381,7 @@ settingsRoutes.use('/lidarr', lidarrRoutes);
 settingsRoutes.use('/readarr', readarrRoutes);
 settingsRoutes.use('/discover', discoverSettingRoutes);
 settingsRoutes.use('/metadatas', metadataRoutes);
+settingsRoutes.use('/importlists', importListSettingsRoutes);
 
 export const filteredMainSettings = (
   user: User,

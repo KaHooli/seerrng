@@ -20,6 +20,13 @@ concurrency:
 jobs:
   package-helm-chart:
     name: Package helm chart
+    # Chart packaging and publication run on self-hosted runners labelled for
+    # the maintainer's build host. A fork without those runners leaves this job
+    # queued until GitHub cancels it 24 hours later, so every change under
+    # charts/ shows a check that never completes. Gate it on the same opt-in
+    # repository variable as the CI release pipeline; set
+    # SEERRNG_ENABLE_RELEASE_PIPELINE to true where the runners exist.
+    if: vars.SEERRNG_ENABLE_RELEASE_PIPELINE == 'true'
     runs-on: [self-hosted, Linux, X64, seerrng]
     timeout-minutes: 30
     permissions:
@@ -100,7 +107,9 @@ jobs:
       packages: write
       id-token: write
     needs: [package-helm-chart]
-    if: needs.package-helm-chart.outputs.has_artifacts == 'true'
+    # Skipped with package-helm-chart via needs, and stated explicitly so the
+    # gate survives any future change to this job's dependencies.
+    if: vars.SEERRNG_ENABLE_RELEASE_PIPELINE == 'true' && needs.package-helm-chart.outputs.has_artifacts == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -189,6 +198,9 @@ jobs:
   verify:
     name: Verify signatures for each chart tag
     needs: [publish]
+    # Skipped with publish via needs, and stated explicitly so the gate
+    # survives any future change to this job's dependencies.
+    if: vars.SEERRNG_ENABLE_RELEASE_PIPELINE == 'true'
     runs-on: [self-hosted, Linux, X64, seerrng]
     timeout-minutes: 15
     permissions:

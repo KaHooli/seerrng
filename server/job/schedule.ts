@@ -4,6 +4,7 @@ import availabilitySync from '@server/lib/availabilitySync';
 import downloadRecovery from '@server/lib/downloadRecovery';
 import downloadTracker from '@server/lib/downloadtracker';
 import ImageProxy from '@server/lib/imageproxy';
+import importListSync from '@server/lib/importlistsync';
 import refreshToken from '@server/lib/refreshToken';
 import { reconcileActiveRequests } from '@server/lib/requestStatus';
 import {
@@ -382,6 +383,27 @@ export const startJobs = (): void => {
     }),
     running: () => availabilitySync.running,
     cancelFn: () => availabilitySync.cancel(),
+  });
+
+  // Sync each user's configured import lists
+  scheduledJobs.push({
+    id: 'import-list-sync',
+    name: 'Import List Sync',
+    type: 'process',
+    interval: 'hours',
+    cronSchedule: jobs['import-list-sync'].schedule,
+    job: schedule.scheduleJob(jobs['import-list-sync'].schedule, () => {
+      logger.info('Starting scheduled job: Import List Sync', {
+        label: 'Jobs',
+      });
+      return runTrackedJob(
+        'Import List Sync',
+        () => importListSync.syncImportLists(),
+        { logCompletion: true }
+      );
+    }),
+    running: () => importListSync.status().running,
+    cancelFn: () => importListSync.cancel(),
   });
 
   // Run download sync every minute

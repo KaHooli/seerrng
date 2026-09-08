@@ -165,6 +165,26 @@ export interface MetadataSettings {
   anime: MetadataProviderType;
 }
 
+export interface ImportListSettings {
+  /** Master switch. When false the sync job runs but processes nothing. */
+  enabled: boolean;
+  /**
+   * Upper bound on items read from any single list, per sync. Guards against a
+   * user subscribing to a list of tens of thousands of titles.
+   */
+  maxItemsPerList: number;
+  /** How many lists are synced concurrently across all users. */
+  syncConcurrency: number;
+  /** Mode preselected in the "add list" form. */
+  defaultMode: 'request' | 'watchlist';
+  /** Trakt API v2 client id; Trakt lists are unavailable without it. */
+  traktClientId: string;
+  /** Optional: TVDB v4 key. Falls back to the metadata provider key. */
+  tvdbApiKey: string;
+  /** Optional: MDBList key. Public lists work without one. */
+  mdblistApiKey: string;
+}
+
 export interface ProxySettings {
   enabled: boolean;
   hostname: string;
@@ -438,7 +458,8 @@ export type JobId =
   | 'jellyfin-full-scan'
   | 'image-cache-cleanup'
   | 'availability-sync'
-  | 'process-blocklisted-tags';
+  | 'process-blocklisted-tags'
+  | 'import-list-sync';
 
 export interface AllSettings {
   clientId: string;
@@ -459,6 +480,7 @@ export interface AllSettings {
   jobs: Record<JobId, JobSettings>;
   network: NetworkSettings;
   metadataSettings: MetadataSettings;
+  importLists: ImportListSettings;
   migrations: string[];
 }
 
@@ -550,6 +572,15 @@ class Settings {
       metadataSettings: {
         tv: MetadataProviderType.TMDB,
         anime: MetadataProviderType.TMDB,
+      },
+      importLists: {
+        enabled: true,
+        maxItemsPerList: 500,
+        syncConcurrency: 2,
+        defaultMode: 'request',
+        traktClientId: '',
+        tvdbApiKey: '',
+        mdblistApiKey: '',
       },
       radarr: [],
       sonarr: [],
@@ -717,6 +748,10 @@ class Settings {
         },
         'process-blocklisted-tags': {
           schedule: '0 30 1 */7 * *',
+        },
+        'import-list-sync': {
+          schedule: '0 0 */12 * * *',
+          enabled: true,
         },
       },
       network: {
@@ -895,6 +930,14 @@ class Settings {
       this.data.metadataSettings,
       data
     );
+  }
+
+  get importLists(): ImportListSettings {
+    return this.data.importLists;
+  }
+
+  set importLists(data: ImportListSettings) {
+    this.data.importLists = mergeSettings(this.data.importLists, data);
   }
 
   public replaceSection<K extends keyof AllSettings>(
@@ -1290,6 +1333,15 @@ class Settings {
         tv: MetadataProviderType.TMDB,
         anime: MetadataProviderType.TMDB,
       },
+      importLists: {
+        enabled: true,
+        maxItemsPerList: 500,
+        syncConcurrency: 2,
+        defaultMode: 'request',
+        traktClientId: '',
+        tvdbApiKey: '',
+        mdblistApiKey: '',
+      },
       radarr: [],
       sonarr: [],
       lidarr: [],
@@ -1456,6 +1508,10 @@ class Settings {
         },
         'process-blocklisted-tags': {
           schedule: '0 30 1 */7 * *',
+        },
+        'import-list-sync': {
+          schedule: '0 0 */12 * * *',
+          enabled: true,
         },
       },
       network: {

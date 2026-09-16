@@ -4,6 +4,8 @@ export const THEME_SHADE_COUNT = 11;
 // not claim one of these: the built-in palette always wins the lookup, so a
 // colliding package would be permanently unselectable.
 export const BUILT_IN_THEME_IDS = [
+  'classic',
+  'seerr',
   'aurora',
   'ember',
   'lagoon',

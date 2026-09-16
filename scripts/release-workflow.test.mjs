@@ -181,9 +181,12 @@ test('multi-architecture publishers perform the real build once and verify the i
     ).run,
     /ready=false/u
   );
+  // This fork gates its deployment pipeline on an opt-in variable as well,
+  // because the self-hosted runners only exist where an operator has set it.
+  // Upstream's readiness check still has to be part of the condition.
   assert.equal(
     ci.jobs['deploy-main'].if,
-    "github.ref == 'refs/heads/main' && needs.preflight-deploy.outputs.ready == 'true'"
+    "github.ref == 'refs/heads/main' && vars.SEERRNG_ENABLE_RELEASE_PIPELINE == 'true' && needs.preflight-deploy.outputs.ready == 'true'"
   );
   assert.match(
     ci.jobs.publish.steps.find(

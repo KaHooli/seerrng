@@ -81,10 +81,15 @@ describe('Books and Music discover parity', () => {
     cy.contains('button', 'Lagoon').click();
     cy.get('html').should('have.attr', 'data-theme-palette', 'lagoon');
 
-    // Each mode button applies the mode it names; it is not a toggle.
+    // Each mode button applies the mode it names; it is not a toggle. They are
+    // plain buttons rather than menu items, so the panel deliberately stays
+    // open between them and has to be dismissed before reaching the controls
+    // beside it — upstream's picker closes itself instead, because its mode
+    // control is a single menu item.
     cy.get('button[aria-label="Theme picker"]').click();
     cy.contains('button', 'Light mode').click();
     cy.get('html').should('have.attr', 'data-theme-mode', 'light');
+    cy.get('button[aria-label="Theme picker"]').click();
 
     cy.get('[data-testid=user-menu]').click();
     cy.contains('a', 'Sign Out').should('be.visible');

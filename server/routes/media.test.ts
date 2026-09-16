@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { before, beforeEach, describe, it, mock } from 'node:test';
 
+import LidarrAPI from '@server/api/servarr/lidarr';
 import RadarrAPI from '@server/api/servarr/radarr';
 import ReadarrAPI from '@server/api/servarr/readarr';
 import SonarrAPI from '@server/api/servarr/sonarr';
@@ -17,6 +19,7 @@ import { checkUser } from '@server/middleware/auth';
 import { setupTestDb } from '@server/test/db';
 import type { Express } from 'express';
 import express from 'express';
+import * as OpenApiValidator from 'express-openapi-validator';
 import rateLimit from 'express-rate-limit';
 import session from 'express-session';
 import request from 'supertest';
@@ -51,6 +54,59 @@ let app: Express;
 const removeBookMock = mock.method(
   ReadarrAPI.prototype,
   'removeBook',
+  async () => undefined
+);
+const getBookMock = mock.method(
+  ReadarrAPI.prototype,
+  'getBook',
+  async (bookId: number) =>
+    ({
+      id: bookId,
+      title: 'Requested Book',
+      foreignBookId: 'requested-book',
+      authorId: 700,
+    }) as Awaited<ReturnType<ReadarrAPI['getBook']>>
+);
+const getBooksByAuthorMock = mock.method(
+  ReadarrAPI.prototype,
+  'getBooksByAuthor',
+  async () =>
+    [
+      {
+        id: 999,
+        title: 'Another Book',
+        foreignBookId: 'another-book',
+        authorId: 700,
+      },
+    ] as Awaited<ReturnType<ReadarrAPI['getBooksByAuthor']>>
+);
+const removeAuthorMock = mock.method(
+  ReadarrAPI.prototype,
+  'removeAuthor',
+  async () => undefined
+);
+const getAlbumMock = mock.method(
+  LidarrAPI.prototype,
+  'getAlbum',
+  async ({ id }: { id: number }) =>
+    ({ id, artistId: 800 }) as Awaited<ReturnType<LidarrAPI['getAlbum']>>
+);
+const getAlbumsByArtistMock = mock.method(
+  LidarrAPI.prototype,
+  'getAlbumsByArtist',
+  async () =>
+    [{ id: 998, artistId: 800 }] as Awaited<
+      ReturnType<LidarrAPI['getAlbumsByArtist']>
+    >
+);
+const removeAlbumMock = mock.method(
+  LidarrAPI.prototype,
+  'removeAlbum',
+  async () => undefined
+);
+const removeArtistMock = mock.method(
+  LidarrAPI.prototype,
+  'removeArtist',
   async () => undefined
 );
 const removeMovieMock = mock.fn(async (movieId: number) => {
@@ -139,6 +195,46 @@ before(async () => {
 beforeEach(() => {
   removeBookMock.mock.resetCalls();
   removeBookMock.mock.mockImplementation(async () => undefined);
+  getBookMock.mock.resetCalls();
+  getBookMock.mock.mockImplementation(
+    async (bookId: number) =>
+      ({
+        id: bookId,
+        title: 'Requested Book',
+        foreignBookId: 'requested-book',
+        authorId: 700,
+      }) as Awaited<ReturnType<ReadarrAPI['getBook']>>
+  );
+  getBooksByAuthorMock.mock.resetCalls();
+  getBooksByAuthorMock.mock.mockImplementation(
+    async () =>
+      [
+        {
+          id: 999,
+          title: 'Another Book',
+          foreignBookId: 'another-book',
+          authorId: 700,
+        },
+      ] as Awaited<ReturnType<ReadarrAPI['getBooksByAuthor']>>
+  );
+  removeAuthorMock.mock.resetCalls();
+  removeAuthorMock.mock.mockImplementation(async () => undefined);
+  getAlbumMock.mock.resetCalls();
+  getAlbumMock.mock.mockImplementation(
+    async ({ id }: { id: number }) =>
+      ({ id, artistId: 800 }) as Awaited<ReturnType<LidarrAPI['getAlbum']>>
+  );
+  getAlbumsByArtistMock.mock.resetCalls();
+  getAlbumsByArtistMock.mock.mockImplementation(
+    async () =>
+      [{ id: 998, artistId: 800 }] as Awaited<
+        ReturnType<LidarrAPI['getAlbumsByArtist']>
+      >
+  );
+  removeAlbumMock.mock.resetCalls();
+  removeAlbumMock.mock.mockImplementation(async () => undefined);
+  removeArtistMock.mock.resetCalls();
+  removeArtistMock.mock.mockImplementation(async () => undefined);
   removeMovieMock.mock.resetCalls();
   removeMovieMock.mock.mockImplementation(async () => undefined);
   removeSeriesMock.mock.resetCalls();
@@ -275,6 +371,28 @@ beforeEach(() => {
       tagRequests: false,
       overrideRule: [],
       serviceType: 'audiobook',
+    },
+  ];
+  settings.lidarr = [
+    {
+      id: 70,
+      name: 'Lidarr',
+      hostname: 'lidarr.local',
+      port: 8686,
+      apiKey: 'music-key',
+      useSsl: false,
+      activeProfileId: 1,
+      activeProfileName: 'Music',
+      activeMetadataProfileId: 1,
+      activeMetadataProfileName: 'Standard',
+      activeDirectory: '/music',
+      tags: [],
+      is4k: false,
+      isDefault: true,
+      syncEnabled: true,
+      preventSearch: false,
+      tagRequests: false,
+      overrideRule: [],
     },
   ];
 });
@@ -573,6 +691,106 @@ describe('POST /media/:id/:status', () => {
 });
 
 describe('DELETE /media/:id/file', () => {
+  it('accepts book format removals through the production OpenAPI boundary', async () => {
+    const validatedApp = express();
+    validatedApp.use(express.json());
+    validatedApp.use(
+      session({
+        secret: 'test-secret',
+        cookie: { secure: 'auto' },
+        resave: false,
+        saveUninitialized: false,
+      })
+    );
+    validatedApp.use(rateLimit({ windowMs: 60_000, limit: 10_000 }), checkUser);
+    validatedApp.use('/api/v1/auth', authRoutes);
+    validatedApp.use(
+      OpenApiValidator.middleware({
+        apiSpec: path.join(process.cwd(), 'seerr-api.yml'),
+        validateRequests: true,
+        validateSecurity: false,
+      })
+    );
+    validatedApp.use('/api/v1/media', mediaRoutes);
+    validatedApp.use(
+      (
+        err: { status?: number; message?: string; errors?: unknown[] },
+        _req: express.Request,
+        res: express.Response,
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        _next: express.NextFunction
+      ) => {
+        res.status(err.status ?? 500).json({
+          status: err.status ?? 500,
+          message: err.message,
+          errors: err.errors,
+        });
+      }
+    );
+
+    const settings = getSettings();
+    const priorLocalLogin = settings.main.localLogin;
+    settings.main.localLogin = true;
+
+    try {
+      const agent = request.agent(validatedApp);
+      const loginResponse = await agent
+        .post('/api/v1/auth/local')
+        .send({ email: 'admin@seerr.dev', password: 'test1234' });
+      assert.strictEqual(loginResponse.status, 200);
+
+      const ebook = await getRepository(Media).save(
+        new Media({
+          tmdbId: 0,
+          mediaType: MediaType.BOOK,
+          status: MediaStatus.AVAILABLE,
+          serviceId: 10,
+          externalServiceId: 100,
+          externalServiceSlug: 'ebook-slug',
+        })
+      );
+      const audiobook = await getRepository(Media).save(
+        new Media({
+          tmdbId: 0,
+          mediaType: MediaType.BOOK,
+          status: MediaStatus.AVAILABLE,
+          audiobookServiceId: 20,
+          audiobookExternalServiceId: 200,
+          audiobookExternalServiceSlug: 'audiobook-slug',
+        })
+      );
+      const bothFormats = await getRepository(Media).save(
+        new Media({
+          tmdbId: 0,
+          mediaType: MediaType.BOOK,
+          status: MediaStatus.AVAILABLE,
+          serviceId: 10,
+          externalServiceId: 100,
+          externalServiceSlug: 'ebook-slug',
+          audiobookServiceId: 20,
+          audiobookExternalServiceId: 200,
+          audiobookExternalServiceSlug: 'audiobook-slug',
+        })
+      );
+
+      const ebookResponse = await agent.delete(
+        `/api/v1/media/${ebook.id}/file?format=ebook`
+      );
+      const audiobookResponse = await agent.delete(
+        `/api/v1/media/${audiobook.id}/file?format=audiobook`
+      );
+      const bothResponse = await agent.delete(
+        `/api/v1/media/${bothFormats.id}/file?format=both`
+      );
+
+      assert.strictEqual(ebookResponse.status, 204);
+      assert.strictEqual(audiobookResponse.status, 204);
+      assert.strictEqual(bothResponse.status, 204);
+    } finally {
+      settings.main.localLogin = priorLocalLogin;
+    }
+  });
+
   it('uses an explicitly linked zero-valued service instead of the default', async (t) => {
     const settings = getSettings();
     settings.radarr.unshift({
@@ -825,6 +1043,40 @@ describe('DELETE /media/:id/file', () => {
     assert.strictEqual(updated.status, MediaStatus.PARTIALLY_AVAILABLE);
   });
 
+  it('removes only the audiobook link when an ebook link remains', async () => {
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.BOOK,
+        status: MediaStatus.AVAILABLE,
+        serviceId: 10,
+        externalServiceId: 100,
+        externalServiceSlug: 'ebook-slug',
+        audiobookServiceId: 20,
+        audiobookExternalServiceId: 200,
+        audiobookExternalServiceSlug: 'audiobook-slug',
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+    const res = await agent.delete(`/media/${media.id}/file?format=audiobook`);
+
+    assert.strictEqual(res.status, 204);
+    assert.strictEqual(removeBookMock.mock.callCount(), 1);
+    assert.strictEqual(removeBookMock.mock.calls[0].arguments[0], 200);
+
+    const updated = await getRepository(Media).findOneOrFail({
+      where: { id: media.id },
+    });
+    assert.strictEqual(updated.serviceId, 10);
+    assert.strictEqual(updated.externalServiceId, 100);
+    assert.strictEqual(updated.externalServiceSlug, 'ebook-slug');
+    assert.strictEqual(updated.audiobookServiceId, null);
+    assert.strictEqual(updated.audiobookExternalServiceId, null);
+    assert.strictEqual(updated.audiobookExternalServiceSlug, null);
+    assert.strictEqual(updated.status, MediaStatus.PARTIALLY_AVAILABLE);
+  });
+
   it('persists successful book format removals when another format fails', async () => {
     removeBookMock.mock.mockImplementation(async (bookId: number) => {
       if (bookId === 200) {
@@ -864,5 +1116,139 @@ describe('DELETE /media/:id/file', () => {
     assert.strictEqual(updated.audiobookExternalServiceId, 200);
     assert.strictEqual(updated.audiobookExternalServiceSlug, 'audiobook-slug');
     assert.strictEqual(updated.status, MediaStatus.PARTIALLY_AVAILABLE);
+  });
+
+  it('persists audiobook removal when ebook removal fails', async () => {
+    removeBookMock.mock.mockImplementation(async (bookId: number) => {
+      if (bookId === 100) {
+        throw new Error('Ebook removal failed');
+      }
+    });
+
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.BOOK,
+        status: MediaStatus.AVAILABLE,
+        serviceId: 10,
+        externalServiceId: 100,
+        externalServiceSlug: 'ebook-slug',
+        audiobookServiceId: 20,
+        audiobookExternalServiceId: 200,
+        audiobookExternalServiceSlug: 'audiobook-slug',
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+    const res = await agent.delete(`/media/${media.id}/file?format=both`);
+
+    assert.strictEqual(res.status, 404);
+    assert.strictEqual(removeBookMock.mock.callCount(), 2);
+    assert.strictEqual(removeBookMock.mock.calls[0].arguments[0], 100);
+    assert.strictEqual(removeBookMock.mock.calls[1].arguments[0], 200);
+
+    const updated = await getRepository(Media).findOneOrFail({
+      where: { id: media.id },
+    });
+    assert.strictEqual(updated.serviceId, 10);
+    assert.strictEqual(updated.externalServiceId, 100);
+    assert.strictEqual(updated.externalServiceSlug, 'ebook-slug');
+    assert.strictEqual(updated.audiobookServiceId, null);
+    assert.strictEqual(updated.audiobookExternalServiceId, null);
+    assert.strictEqual(updated.audiobookExternalServiceSlug, null);
+    assert.strictEqual(updated.status, MediaStatus.PARTIALLY_AVAILABLE);
+  });
+
+  it('removes only the requested book when its author has another book', async () => {
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.BOOK,
+        status: MediaStatus.AVAILABLE,
+        serviceId: 10,
+        externalServiceId: 100,
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+    const response = await agent.delete(`/media/${media.id}/file?format=ebook`);
+
+    assert.strictEqual(response.status, 204);
+    assert.deepStrictEqual(getBookMock.mock.calls[0].arguments, [100, 0]);
+    assert.strictEqual(removeBookMock.mock.calls[0].arguments[0], 100);
+    assert.deepStrictEqual(
+      getBooksByAuthorMock.mock.calls[0].arguments,
+      [700, 0]
+    );
+    assert.strictEqual(removeAuthorMock.mock.callCount(), 0);
+  });
+
+  it('removes the Bookshelf author after its last requested book', async () => {
+    getBooksByAuthorMock.mock.mockImplementation(async () => []);
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.BOOK,
+        status: MediaStatus.AVAILABLE,
+        serviceId: 10,
+        externalServiceId: 101,
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+    const response = await agent.delete(`/media/${media.id}/file?format=ebook`);
+
+    assert.strictEqual(response.status, 204);
+    assert.strictEqual(removeBookMock.mock.calls[0].arguments[0], 101);
+    assert.strictEqual(removeAuthorMock.mock.callCount(), 1);
+    assert.strictEqual(removeAuthorMock.mock.calls[0].arguments[0], 700);
+  });
+
+  it('removes only the requested album when its artist has another album', async () => {
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.MUSIC,
+        status: MediaStatus.AVAILABLE,
+        serviceId: 70,
+        externalServiceId: 300,
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+    const response = await agent.delete(`/media/${media.id}/file`);
+
+    assert.strictEqual(response.status, 204);
+    assert.deepStrictEqual(getAlbumMock.mock.calls[0].arguments, [
+      { id: 300 },
+      0,
+    ]);
+    assert.strictEqual(removeAlbumMock.mock.calls[0].arguments[0], 300);
+    assert.deepStrictEqual(
+      getAlbumsByArtistMock.mock.calls[0].arguments,
+      [800, 0]
+    );
+    assert.strictEqual(removeArtistMock.mock.callCount(), 0);
+  });
+
+  it('removes the Lidarr artist after its last requested album', async () => {
+    getAlbumsByArtistMock.mock.mockImplementation(async () => []);
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.MUSIC,
+        status: MediaStatus.AVAILABLE,
+        serviceId: 70,
+        externalServiceId: 301,
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+    const response = await agent.delete(`/media/${media.id}/file`);
+
+    assert.strictEqual(response.status, 204);
+    assert.strictEqual(removeAlbumMock.mock.calls[0].arguments[0], 301);
+    assert.strictEqual(removeArtistMock.mock.callCount(), 1);
+    assert.strictEqual(removeArtistMock.mock.calls[0].arguments[0], 800);
   });
 });

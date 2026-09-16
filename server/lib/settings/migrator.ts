@@ -17,6 +17,11 @@ export const getSettingsBackupPath = (settingsPath: string): string => {
 export const getSettingsMigrationFiles = (files: string[]): string[] =>
   files
     .filter((file) => file.endsWith('.js') || file.endsWith('.ts'))
+    // A migration's own unit test sits beside it and exports no migration
+    // function, so importing it here would abort startup. Compiled builds never
+    // see one — tsconfig excludes `*.test.ts` from `dist` — but `pnpm dev`
+    // reads this directory straight from source.
+    .filter((file) => !/\.test\.[jt]s$/.test(file))
     .sort((left, right) => left.localeCompare(right));
 
 export const runMigrations = async (

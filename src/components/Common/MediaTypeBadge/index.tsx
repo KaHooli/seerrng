@@ -1,3 +1,4 @@
+import Tooltip from '@app/components/Common/Tooltip';
 import globalMessages from '@app/i18n/globalMessages';
 import {
   BookOpenIcon,
@@ -11,12 +12,16 @@ import { useIntl } from 'react-intl';
 import { twMerge } from 'tailwind-merge';
 
 export type MediaTypeBadgeType =
-  | 'movie'
-  | 'tv'
-  | 'collection'
-  | 'album'
-  | 'artist'
-  | 'book';
+  'movie' | 'tv' | 'collection' | 'album' | 'artist' | 'book';
+
+export const mediaTypeBadgeTone: Record<MediaTypeBadgeType, string> = {
+  movie: 'border-blue-500/70 bg-blue-700/70 text-blue-50',
+  tv: 'border-violet-300/90 bg-purple-700/70 text-purple-50',
+  collection: 'border-blue-500/70 bg-blue-700/70 text-blue-50',
+  album: 'border-emerald-500/70 bg-emerald-700/70 text-emerald-50',
+  artist: 'border-fuchsia-500/70 bg-fuchsia-700/70 text-fuchsia-50',
+  book: 'border-amber-500/70 bg-amber-700/70 text-amber-50',
+};
 
 export const getMediaTypeBadgeType = (
   mediaType: string
@@ -44,38 +49,45 @@ interface MediaTypeBadgeProps {
   variant?: 'card' | 'compact' | 'inline';
   className?: string;
   showIcon?: boolean;
+  /**
+   * Overrides the default per-type label (e.g. 'Album') while keeping that
+   * type's icon and tone -- for contexts where the same icon/color applies
+   * but the content-type label doesn't fit (a Plex library row is a whole
+   * Music library, not a single Album).
+   */
+  label?: string;
 }
 
 const badgeConfig = {
   movie: {
     message: globalMessages.movie,
     icon: FilmIcon,
-    tone: 'border-blue-500 bg-blue-600/85 text-white',
+    tone: mediaTypeBadgeTone.movie,
   },
   tv: {
     message: globalMessages.tvshow,
     icon: TvIcon,
-    tone: 'border-purple-600 bg-purple-600/85 text-white',
+    tone: mediaTypeBadgeTone.tv,
   },
   collection: {
     message: globalMessages.collection,
     icon: RectangleStackIcon,
-    tone: 'border-blue-500 bg-blue-600/85 text-white',
+    tone: mediaTypeBadgeTone.collection,
   },
   album: {
     message: globalMessages.album,
     icon: MusicalNoteIcon,
-    tone: 'border-emerald-500 bg-emerald-600/85 text-white',
+    tone: mediaTypeBadgeTone.album,
   },
   artist: {
     message: globalMessages.artist,
     icon: UserCircleIcon,
-    tone: 'border-fuchsia-500 bg-fuchsia-600/85 text-white',
+    tone: mediaTypeBadgeTone.artist,
   },
   book: {
     message: globalMessages.book,
     icon: BookOpenIcon,
-    tone: 'border-amber-500 bg-amber-600/85 text-white',
+    tone: mediaTypeBadgeTone.book,
   },
 } as const satisfies Record<
   MediaTypeBadgeType,
@@ -97,26 +109,33 @@ const MediaTypeBadge = ({
   variant = 'compact',
   className,
   showIcon = true,
+  label: labelOverride,
 }: MediaTypeBadgeProps) => {
   const intl = useIntl();
   const config = badgeConfig[mediaType];
-  const label = intl.formatMessage(config.message);
+  const label = labelOverride ?? intl.formatMessage(config.message);
   const Icon = config.icon;
 
-  return (
+  const badge = (
     <span
       className={twMerge(
-        'inline-flex max-w-full items-center gap-1 rounded-full border font-semibold leading-none',
+        'inline-flex max-w-full items-center gap-1 rounded-full border leading-none font-semibold',
         variantClasses[variant],
         config.tone,
         className
       )}
-      title={label}
     >
-      {showIcon && <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+      {showIcon && (
+        <Icon
+          className="h-3.5 w-3.5 shrink-0 -translate-y-px"
+          aria-hidden="true"
+        />
+      )}
       <span className="truncate">{label}</span>
     </span>
   );
+
+  return <Tooltip content={label}>{badge}</Tooltip>;
 };
 
 export default MediaTypeBadge;

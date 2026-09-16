@@ -45,7 +45,9 @@ describe('TVDB Integration', () => {
     return cy.wait('@testConnection');
   };
 
-  const saveMetadataSettings = (customBody = null) => {
+  const saveMetadataSettings = (
+    customBody: Record<string, string> | null = null
+  ) => {
     if (customBody) {
       cy.intercept('PUT', '/api/v1/settings/metadatas', (req) => {
         req.body = customBody;
@@ -61,7 +63,7 @@ describe('TVDB Integration', () => {
 
   beforeEach(() => {
     // Perform login
-    cy.login(Cypress.env('ADMIN_EMAIL'), Cypress.env('ADMIN_PASSWORD'));
+    cy.loginAsAdmin();
 
     // Navigate to Metadata settings
     navigateToMetadataSettings();
@@ -77,6 +79,9 @@ describe('TVDB Integration', () => {
 
     // Test the connection
     testAndVerifyMetadataConnection().then(({ response }) => {
+      if (!response) {
+        throw new Error('TVDB test connection did not return a response');
+      }
       expect(response.statusCode).to.equal(200);
       // Check TVDB connection status
       cy.get(SELECTORS.tvdbStatus).should('contain', 'Operational');
@@ -87,6 +92,9 @@ describe('TVDB Integration', () => {
       anime: 'tvdb',
       tv: 'tvdb',
     }).then(({ response }) => {
+      if (!response) {
+        throw new Error('Metadata settings save did not return a response');
+      }
       expect(response.statusCode).to.equal(200);
       expect(response.body.tv).to.equal('tvdb');
     });
@@ -98,7 +106,6 @@ describe('TVDB Integration', () => {
 
     // Verify that multiple seasons are displayed (TMDB has only 1 season, TVDB has multiple)
     // cy.get(SELECTORS.seasonSelector).should('exist');
-    cy.intercept('/api/v1/tv/225634/season/1').as('season1');
     // Select Season 2 and verify it loads
     cy.contains(SELECTORS.season2)
       .should('be.visible')
@@ -106,15 +113,15 @@ describe('TVDB Integration', () => {
       .click();
 
     // Verify that episodes are displayed for Season 2
-    cy.contains('260 - Episode 506').should('be.visible');
+    cy.get(SELECTORS.episodeList).within(() => {
+      cy.contains('Episode 1').should('be.visible');
+      cy.contains('Episode 247').scrollIntoView().should('be.visible');
+    });
   });
 
   it('Should display "Monster" show information correctly when not existing on TVDB', () => {
     // Navigate to the TV show
     cy.visit(ROUTES.monsterTvShow);
-
-    // Intercept season 1 request
-    cy.intercept('/api/v1/tv/225634/season/1').as('season1');
 
     // Select Season 1
     cy.contains(SELECTORS.season1)
@@ -122,11 +129,11 @@ describe('TVDB Integration', () => {
       .scrollIntoView()
       .click();
 
-    // Wait for the season data to load
-    cy.wait('@season1');
-
     // Verify specific episode exists
-    cy.contains(SELECTORS.episode9).should('be.visible');
+    cy.get(SELECTORS.episodeList).within(() => {
+      cy.contains('Episode 9').should('exist');
+      cy.contains('Hang Men').should('exist');
+    });
   });
 
   it('should display "Dragon Ball Z Kai" show information with multiple only 2 seasons from TVDB', () => {

@@ -14,6 +14,7 @@ import ServarrBase, {
   sanitizeServarrProfiles,
   sanitizeServarrRecordArray,
   sanitizeServarrSystemStatus,
+  type ServarrCommand,
   type SystemStatus,
 } from './base';
 
@@ -30,6 +31,7 @@ export interface ReadarrDevelopmentConfig {
 export type ReadarrMediaType = 'ebook' | 'audiobook';
 type ChaptarrDialect = 'hc' | 'gr';
 const CHAPTARR_REQUEST_TIMEOUT_MS = 60_000;
+const CHAPTARR_LIBRARY_PAGE_SIZE = 500;
 
 export interface ReadarrBookLookupResult {
   id?: number;
@@ -118,12 +120,32 @@ export interface ReadarrBook extends ReadarrBookLookupResult {
   };
 }
 
+interface PagedReadarrBooksResponse {
+  records?: unknown;
+  totalCount?: unknown;
+  offset?: unknown;
+  pageSize?: unknown;
+}
+
+export interface ReadarrAddBookResult extends ReadarrBookLookupResult {
+  createdBook: boolean;
+  createdAuthor: boolean;
+}
+
 type ReadarrQueueItem = {
   bookId?: number;
   book?: {
     id?: number;
   };
 };
+
+export interface ReadarrHistoryItem {
+  id: number;
+  bookId?: number;
+  eventType?: string;
+  date?: string;
+  downloadId?: string;
+}
 
 export type ReadarrCoverImage = {
   imageBuffer: Buffer;
@@ -137,8 +159,7 @@ const getReadarrErrorMessage = (error: unknown): string => {
 
   const status = error.response?.status;
   const data = error.response?.data as
-    | { message?: unknown; errorMessage?: unknown }
-    | undefined;
+    { message?: unknown; errorMessage?: unknown } | undefined;
   const message =
     typeof data?.message === 'string'
       ? data.message
@@ -380,6 +401,58 @@ class ReadarrAPI extends ServarrBase<ReadarrQueueItem> {
     return response.data;
   }
 
+  public async getBookHistory(bookId: number): Promise<ReadarrHistoryItem[]> {
+    const response = await this.request<{
+      records?: ReadarrHistoryItem[];
+    }>(
+      'GET',
+      '/history',
+      undefined,
+      this.getRequestConfig({
+        page: 1,
+        pageSize: 100,
+        sortKey: 'date',
+        sortDirection: 'descending',
+        bookId,
+      })
+    );
+    return sanitizeServarrRecordArray<ReadarrHistoryItem>(
+      response.data?.records,
+      100
+    );
+  }
+
+  public async getBooksByAuthor(
+    authorId: number,
+    cacheTtl?: number
+  ): Promise<ReadarrBook[]> {
+    return sanitizeServarrRecordArray<ReadarrBook>(
+      await this.get<ReadarrBook[]>(
+        '/book',
+        {
+          ...this.getRequestConfig({ authorId }),
+        },
+        cacheTtl
+      ),
+      MAX_SERVARR_LIBRARY_RESULTS
+    );
+  }
+
+  public async removeAuthor(
+    authorId: number,
+    options: { deleteFiles?: boolean; addImportListExclusion?: boolean } = {}
+  ): Promise<void> {
+    await this.request(
+      'DELETE',
+      `/author/${authorId}`,
+      undefined,
+      this.getRequestConfig({
+        deleteFiles: options.deleteFiles ?? false,
+        addImportListExclusion: options.addImportListExclusion ?? false,
+      })
+    );
+  }
+
   private async ensureRequestedBookState(
     addedBook: ReadarrBookLookupResult,
     options: ReadarrBookOptions
@@ -528,24 +601,225 @@ class ReadarrAPI extends ServarrBase<ReadarrQueueItem> {
     }
   }
 
+  private static matchesExistingBook(
+    book: ReadarrBookLookupResult,
+    options: ReadarrBookOptions
+  ): boolean {
+    const normalizedForeignBookId = options.foreignBookId
+      ? normalizeOpenLibraryWorkId(options.foreignBookId)
+      : undefined;
+    const optionEditionIds = new Set(
+      options.editions
+        ?.map((edition) =>
+          edition.foreignEditionId
+            ? normalizeOpenLibraryEditionId(edition.foreignEditionId)
+            : undefined
+        )
+        .filter(Boolean)
+    );
+    const optionIsbns = new Set(
+      options.editions
+        ?.map((edition) => normalizeIsbn(edition.isbn13))
+        .filter(Boolean)
+    );
+
+    if (
+      book.foreignBookId &&
+      normalizedForeignBookId &&
+      normalizeOpenLibraryWorkId(book.foreignBookId) === normalizedForeignBookId
+    ) {
+      return true;
+    }
+
+    return (
+      book.editions?.some((edition) => {
+        const editionIsbn = normalizeIsbn(edition.isbn13);
+
+        return (
+          (!!edition.foreignEditionId &&
+            optionEditionIds.has(
+              normalizeOpenLibraryEditionId(edition.foreignEditionId)
+            )) ||
+          (!!editionIsbn && optionIsbns.has(editionIsbn))
+        );
+      }) ?? false
+    );
+  }
+
+  private async findExistingBookForAdd(
+    options: ReadarrBookOptions
+  ): Promise<ReadarrBook | undefined> {
+    if (this.isChaptarr()) {
+      // Chaptarr's POST /book is provider-aware and resolves existing local
+      // rows in its indexed database. Only use a positive ID already returned
+      // by a lookup as a targeted read; never scan the whole library here.
+      const bookId = options.id;
+      if (
+        typeof bookId !== 'number' ||
+        !Number.isSafeInteger(bookId) ||
+        bookId <= 0
+      ) {
+        return undefined;
+      }
+
+      try {
+        const existingBook = await this.getBook(bookId);
+        return ReadarrAPI.matchesExistingBook(existingBook, options)
+          ? existingBook
+          : undefined;
+      } catch (error) {
+        logger.debug(
+          'Chaptarr targeted existing-book lookup failed; letting the provider resolve the add.',
+          {
+            label: 'Readarr',
+            bookId,
+            errorMessage:
+              error instanceof Error ? error.message : String(error),
+          }
+        );
+        return undefined;
+      }
+    }
+
+    const existingBooks = sanitizeServarrRecordArray<ReadarrBook>(
+      await this.get<ReadarrBook[]>('/book', this.getRequestConfig()),
+      MAX_SERVARR_LIBRARY_RESULTS
+    );
+
+    return existingBooks.find((book) =>
+      ReadarrAPI.matchesExistingBook(book, options)
+    );
+  }
+
+  private async getChaptarrBooks(): Promise<ReadarrBook[]> {
+    const books: ReadarrBook[] = [];
+    let offset = 0;
+
+    while (books.length < MAX_SERVARR_LIBRARY_RESULTS) {
+      const response = await this.get<unknown>(
+        '/book/paged',
+        this.getRequestConfig({
+          offset,
+          pageSize: CHAPTARR_LIBRARY_PAGE_SIZE,
+          includeUnmonitored: true,
+        })
+      );
+      if (
+        !response ||
+        typeof response !== 'object' ||
+        Array.isArray(response) ||
+        !Array.isArray((response as PagedReadarrBooksResponse).records)
+      ) {
+        throw new Error('Chaptarr returned an invalid paged library response');
+      }
+
+      const payload = response as PagedReadarrBooksResponse;
+      const responsePageSize =
+        typeof payload.pageSize === 'number' &&
+        Number.isSafeInteger(payload.pageSize) &&
+        payload.pageSize > 0
+          ? payload.pageSize
+          : CHAPTARR_LIBRARY_PAGE_SIZE;
+      const responseOffset =
+        typeof payload.offset === 'number' &&
+        Number.isSafeInteger(payload.offset) &&
+        payload.offset >= 0
+          ? payload.offset
+          : offset;
+      const totalCount =
+        typeof payload.totalCount === 'number' &&
+        Number.isSafeInteger(payload.totalCount) &&
+        payload.totalCount >= 0
+          ? payload.totalCount
+          : undefined;
+      const page = sanitizeServarrRecordArray<ReadarrBook>(
+        payload.records,
+        Math.min(
+          CHAPTARR_LIBRARY_PAGE_SIZE,
+          MAX_SERVARR_LIBRARY_RESULTS - books.length
+        )
+      );
+
+      if (page.length === 0) {
+        if (totalCount !== undefined && responseOffset < totalCount) {
+          throw new Error(
+            `Chaptarr returned an empty page before the reported library total of ${totalCount}`
+          );
+        }
+        break;
+      }
+
+      books.push(...page);
+      const nextOffset = responseOffset + page.length;
+
+      if (nextOffset <= offset) {
+        throw new Error('Chaptarr returned a non-advancing library page');
+      }
+
+      if (totalCount !== undefined && nextOffset >= totalCount) {
+        break;
+      }
+
+      if (page.length < responsePageSize) {
+        break;
+      }
+
+      offset = nextOffset;
+    }
+
+    return books;
+  }
+
   public async getBooks(): Promise<ReadarrBook[]> {
     try {
+      await this.ensureProvider();
+
+      if (this.isChaptarr()) {
+        return await this.getChaptarrBooks();
+      }
+
       return sanitizeServarrRecordArray<ReadarrBook>(
         await this.get<ReadarrBook[]>('/book', this.getRequestConfig()),
         MAX_SERVARR_LIBRARY_RESULTS
       );
     } catch (e) {
-      throw new Error(`[Readarr] Failed to retrieve books: ${e.message}`);
+      throw new Error(`[Readarr] Failed to retrieve books: ${e.message}`, {
+        cause: e,
+      });
     }
   }
 
-  public async getBook(bookId: number): Promise<ReadarrBook> {
+  public async getBook(
+    bookId: number,
+    cacheTtl?: number
+  ): Promise<ReadarrBook> {
     try {
       return await this.get<ReadarrBook>(
         `/book/${bookId}`,
-        this.getRequestConfig()
+        this.getRequestConfig(),
+        cacheTtl
       );
     } catch (e) {
+      throw new Error(
+        `[Readarr] Failed to retrieve book ${bookId}: ${e.message}`,
+        { cause: e }
+      );
+    }
+  }
+
+  public async getBookIfExists(bookId: number): Promise<ReadarrBook | null> {
+    try {
+      const response = await this.request<ReadarrBook>(
+        'GET',
+        `/book/${bookId}`,
+        undefined,
+        this.getRequestConfig()
+      );
+      return response.data;
+    } catch (e) {
+      if (e?.response?.status === 404) {
+        return null;
+      }
       throw new Error(
         `[Readarr] Failed to retrieve book ${bookId}: ${e.message}`,
         { cause: e }
@@ -796,51 +1070,10 @@ class ReadarrAPI extends ServarrBase<ReadarrQueueItem> {
 
   public async addBook(
     options: ReadarrBookOptions
-  ): Promise<ReadarrBookLookupResult> {
+  ): Promise<ReadarrAddBookResult> {
     try {
-      const existingBooks = sanitizeServarrRecordArray<ReadarrBook>(
-        await this.get<ReadarrBook[]>('/book', this.getRequestConfig()),
-        MAX_SERVARR_LIBRARY_RESULTS
-      );
-      const normalizedForeignBookId = options.foreignBookId
-        ? normalizeOpenLibraryWorkId(options.foreignBookId)
-        : undefined;
-      const optionEditionIds = new Set(
-        options.editions
-          ?.map((edition) =>
-            edition.foreignEditionId
-              ? normalizeOpenLibraryEditionId(edition.foreignEditionId)
-              : undefined
-          )
-          .filter(Boolean)
-      );
-      const optionIsbns = new Set(
-        options.editions
-          ?.map((edition) => normalizeIsbn(edition.isbn13))
-          .filter(Boolean)
-      );
-      const existingBook = existingBooks.find((book) => {
-        if (
-          book.foreignBookId &&
-          normalizedForeignBookId &&
-          normalizeOpenLibraryWorkId(book.foreignBookId) ===
-            normalizedForeignBookId
-        ) {
-          return true;
-        }
-
-        return book.editions?.some((edition) => {
-          const editionIsbn = normalizeIsbn(edition.isbn13);
-
-          return (
-            (!!edition.foreignEditionId &&
-              optionEditionIds.has(
-                normalizeOpenLibraryEditionId(edition.foreignEditionId)
-              )) ||
-            (!!editionIsbn && optionIsbns.has(editionIsbn))
-          );
-        });
-      });
+      await this.ensureProvider();
+      const existingBook = await this.findExistingBookForAdd(options);
 
       if (existingBook && this.isBookMonitored(existingBook)) {
         logger.info(
@@ -856,7 +1089,11 @@ class ReadarrAPI extends ServarrBase<ReadarrQueueItem> {
           await this.searchBook(existingBook.id);
         }
 
-        return existingBook;
+        return {
+          ...existingBook,
+          createdBook: false,
+          createdAuthor: false,
+        };
       }
 
       if (existingBook) {
@@ -904,17 +1141,40 @@ class ReadarrAPI extends ServarrBase<ReadarrQueueItem> {
           }
         );
 
-        await this.post(
-          '/command',
-          {
-            name: 'BookSearch',
-            bookIds: [updatedBook.id ?? existingBook.id],
-          },
-          this.getRequestConfig()
-        );
+        if (options.addOptions?.searchForNewBook) {
+          await this.post(
+            '/command',
+            {
+              name: 'BookSearch',
+              bookIds: [updatedBook.id ?? existingBook.id],
+            },
+            this.getRequestConfig()
+          );
+        }
 
-        return updatedBook;
+        return {
+          ...updatedBook,
+          createdBook: false,
+          createdAuthor: false,
+        };
       }
+
+      const existingAuthors = this.isChaptarr()
+        ? []
+        : sanitizeServarrRecordArray<ReadarrAuthorLookupResult>(
+            await this.get<ReadarrAuthorLookupResult[]>(
+              '/author',
+              this.getRequestConfig()
+            ),
+            MAX_SERVARR_LIBRARY_RESULTS
+          );
+      const createdAuthor =
+        !this.isChaptarr() &&
+        !existingAuthors.some(
+          (author) =>
+            !!author.foreignAuthorId &&
+            author.foreignAuthorId === options.author?.foreignAuthorId
+        );
 
       const postedBook = await this.post<ReadarrBookLookupResult | number>(
         '/book',
@@ -932,7 +1192,19 @@ class ReadarrAPI extends ServarrBase<ReadarrQueueItem> {
           ? { ...options, id: postedBook }
           : postedBook;
 
-      return await this.ensureRequestedBookState(addedBook, options);
+      const ensuredBook = await this.ensureRequestedBookState(
+        addedBook,
+        options
+      );
+      const persistedBook =
+        !this.isChaptarr() && ensuredBook.id
+          ? await this.getFreshBook(ensuredBook.id).catch(() => ensuredBook)
+          : ensuredBook;
+      return {
+        ...persistedBook,
+        createdBook: true,
+        createdAuthor,
+      };
     } catch (e) {
       throw new Error(
         `[Readarr] Failed to add book: ${getReadarrErrorMessage(e)}`,
@@ -958,18 +1230,20 @@ class ReadarrAPI extends ServarrBase<ReadarrQueueItem> {
         })
       );
     } catch (e) {
-      throw new Error(`[Readarr] Failed to remove book: ${e.message}`);
+      throw new Error(`[Readarr] Failed to remove book: ${e.message}`, {
+        cause: e,
+      });
     }
   }
 
-  public async searchBook(bookId: number): Promise<void> {
+  public async startBookSearch(bookId: number): Promise<ServarrCommand> {
     logger.info('Executing book search command.', {
       label: 'Readarr API',
       bookId,
     });
 
     try {
-      await this.runCommand('BookSearch', { bookIds: [bookId] });
+      return await this.runCommand('BookSearch', { bookIds: [bookId] });
     } catch (e) {
       logger.error(
         'Something went wrong while executing Bookshelf/Readarr book search.',
@@ -979,7 +1253,15 @@ class ReadarrAPI extends ServarrBase<ReadarrQueueItem> {
           bookId,
         }
       );
+      throw new Error(
+        `[Readarr] Failed to start book search: ${getReadarrErrorMessage(e)}`,
+        { cause: e }
+      );
     }
+  }
+
+  public async searchBook(bookId: number): Promise<void> {
+    await this.startBookSearch(bookId);
   }
 }
 

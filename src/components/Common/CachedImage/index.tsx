@@ -1,3 +1,4 @@
+import useImageVariants from '@app/hooks/useImageVariants';
 import useSettings from '@app/hooks/useSettings';
 import type { CacheableImageType } from '@app/utils/imageCache';
 import {
@@ -6,16 +7,20 @@ import {
   getImageErrorFallback,
   getInitialImageUrl,
 } from '@app/utils/imageCache';
+import type { ImageVariant } from '@app/utils/loadedImages';
 import { UserIcon } from '@heroicons/react/24/solid';
 import type { ImageLoader, ImageProps } from 'next/image';
 import Image from 'next/image';
 import { memo, useEffect, useMemo, useState } from 'react';
+
+const AVATAR_PRELOAD_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000];
 
 const imageLoader: ImageLoader = ({ src }) => src;
 
 export type CachedImageProps = ImageProps & {
   src: string;
   type: CacheableImageType;
+  variants?: readonly ImageVariant[];
 };
 
 /**
@@ -26,10 +31,12 @@ const CachedImage = memo(
   ({
     src,
     type,
+    variants,
     decoding = 'async',
     loading,
     priority,
     onError,
+    onLoad,
     ...props
   }: CachedImageProps) => {
     const { currentSettings } = useSettings();
@@ -43,6 +50,19 @@ const CachedImage = memo(
         }),
       [currentSettings.cacheImages, src, type]
     );
+    const resolvedVariants = variants?.map((variant) => ({
+      ...variant,
+      src: getImageCacheUrl({
+        cacheImages: currentSettings.cacheImages,
+        src: variant.src,
+        type,
+      }),
+    }));
+    const progressiveImage = useImageVariants(
+      imageUrl,
+      resolvedVariants,
+      type !== 'avatar'
+    );
     const [activeImageUrl, setActiveImageUrl] = useState(() =>
       getInitialImageUrl(type, imageUrl)
     );
@@ -55,14 +75,43 @@ const CachedImage = memo(
 
       setActiveImageUrl(AVATAR_FALLBACK_IMAGE);
 
-      const avatarPreloader = new window.Image();
-      avatarPreloader.onload = () => setActiveImageUrl(imageUrl);
-      avatarPreloader.onerror = () => setActiveImageUrl(AVATAR_FALLBACK_IMAGE);
-      avatarPreloader.src = imageUrl;
+      let avatarPreloader: HTMLImageElement | undefined;
+      let retryTimer: ReturnType<typeof setTimeout> | undefined;
+      let retryIndex = 0;
+      let isCancelled = false;
+
+      const preloadAvatar = () => {
+        avatarPreloader = new window.Image();
+        avatarPreloader.onload = () => {
+          if (!isCancelled) {
+            setActiveImageUrl(imageUrl);
+          }
+        };
+        avatarPreloader.onerror = () => {
+          if (
+            isCancelled ||
+            retryIndex >= AVATAR_PRELOAD_RETRY_DELAYS_MS.length
+          ) {
+            return;
+          }
+
+          const retryDelay = AVATAR_PRELOAD_RETRY_DELAYS_MS[retryIndex++];
+          retryTimer = setTimeout(preloadAvatar, retryDelay);
+        };
+        avatarPreloader.src = imageUrl;
+      };
+
+      preloadAvatar();
 
       return () => {
-        avatarPreloader.onload = null;
-        avatarPreloader.onerror = null;
+        isCancelled = true;
+        if (retryTimer) {
+          clearTimeout(retryTimer);
+        }
+        if (avatarPreloader) {
+          avatarPreloader.onload = null;
+          avatarPreloader.onerror = null;
+        }
       };
     }, [imageUrl, type]);
 
@@ -76,16 +125,25 @@ const CachedImage = memo(
       );
     }
 
+    const displayImageUrl =
+      type === 'avatar' ? activeImageUrl : progressiveImage.src;
+
     return (
       <Image
         unoptimized
         loader={imageLoader}
-        src={activeImageUrl}
+        src={displayImageUrl}
+        ref={progressiveImage.ref}
         decoding={decoding}
         loading={priority ? undefined : (loading ?? 'lazy')}
         priority={priority}
+        onLoad={(event) => {
+          if (type !== 'avatar') progressiveImage.onLoad(event.currentTarget);
+          onLoad?.(event);
+        }}
         onError={(event) => {
-          const fallbackImage = getImageErrorFallback(type, activeImageUrl);
+          if (type !== 'avatar') progressiveImage.onError(event.currentTarget);
+          const fallbackImage = getImageErrorFallback(type, displayImageUrl);
           if (fallbackImage) {
             setActiveImageUrl(fallbackImage);
           }

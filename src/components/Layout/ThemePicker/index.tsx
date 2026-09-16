@@ -36,7 +36,7 @@ const ThemePicker = () => {
       <Menu.Button
         disabled={enforced}
         title={enforced ? intl.formatMessage(messages.enforced) : undefined}
-        className="flex h-10 w-10 items-center justify-center rounded-full text-gray-200 ring-1 ring-gray-700 transition hover:bg-gray-800/80 hover:text-white hover:ring-gray-500 focus:outline-none focus:ring-gray-500"
+        className="flex h-10 w-10 items-center justify-center rounded-full text-gray-200 ring-1 ring-gray-700 transition hover:bg-gray-800/80 hover:text-white hover:ring-gray-500 focus:ring-gray-500 focus:outline-none"
         aria-label={intl.formatMessage(messages.themePicker)}
       >
         <PaintBrushIcon className="h-5 w-5" />
@@ -65,7 +65,7 @@ const ThemePicker = () => {
                   key={preference}
                   type="button"
                   onClick={() => setModePreference(preference)}
-                  className={`flex items-center justify-center rounded border px-2 py-2 text-xs font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                  className={`flex items-center justify-center rounded border px-2 py-2 text-xs font-medium transition focus:ring-2 focus:ring-indigo-500 focus:outline-none ${
                     modePreference === preference
                       ? 'border-indigo-500 bg-indigo-600/20 text-gray-100'
                       : 'border-gray-700 bg-gray-900/60 text-gray-300 hover:border-gray-500 hover:bg-gray-700'

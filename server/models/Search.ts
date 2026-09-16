@@ -17,13 +17,7 @@ import { normalizeMusicBrainzId } from '@server/lib/externalIds';
 import type { BookResult } from '@server/models/Book';
 export type { BookResult } from '@server/models/Book';
 export type MediaType =
-  | 'tv'
-  | 'movie'
-  | 'person'
-  | 'collection'
-  | 'artist'
-  | 'album'
-  | 'book';
+  'tv' | 'movie' | 'person' | 'collection' | 'artist' | 'album' | 'book';
 
 interface TmdbSearchResult {
   id: number;
@@ -119,6 +113,7 @@ export interface AlbumResult extends MbSearchResult {
   }[];
   posterPath?: string;
   needsCoverArt?: boolean;
+  availableQualities?: ('MP3' | 'FLAC')[];
   mediaInfo?: Media;
 }
 

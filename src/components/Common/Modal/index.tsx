@@ -39,6 +39,10 @@ interface ModalProps {
   backdrop?: string;
   children?: React.ReactNode;
   dialogClass?: string;
+  hideActions?: boolean;
+  alignTop?: boolean;
+  actionsClass?: string;
+  actionButtonSize?: 'default' | 'md' | 'sm';
 }
 
 const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
@@ -67,10 +71,14 @@ const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
       onTertiary,
       backdrop,
       dialogClass,
+      hideActions = false,
+      alignTop = false,
       okButtonProps,
       cancelButtonProps,
       secondaryButtonProps,
       tertiaryButtonProps,
+      actionsClass = '',
+      actionButtonSize = 'default',
     },
     parentRef
   ) => {
@@ -91,13 +99,9 @@ const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
       <Transition.Child
         as="div"
         data-testid="modal-root"
-        className="fixed bottom-0 left-0 right-0 top-0 z-[60] flex h-full w-full items-center justify-center bg-gray-800/70"
-        enter="transition-opacity duration-300"
-        enterFrom="opacity-0"
-        enterTo="opacity-100"
-        leave="transition-opacity duration-300"
-        leaveFrom="opacity-100"
-        leaveTo="opacity-0"
+        className={`fixed top-0 right-0 bottom-0 left-0 z-[60] flex h-full w-full justify-center overflow-y-auto bg-gray-800/70 ${
+          alignTop ? 'items-start pt-[49px] pb-4 sm:pt-[65px]' : 'items-center'
+        } transition-opacity duration-300 data-closed:opacity-0`}
         ref={parentRef}
       >
         <Transition
@@ -115,25 +119,27 @@ const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
           </div>
         </Transition>
         <Transition
-          className={`hide-scrollbar relative inline-block w-full overflow-auto bg-gray-800 px-4 pb-4 pt-4 text-left align-bottom shadow-xl ring-1 ring-gray-700 transition-all sm:my-8 sm:max-w-3xl sm:rounded-lg sm:align-middle ${dialogClass}`}
+          className={`relative inline-block w-full overflow-auto bg-gray-800 px-4 pt-4 pb-4 text-left align-bottom shadow-xl ring-1 ring-gray-700 transition-all sm:max-w-3xl sm:rounded-lg sm:align-middle ${
+            alignTop
+              ? 'my-0 max-h-[calc(100dvh-65px)] sm:max-h-[calc(100dvh-81px)]'
+              : 'hide-scrollbar sm:my-8'
+          } ${dialogClass} transition duration-300 data-closed:scale-75 data-closed:opacity-0`}
           role="dialog"
           aria-modal="true"
           aria-labelledby="modal-headline"
-          style={{
-            maxHeight: 'calc(100% - env(safe-area-inset-top) * 2)',
-          }}
+          style={
+            alignTop
+              ? undefined
+              : {
+                  maxHeight: 'calc(100% - env(safe-area-inset-top) * 2)',
+                }
+          }
           as="div"
-          enter="transition duration-300"
-          enterFrom="opacity-0 scale-75"
-          enterTo="opacity-100 scale-100"
-          leave="transition-opacity duration-300"
-          leaveFrom="opacity-100"
-          leaveTo="opacity-0"
           show={!loading}
           ref={modalRef}
         >
           {backdrop && (
-            <div className="absolute left-0 right-0 top-0 z-0 h-64 max-h-full w-full">
+            <div className="absolute top-0 right-0 left-0 z-0 h-64 max-h-full w-full">
               <CachedImage
                 type="tmdb"
                 alt=""
@@ -142,13 +148,7 @@ const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
                 fill
                 priority
               />
-              <div
-                className="absolute inset-0"
-                style={{
-                  backgroundImage:
-                    'linear-gradient(180deg, rgba(31, 41, 55, 0.75) 0%, rgba(31, 41, 55, 1) 100%)',
-                }}
-              />
+              <div className="absolute inset-0 bg-gray-800/75" />
             </div>
           )}
           <div className="relative -mx-4 overflow-x-hidden px-4 pt-0.5 sm:flex sm:items-center">
@@ -159,7 +159,7 @@ const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
                 <div className="flex flex-col space-y-1">
                   {title && (
                     <span
-                      className="text-overseerr truncate pb-0.5 text-2xl font-bold leading-6"
+                      className="text-overseerr truncate pb-0.5 text-2xl leading-6 font-bold"
                       id="modal-headline"
                       data-testid="modal-title"
                     >
@@ -168,7 +168,7 @@ const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
                   )}
                   {subTitle && (
                     <span
-                      className="truncate text-lg font-semibold leading-6 text-gray-200"
+                      className="truncate text-lg leading-6 font-semibold text-gray-200"
                       id="modal-headline"
                       data-testid="modal-title"
                     >
@@ -188,11 +188,14 @@ const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
               {children}
             </div>
           )}
-          {(onCancel || onOk || onSecondary || onTertiary) && (
-            <div className="relative mt-5 flex flex-row-reverse justify-center sm:mt-4 sm:justify-start">
+          {!hideActions && (onCancel || onOk || onSecondary || onTertiary) && (
+            <div
+              className={`relative mt-5 flex flex-row-reverse justify-center sm:mt-4 sm:justify-start ${actionsClass}`}
+            >
               {typeof onOk === 'function' && (
                 <Button
                   buttonType={okButtonType}
+                  buttonSize={actionButtonSize}
                   onClick={onOk}
                   className="ml-3"
                   disabled={okDisabled}
@@ -205,6 +208,7 @@ const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
               {typeof onSecondary === 'function' && secondaryText && (
                 <Button
                   buttonType={secondaryButtonType}
+                  buttonSize={actionButtonSize}
                   onClick={onSecondary}
                   className="ml-3"
                   disabled={secondaryDisabled}
@@ -217,6 +221,7 @@ const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
               {typeof onTertiary === 'function' && tertiaryText && (
                 <Button
                   buttonType={tertiaryButtonType}
+                  buttonSize={actionButtonSize}
                   onClick={onTertiary}
                   className="ml-3"
                   disabled={tertiaryDisabled}
@@ -228,6 +233,7 @@ const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
               {typeof onCancel === 'function' && (
                 <Button
                   buttonType={cancelButtonType}
+                  buttonSize={actionButtonSize}
                   onClick={onCancel}
                   className="ml-3 sm:ml-0"
                   data-testid="modal-cancel-button"

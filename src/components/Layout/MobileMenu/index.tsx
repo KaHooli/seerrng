@@ -15,6 +15,7 @@ import {
   FilmIcon,
   MusicalNoteIcon,
   SparklesIcon,
+  SpeakerWaveIcon,
   TvIcon,
   UsersIcon,
 } from '@heroicons/react/24/outline';
@@ -27,6 +28,7 @@ import {
   FilmIcon as FilledFilmIcon,
   MusicalNoteIcon as FilledMusicalNoteIcon,
   SparklesIcon as FilledSparklesIcon,
+  SpeakerWaveIcon as FilledSpeakerWaveIcon,
   TvIcon as FilledTvIcon,
   UsersIcon as FilledUsersIcon,
   XMarkIcon,
@@ -112,28 +114,42 @@ const MobileMenu = ({
         content: intl.formatMessage(menuMessages.browsemovies),
         svgIcon: <FilmIcon className="h-6 w-6" />,
         svgIconSelected: <FilledFilmIcon className="h-6 w-6" />,
-        activeRegExp: /^\/discover\/movies$/,
+        activeRegExp: /^\/(?:discover\/movies(?:\/.*)?|movie\/)/,
       },
       {
         href: '/discover/tv',
         content: intl.formatMessage(menuMessages.browsetv),
         svgIcon: <TvIcon className="h-6 w-6" />,
         svgIconSelected: <FilledTvIcon className="h-6 w-6" />,
-        activeRegExp: /^\/discover\/tv$/,
+        activeRegExp: /^\/(?:discover\/tv(?:\/.*)?|tv\/)/,
       },
       {
         href: '/discover/music',
         content: intl.formatMessage(menuMessages.browsemusic),
         svgIcon: <MusicalNoteIcon className="h-6 w-6" />,
         svgIconSelected: <FilledMusicalNoteIcon className="h-6 w-6" />,
-        activeRegExp: /^\/discover\/music$/,
+        activeRegExp: /^\/(?:discover\/music(?:\/.*)?|music\/)/,
       },
       {
         href: '/discover/books',
         content: intl.formatMessage(menuMessages.browsebooks),
         svgIcon: <BookOpenIcon className="h-6 w-6" />,
         svgIconSelected: <FilledBookOpenIcon className="h-6 w-6" />,
-        activeRegExp: /^\/discover\/books$/,
+        activeRegExp: /^\/(?:discover\/books(?:\/.*)?|book\/)/,
+      },
+      {
+        href: '/discover/audiobooks',
+        content: intl.formatMessage(menuMessages.browseaudiobooks),
+        svgIcon: <SpeakerWaveIcon className="h-6 w-6" />,
+        svgIconSelected: <FilledSpeakerWaveIcon className="h-6 w-6" />,
+        activeRegExp: /^\/discover\/audiobooks$/,
+      },
+      {
+        href: '/discover/audiobooks',
+        content: intl.formatMessage(menuMessages.browseaudiobooks),
+        svgIcon: <SpeakerWaveIcon className="h-6 w-6" />,
+        svgIconSelected: <FilledSpeakerWaveIcon className="h-6 w-6" />,
+        activeRegExp: /^\/discover\/audiobooks$/,
       },
       {
         href: '/requests/status',
@@ -141,13 +157,6 @@ const MobileMenu = ({
         svgIcon: <ClockIcon className="h-6 w-6" />,
         svgIconSelected: <FilledClockIcon className="h-6 w-6" />,
         activeRegExp: /^\/requests\/status/,
-      },
-      {
-        href: '/requests',
-        content: intl.formatMessage(menuMessages.requests),
-        svgIcon: <ClockIcon className="h-6 w-6" />,
-        svgIconSelected: <FilledClockIcon className="h-6 w-6" />,
-        activeRegExp: /^\/requests\/?$/,
       },
       {
         href: '/blocklist',
@@ -225,7 +234,7 @@ const MobileMenu = ({
   ]);
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-50">
+    <div className="fixed right-0 bottom-0 left-0 z-50">
       <Transition
         show={isOpen}
         as="div"
@@ -236,7 +245,7 @@ const MobileMenu = ({
         leave="transition duration-500"
         leaveFrom="opacity-100 -translate-y-full"
         leaveTo="opacity-0 translate-y-0"
-        className="absolute left-0 right-0 top-0 flex w-full -translate-y-full flex-col space-y-6 border-t border-gray-600 bg-gray-900/90 px-6 py-6 font-semibold text-gray-100 backdrop-blur"
+        className="app-menu-gradient absolute top-0 right-0 left-0 flex w-full -translate-y-full flex-col space-y-6 border-t border-gray-600 px-6 py-6 font-semibold text-gray-100 backdrop-blur"
       >
         {filteredLinks.map((link) => {
           const isActive = router.pathname.match(link.activeRegExp);

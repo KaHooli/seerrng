@@ -83,6 +83,20 @@ export const IMAGE_PROXY_HTTP_OPTIONS = {
   timeout: 10_000,
 } as const;
 
+export const resolveImageRequestUrl = (
+  imagePath: string,
+  baseUrl: string
+): string => {
+  try {
+    // URL rejects an empty base even when imagePath is already absolute.
+    // Remote-avatar caching intentionally has no base because its route
+    // validates and supplies a complete HTTPS URL.
+    return new URL(imagePath, baseUrl || undefined).href;
+  } catch {
+    throw new Error('Image URL is invalid.');
+  }
+};
+
 export const parseCacheControlMaxAge = (
   cacheControl: string | undefined
 ): number => {
@@ -620,9 +634,9 @@ export const assertRasterPixelBudget = ({
 };
 
 export const prepareRasterImageForCache = async (
-  input: Buffer,
+  input: Buffer<ArrayBufferLike>,
   contentType: string
-): Promise<{ buffer: Buffer; extension: string }> => {
+): Promise<{ buffer: Buffer<ArrayBufferLike>; extension: string }> => {
   const image = sharp(input, {
     animated: true,
     limitInputPixels: MAX_IMAGE_PIXELS,
@@ -1070,12 +1084,7 @@ class ImageProxy {
     cacheKey: string
   ): Promise<ImageResponse | null> {
     try {
-      let requestPath: string;
-      try {
-        requestPath = new URL(path, this.baseUrl).href;
-      } catch {
-        throw new Error('Image URL is invalid.');
-      }
+      let requestPath = resolveImageRequestUrl(path, this.baseUrl);
       const safeUrl = await createSafeHttpUrl(requestPath, {
         allowPrivateAddresses: this.allowPrivateAddresses,
       });
@@ -1103,7 +1112,10 @@ class ImageProxy {
         }
       );
 
-      let buffer = Buffer.from(response.data, 'binary');
+      let buffer: Buffer<ArrayBufferLike> = Buffer.from(
+        response.data,
+        'binary'
+      );
       if (buffer.length > MAX_IMAGE_BYTES) {
         throw new Error('Image exceeds maximum allowed size');
       }

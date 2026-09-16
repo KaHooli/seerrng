@@ -1,6 +1,7 @@
 import logger from '@server/logger';
 import { trackBackgroundTask } from '@server/utils/backgroundTasks';
 import { proxyRequestInterceptor } from '@server/utils/customProxyAgent';
+import { withTransientHttpRetry } from '@server/utils/httpError';
 import {
   createSafeHttpRequestOptions,
   createSafeHttpUrl,
@@ -397,7 +398,13 @@ class ExternalAPI {
 
     switch (method) {
       case 'GET':
-        return this.axios.get<T>(requestTarget, config);
+        // Servarr and other provider APIs can briefly refuse or time out a
+        // read while they are starting, refreshing, or applying configuration.
+        // Reads are safe to repeat, so absorb one transient transport/server
+        // failure before the caller turns it into a user-facing error.
+        return withTransientHttpRetry(() =>
+          this.axios.get<T>(requestTarget, config)
+        );
       case 'POST':
         return this.axios.post<T>(requestTarget, data, config);
       case 'PUT':
@@ -560,8 +567,7 @@ class ExternalAPI {
       : Symbol(pendingKey);
     if (coalesce) {
       const pendingRequest = ExternalAPI.pendingRequests.get(requestKey) as
-        | Promise<T>
-        | undefined;
+        Promise<T> | undefined;
       if (pendingRequest) {
         return pendingRequest;
       }

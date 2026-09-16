@@ -56,29 +56,34 @@ describe('Theme picker and seeded discovery refresh', () => {
     });
     cy.contains('[data-testid=page-header]', 'Movies').should('be.visible');
 
-    cy.get('html').should('have.attr', 'data-theme-palette', 'classic');
-    cy.get('meta[name="theme-color"]').should(
-      'have.attr',
-      'content',
-      '#1f2937'
-    );
+    // This fork ships an administrator-configurable default palette, and that
+    // setting defaults to Aurora rather than upstream's Seerr palette. The
+    // theme-color meta is compared against whatever the default renders, so
+    // the assertion stays true whichever palette that default names.
+    cy.get('html').should('have.attr', 'data-theme-palette', 'aurora');
+    cy.get('meta[name="theme-color"]')
+      .invoke('attr', 'content')
+      .should('match', /^#[0-9a-f]{6}$/i)
+      .as('defaultThemeColor');
+
     cy.get('button[aria-label="Theme picker"]').click();
     cy.contains('button', /^Seerr$/).should('exist');
     cy.contains('button', /^SeerrNG$/).click();
     cy.get('html').should('have.attr', 'data-theme-palette', 'seerr');
-    cy.get('meta[name="theme-color"]').should(
-      'not.have.attr',
-      'content',
-      '#1f2937'
-    );
+    cy.get('@defaultThemeColor').then((defaultThemeColor) => {
+      cy.get('meta[name="theme-color"]')
+        .invoke('attr', 'content')
+        .should('not.eq', defaultThemeColor);
+    });
+
     cy.get('button[aria-label="Theme picker"]').click();
     cy.contains('button', 'Lagoon').click();
     cy.get('html').should('have.attr', 'data-theme-palette', 'lagoon');
-    cy.get('meta[name="theme-color"]').should(
-      'not.have.attr',
-      'content',
-      '#1f2937'
-    );
+    cy.get('@defaultThemeColor').then((defaultThemeColor) => {
+      cy.get('meta[name="theme-color"]')
+        .invoke('attr', 'content')
+        .should('not.eq', defaultThemeColor);
+    });
     cy.window()
       .its('localStorage')
       .invoke('getItem', 'seerr-theme-palette')

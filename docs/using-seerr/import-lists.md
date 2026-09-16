@@ -94,7 +94,7 @@ audiobook copy of a book separately:
 
 | Format | Requests |
 | --- | --- |
-| Ebook | The ebook only (the default) |
+| Book | The ebook only (the default) |
 | Audiobook | The audiobook only |
 | Both | One of each, in a single request |
 

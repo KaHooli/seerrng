@@ -31,7 +31,9 @@ const messages = defineMessages(
     modeWatchlist: 'Add to my watchlist',
     request4k: 'Request in 4K',
     bookFormat: 'Book Format',
-    formatEbook: 'Ebook',
+    // The house terminology for this format is "Book"; only configured
+    // service names spell it out in full.
+    formatEbook: 'Book',
     formatAudiobook: 'Audiobook',
     formatBoth: 'Both',
     save: 'Add List',

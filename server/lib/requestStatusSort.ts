@@ -12,13 +12,18 @@ import type {
   TmdbTvDetails,
 } from '@server/api/themoviedb/interfaces';
 import { MediaType } from '@server/constants/media';
+import { getRepository } from '@server/datasource';
+import { MediaSearchMetadata } from '@server/entity/MediaSearchMetadata';
 import type { RequestStatusPageItem } from '@server/lib/requestStatus';
 import { mapWithConcurrency } from '@server/utils/concurrency';
+import { matchesAllSearchTerms } from '@server/utils/searchTerms';
+import { In } from 'typeorm';
 
 export const REQUEST_STATUS_SORT_FIELDS = [
   'added',
   'modified',
   'status',
+  'incomplete',
   'title',
   'director',
   'writer',
@@ -298,6 +303,44 @@ const loadSortMetadata = async (
   }
 };
 
+export const filterRequestStatusItems = async (
+  items: RequestStatusPageItem[],
+  search: string
+): Promise<RequestStatusPageItem[]> => {
+  if (!search.trim()) {
+    return items;
+  }
+
+  const metadataRows = await getRepository(MediaSearchMetadata).find({
+    where: {
+      mediaId: In(items.map((item) => item.request.media.id)),
+    },
+  });
+  const searchableMetadata = new Map(
+    metadataRows.map((metadata) => [metadata.mediaId, metadata.searchText])
+  );
+
+  const matches = items.map((item) => {
+    const values: unknown[] = [
+      searchableMetadata.get(item.request.media.id),
+      item.request.type,
+      item.request.bookFormat,
+      item.request.requestedBy?.displayName,
+      item.request.requestedBy?.email,
+      item.status.service,
+      item.request.media.tmdbId,
+      item.request.media.mbId,
+      ...(item.request.media.identifiers?.map(
+        (identifier) => identifier.value
+      ) ?? []),
+    ];
+
+    return matchesAllSearchTerms(values, search);
+  });
+
+  return items.filter((_, index) => matches[index]);
+};
+
 const STATUS_ORDER: readonly string[] = [
   'requested',
   'approved',
@@ -328,7 +371,7 @@ export const parseRequestStatusSort = (
 
 export const isMetadataRequestStatusSort = (
   field: RequestStatusSortField
-): boolean => !['added', 'modified', 'status'].includes(field);
+): boolean => !['added', 'modified', 'status', 'incomplete'].includes(field);
 
 const getSortValue = (
   item: RequestStatusPageItem,
@@ -342,6 +385,8 @@ const getSortValue = (
       return item.request.updatedAt.getTime();
     case 'status':
       return STATUS_ORDER.indexOf(item.status.stage);
+    case 'incomplete':
+      return item.status.stage === 'library' ? 1 : 0;
     case 'title':
       return metadata.title;
     case 'director':

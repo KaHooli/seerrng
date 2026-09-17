@@ -63,7 +63,7 @@ const messages = defineMessages('components.RequestCard', {
   deleterequest: 'Delete Request',
   unknowntitle: 'Unknown Title',
   bookFormat: 'Format',
-  ebook: 'Ebook',
+  ebook: 'Book',
   audiobook: 'Audiobook',
   both: 'Both',
   partialBookService: 'Partial Bookshelf link',
@@ -254,7 +254,7 @@ const RequestCardError = ({ requestData }: RequestCardErrorProps) => {
         <div className="w-full" style={{ paddingBottom: '150%' }}>
           <div className="absolute inset-0 z-10 flex min-w-0 flex-1 flex-col p-4">
             <div
-              className="whitespace-normal text-base font-bold text-white sm:text-lg"
+              className="text-base font-bold whitespace-normal text-white sm:text-lg"
               data-testid="request-card-title"
             >
               {intl.formatMessage(messages.mediaerror, {
@@ -604,7 +604,7 @@ const RequestCard = ({ request, onTitleData }: RequestCardProps) => {
           </div>
           <Link
             href={getRequestDetailHref(requestData)}
-            className="overflow-hidden overflow-ellipsis whitespace-nowrap text-base font-bold text-white hover:underline sm:text-lg"
+            className="overflow-hidden text-base font-bold overflow-ellipsis whitespace-nowrap text-white hover:underline sm:text-lg"
           >
             {isMovie(title)
               ? title.title

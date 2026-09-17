@@ -1,6 +1,7 @@
 import type { LbAlbumDetails } from '@server/api/listenbrainz/interfaces';
 import type Media from '@server/entity/Media';
 import { normalizeMusicBrainzId } from '@server/lib/externalIds';
+import type { AvailableMusicService } from '@server/lib/musicQualityAvailability';
 
 export interface MusicDetails {
   id: string;
@@ -10,6 +11,7 @@ export interface MusicDetails {
   mediaType: 'album';
   type: string;
   releaseDate: string;
+  recordLabel?: string;
   artist: {
     id: string;
     name: string;
@@ -65,6 +67,16 @@ export interface MusicDetails {
   tmdbPersonId?: number;
   artistBackdrop?: string;
   artistThumb?: string;
+  availableServices?: AvailableMusicService[];
+}
+
+export interface MusicRatingResponse {
+  rating?: {
+    score: number;
+    votes: number;
+    url: string;
+    source: 'musicbrainz' | 'lidarr';
+  };
 }
 
 export const MAX_MUSIC_DETAIL_MEDIA = 50;

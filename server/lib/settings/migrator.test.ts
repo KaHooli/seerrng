@@ -23,4 +23,16 @@ describe('settings migration file handling', () => {
       ['0001_first.ts', '0002_second.js', '0010_last.ts']
     );
   });
+
+  it('skips the unit tests that sit beside the migrations', () => {
+    // These export no migration function, so importing one aborts startup.
+    assert.deepStrictEqual(
+      getSettingsMigrationFiles([
+        '0015_enable_default_http_auth.ts',
+        '0015_enable_default_http_auth.test.ts',
+        '0016_something.test.js',
+      ]),
+      ['0015_enable_default_http_auth.ts']
+    );
+  });
 });

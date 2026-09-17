@@ -1,6 +1,6 @@
 import { useTheme } from '@app/context/ThemeContext';
 import defineMessages from '@app/utils/defineMessages';
-import { Menu, Transition } from '@headlessui/react';
+import { Menu } from '@headlessui/react';
 import {
   CheckIcon,
   ComputerDesktopIcon,
@@ -8,7 +8,6 @@ import {
   PaintBrushIcon,
   SunIcon,
 } from '@heroicons/react/24/outline';
-import { Fragment } from 'react';
 import { useIntl } from 'react-intl';
 
 const messages = defineMessages('components.Layout.ThemePicker', {
@@ -36,84 +35,81 @@ const ThemePicker = () => {
       <Menu.Button
         disabled={enforced}
         title={enforced ? intl.formatMessage(messages.enforced) : undefined}
-        className="flex h-10 w-10 items-center justify-center rounded-full text-gray-200 ring-1 ring-gray-700 transition hover:bg-gray-800/80 hover:text-white hover:ring-gray-500 focus:outline-none focus:ring-gray-500"
+        className="flex h-10 w-10 items-center justify-center rounded-full text-gray-200 ring-1 ring-gray-700 transition hover:bg-gray-800/80 hover:text-white hover:ring-gray-500 focus:ring-gray-500 focus:outline-none"
         aria-label={intl.formatMessage(messages.themePicker)}
       >
         <PaintBrushIcon className="h-5 w-5" />
       </Menu.Button>
-      <Transition
-        as={Fragment}
-        enter="transition ease-out duration-100"
-        enterFrom="opacity-0 scale-95"
-        enterTo="opacity-100 scale-100"
-        leave="transition ease-in duration-75"
-        leaveFrom="opacity-100 scale-100"
-        leaveTo="opacity-0 scale-95"
-        appear
+      {/*
+        headlessui v2 no longer couples a bare <Transition> wrapper to the
+        Menu's open state, so the panel stayed mounted and covered the controls
+        beside it. The built-in `transition` prop is the v2 equivalent.
+      */}
+      <Menu.Items
+        transition
+        className="absolute right-0 z-50 mt-2 w-80 origin-top-right rounded-md shadow-lg transition duration-100 ease-out data-closed:scale-95 data-closed:opacity-0"
       >
-        <Menu.Items className="absolute right-0 z-50 mt-2 w-80 origin-top-right rounded-md shadow-lg">
-          <div className="rounded-md bg-gray-800/95 p-3 ring-1 ring-gray-700 backdrop-blur">
-            <div className="mb-3 grid grid-cols-3 gap-2">
-              {(
-                [
-                  ['light', messages.lightMode, SunIcon],
-                  ['dark', messages.darkMode, MoonIcon],
-                  ['auto', messages.autoMode, ComputerDesktopIcon],
-                ] as const
-              ).map(([preference, label, Icon]) => (
-                <button
-                  key={preference}
-                  type="button"
-                  onClick={() => setModePreference(preference)}
-                  className={`flex items-center justify-center rounded border px-2 py-2 text-xs font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
-                    modePreference === preference
-                      ? 'border-indigo-500 bg-indigo-600/20 text-gray-100'
-                      : 'border-gray-700 bg-gray-900/60 text-gray-300 hover:border-gray-500 hover:bg-gray-700'
-                  }`}
-                >
-                  <Icon className="mr-1 h-4 w-4" />
-                  {intl.formatMessage(label)}
-                </button>
-              ))}
-            </div>
-            <div className="grid max-h-96 grid-cols-2 gap-2 overflow-y-auto pr-1">
-              {palettes.map((themePalette) => (
-                <Menu.Item
-                  key={themePalette.id}
-                  as="button"
-                  type="button"
-                  onClick={() => setPalette(themePalette.id)}
-                  className={({ active }) =>
-                    `flex min-w-0 items-center rounded border px-2 py-2 text-left text-sm font-medium transition ${
-                      palette === themePalette.id
-                        ? 'border-indigo-500 bg-indigo-600/20 text-gray-100'
-                        : active
-                          ? 'border-gray-500 bg-gray-700 text-gray-100'
-                          : 'border-gray-700 bg-gray-900/60 text-gray-200'
-                    }`
-                  }
-                >
-                  <span className="mr-2 flex shrink-0 -space-x-1">
-                    {themePalette.swatches.map((swatch, swatchIndex) => (
-                      <span
-                        key={`${themePalette.id}-${swatchIndex}`}
-                        className="h-4 w-4 rounded-full border border-gray-950/30"
-                        style={{ backgroundColor: swatch }}
-                      />
-                    ))}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">
-                    {themePalette.name}
-                  </span>
-                  {palette === themePalette.id && (
-                    <CheckIcon className="ml-2 h-4 w-4 shrink-0 text-indigo-400" />
-                  )}
-                </Menu.Item>
-              ))}
-            </div>
+        <div className="rounded-md bg-gray-800/95 p-3 ring-1 ring-gray-700 backdrop-blur">
+          <div className="mb-3 grid grid-cols-3 gap-2">
+            {(
+              [
+                ['light', messages.lightMode, SunIcon],
+                ['dark', messages.darkMode, MoonIcon],
+                ['auto', messages.autoMode, ComputerDesktopIcon],
+              ] as const
+            ).map(([preference, label, Icon]) => (
+              <button
+                key={preference}
+                type="button"
+                onClick={() => setModePreference(preference)}
+                className={`flex items-center justify-center rounded border px-2 py-2 text-xs font-medium transition focus:ring-2 focus:ring-indigo-500 focus:outline-none ${
+                  modePreference === preference
+                    ? 'border-indigo-500 bg-indigo-600/20 text-gray-100'
+                    : 'border-gray-700 bg-gray-900/60 text-gray-300 hover:border-gray-500 hover:bg-gray-700'
+                }`}
+              >
+                <Icon className="mr-1 h-4 w-4" />
+                {intl.formatMessage(label)}
+              </button>
+            ))}
           </div>
-        </Menu.Items>
-      </Transition>
+          <div className="grid max-h-96 grid-cols-2 gap-2 overflow-y-auto pr-1">
+            {palettes.map((themePalette) => (
+              <Menu.Item
+                key={themePalette.id}
+                as="button"
+                type="button"
+                onClick={() => setPalette(themePalette.id)}
+                className={({ active }) =>
+                  `flex min-w-0 items-center rounded border px-2 py-2 text-left text-sm font-medium transition ${
+                    palette === themePalette.id
+                      ? 'border-indigo-500 bg-indigo-600/20 text-gray-100'
+                      : active
+                        ? 'border-gray-500 bg-gray-700 text-gray-100'
+                        : 'border-gray-700 bg-gray-900/60 text-gray-200'
+                  }`
+                }
+              >
+                <span className="mr-2 flex shrink-0 -space-x-1">
+                  {themePalette.swatches.map((swatch, swatchIndex) => (
+                    <span
+                      key={`${themePalette.id}-${swatchIndex}`}
+                      className="h-4 w-4 rounded-full border border-gray-950/30"
+                      style={{ backgroundColor: swatch }}
+                    />
+                  ))}
+                </span>
+                <span className="min-w-0 flex-1 truncate">
+                  {themePalette.name}
+                </span>
+                {palette === themePalette.id && (
+                  <CheckIcon className="ml-2 h-4 w-4 shrink-0 text-indigo-400" />
+                )}
+              </Menu.Item>
+            ))}
+          </div>
+        </div>
+      </Menu.Items>
     </Menu>
   );
 };

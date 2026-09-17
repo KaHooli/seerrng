@@ -17,10 +17,12 @@ import {
   normalizeOpenLibraryWorkId,
 } from '@server/lib/externalIds';
 import { getExternalRuntimeConfig } from '@server/lib/externalRuntimeConfig';
+import { getAvailableMusicQualities } from '@server/lib/musicQualityAvailability';
 import {
   findSearchProvider,
   type CombinedSearchResponse,
 } from '@server/lib/search';
+import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { mapOpenLibrarySearchDoc } from '@server/models/Book';
 import { mapSearchResults } from '@server/models/Search';
@@ -31,8 +33,14 @@ import {
 } from '@server/utils/concurrency';
 import { parsePositiveInt } from '@server/utils/pagination';
 import {
+  matchesAllSearchTerms,
+  toFieldedBooleanAndQuery,
+  toMusicAlbumRefinementQuery,
+} from '@server/utils/searchTerms';
+import {
   parseBoundedString,
   parseOptionalAllowedString,
+  parseOptionalBoundedString,
   parseOptionalLanguage,
 } from '@server/utils/validation';
 import { Router } from 'express';
@@ -200,6 +208,19 @@ searchRoutes.get('/', async (req, res, next) => {
     return res.status(400).json({ status: 400, message: parsedType.error });
   }
   const typeFilter = parsedType.value;
+  const parsedResultFilter = parseOptionalBoundedString(
+    req.query.resultFilter,
+    {
+      fieldName: 'Result filter',
+      maxLength: MAX_SEARCH_QUERY_LENGTH,
+    }
+  );
+  if ('error' in parsedResultFilter) {
+    return res
+      .status(400)
+      .json({ status: 400, message: parsedResultFilter.error });
+  }
+  const resultFilter = parsedResultFilter.value;
   const parsedFormat = req.query.format
     ? parseOptionalAllowedString(req.query.format, {
         fieldName: 'Format',
@@ -295,22 +316,25 @@ searchRoutes.get('/', async (req, res, next) => {
               total_results: 0,
             }),
         shouldSearchMusic && musicEnabled
-          ? musicbrainz.searchAlbum({
+          ? musicbrainz.searchAlbumWithTotal({
+              query:
+                typeFilter === 'music' && resultFilter
+                  ? toMusicAlbumRefinementQuery(queryString, resultFilter)
+                  : queryString,
+              limit: 20,
+              offset: musicOffset,
+            })
+          : Promise.resolve({ results: [], totalResults: 0 }),
+        shouldSearchMusic && musicEnabled && !resultFilter
+          ? musicbrainz.searchArtistWithTotal({
               query: queryString,
               limit: 20,
               offset: musicOffset,
             })
-          : Promise.resolve([]),
-        shouldSearchMusic && musicEnabled
-          ? musicbrainz.searchArtist({
-              query: queryString,
-              limit: 20,
-              offset: musicOffset,
-            })
-          : Promise.resolve([]),
+          : Promise.resolve({ results: [], totalResults: 0 }),
         shouldSearchBooks && booksEnabled
           ? openLibrary.searchBooks({
-              query: queryString,
+              query: toFieldedBooleanAndQuery(queryString, ['title', 'author']),
               page,
               limit: 20,
             })
@@ -321,9 +345,11 @@ searchRoutes.get('/', async (req, res, next) => {
         result: PromiseSettledResult<unknown>;
       };
       type TmdbSearchResults = Awaited<ReturnType<TheMovieDb['searchMulti']>>;
-      type AlbumSearchResults = Awaited<ReturnType<MusicBrainz['searchAlbum']>>;
+      type AlbumSearchResults = Awaited<
+        ReturnType<MusicBrainz['searchAlbumWithTotal']>
+      >;
       type ArtistSearchResults = Awaited<
-        ReturnType<MusicBrainz['searchArtist']>
+        ReturnType<MusicBrainz['searchArtistWithTotal']>
       >;
       type BookSearchResults = Awaited<
         ReturnType<OpenLibraryAPI['searchBooks']>
@@ -362,6 +388,20 @@ searchRoutes.get('/', async (req, res, next) => {
           : fallback;
       };
 
+      const bookProviderResponse = providerResults.get(3);
+      if (
+        typeFilter === 'book' &&
+        shouldSearchBooks &&
+        booksEnabled &&
+        (!bookProviderResponse || bookProviderResponse.status === 'rejected')
+      ) {
+        return next({
+          status: 503,
+          message:
+            'Open Library, the service used for book searches, timed out or is unavailable. Please try again.',
+        });
+      }
+
       if (providerResponses.timedOut) {
         logger.debug('Global search provider deadline exceeded', {
           label: 'API',
@@ -384,12 +424,20 @@ searchRoutes.get('/', async (req, res, next) => {
           MAX_SEARCH_RESULTS_PER_PROVIDER
         ),
       };
-      const albumResults = capSearchProviderResults<AlbumSearchResults[number]>(
-        getProviderValue<AlbumSearchResults>(1, [])
-      );
+      const rawAlbumResults = getProviderValue<AlbumSearchResults>(1, {
+        results: [],
+        totalResults: 0,
+      });
+      const albumResults = capSearchProviderResults<
+        AlbumSearchResults['results'][number]
+      >(rawAlbumResults.results);
+      const rawArtistResults = getProviderValue<ArtistSearchResults>(2, {
+        results: [],
+        totalResults: 0,
+      });
       const artistResults = capSearchProviderResults<
-        ArtistSearchResults[number]
-      >(getProviderValue<ArtistSearchResults>(2, []));
+        ArtistSearchResults['results'][number]
+      >(rawArtistResults.results);
       const rawBookResults = getProviderValue<BookSearchResults>(3, {
         numFound: 0,
         start: 0,
@@ -409,7 +457,13 @@ searchRoutes.get('/', async (req, res, next) => {
         .map((p) => p.id.toString());
 
       const dedupedAlbumResults = dedupeAlbumSearchResults(albumResults);
-      const dedupedBookDocs = dedupeBookSearchDocs(bookResults.docs);
+      const dedupedBookDocs = dedupeBookSearchDocs(bookResults.docs).filter(
+        (doc) =>
+          matchesAllSearchTerms(
+            [doc.title, ...(doc.author_name ?? [])],
+            queryString
+          )
+      );
 
       const albumIds = dedupedAlbumResults.map((album) =>
         normalizeMusicBrainzId(album.id)
@@ -427,32 +481,36 @@ searchRoutes.get('/', async (req, res, next) => {
             ? getRepository(MetadataArtist).find({
                 where: { tmdbPersonId: In(personIds) },
                 cache: true,
-                select: ['tmdbPersonId', 'tadbThumb', 'tadbCover'],
+                select: {
+                  tmdbPersonId: true,
+                  tadbThumb: true,
+                  tadbCover: true,
+                },
               })
             : [],
           albumIds.length > 0
             ? getRepository(MetadataAlbum).find({
                 where: { mbAlbumId: In(albumIds) },
-                select: ['mbAlbumId', 'caaUrl'],
+                select: { mbAlbumId: true, caaUrl: true },
               })
             : [],
           artistIds.length > 0
             ? getRepository(MetadataArtist).find({
                 where: { mbArtistId: In(artistIds) },
                 cache: true,
-                select: [
-                  'mbArtistId',
-                  'tmdbPersonId',
-                  'tadbThumb',
-                  'tadbCover',
-                ],
+                select: {
+                  mbArtistId: true,
+                  tmdbPersonId: true,
+                  tadbThumb: true,
+                  tadbCover: true,
+                },
               })
             : [],
           tmdbPersonIds.length > 0
             ? getRepository(MetadataArtist).find({
                 where: { tmdbPersonId: In(tmdbPersonIds) },
                 cache: true,
-                select: ['mbArtistId', 'tmdbPersonId'],
+                select: { mbArtistId: true, tmdbPersonId: true },
               })
             : [],
         ]);
@@ -580,10 +638,12 @@ searchRoutes.get('/', async (req, res, next) => {
         (a, b) => (b.score || 0) - (a.score || 0)
       );
 
+      const musicTotalResults = Math.max(
+        musicResults.length,
+        rawAlbumResults.totalResults + rawArtistResults.totalResults
+      );
       const totalItems =
-        tmdbResults.total_results +
-        musicResults.length +
-        dedupedBookDocs.length;
+        tmdbResults.total_results + musicTotalResults + bookResults.numFound;
       const totalPages = Math.max(
         tmdbResults.total_pages,
         Math.ceil(totalItems / 20)
@@ -663,10 +723,22 @@ searchRoutes.get('/', async (req, res, next) => {
     );
 
     const mappedResults = await mapSearchResults(results.results, media);
+    const qualityEnrichedResults = mappedResults.map((result) =>
+      result.mediaType === 'album'
+        ? {
+            ...result,
+            availableQualities: getAvailableMusicQualities(
+              result.mediaInfo,
+              result.mediaInfo?.requests ?? [],
+              getSettings().lidarr
+            ),
+          }
+        : result
+    );
     const creditEnrichedResults =
       typeFilter === 'movie' || typeFilter === 'tv'
         ? await mapWithConcurrency(
-            mappedResults,
+            qualityEnrichedResults,
             SEARCH_CREDIT_LOOKUP_CONCURRENCY,
             async (result) => {
               if (result.mediaType !== typeFilter) {
@@ -685,7 +757,7 @@ searchRoutes.get('/', async (req, res, next) => {
               }
             }
           )
-        : mappedResults;
+        : qualityEnrichedResults;
 
     const capabilityResults = creditEnrichedResults.filter(
       (result) =>

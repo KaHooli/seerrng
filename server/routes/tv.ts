@@ -8,6 +8,7 @@ import { MediaType } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import { Watchlist } from '@server/entity/Watchlist';
+import { upsertMediaSearchMetadata } from '@server/lib/mediaSearchMetadata';
 import { getSettings, type SonarrSettings } from '@server/lib/settings';
 import { rankTmdbTvResults } from '@server/lib/tmdbRank';
 import logger from '@server/logger';
@@ -131,17 +132,43 @@ tvRoutes.get('/:id', async (req, res, next) => {
     });
     const media = await Media.getMedia(tv.id, MediaType.TV, req.user);
 
-    const onUserWatchlist = await getRepository(Watchlist).exist({
-      where: {
-        tmdbId: tvId,
-        mediaType: MediaType.TV,
-        requestedBy: {
-          id: req.user?.id,
-        },
-      },
-    });
+    const onUserWatchlist = req.user
+      ? await getRepository(Watchlist).exists({
+          where: {
+            tmdbId: tvId,
+            mediaType: MediaType.TV,
+            requestedBy: { id: req.user.id },
+          },
+        })
+      : false;
 
     const data = mapTvDetails(tv, media, onUserWatchlist);
+
+    await upsertMediaSearchMetadata(media?.id, {
+      title: data.name,
+      alternateTitle: data.originalName,
+      releaseDate: data.firstAirDate,
+      genres: data.genres.map((genre) => genre.name).join(', '),
+      runtime: data.episodeRunTime[0]
+        ? `${data.episodeRunTime[0]} minutes`
+        : undefined,
+      creator: data.createdBy.map((creator) => creator.name).join(', '),
+      writer: data.credits.crew
+        .filter((credit) =>
+          ['Writer', 'Screenplay', 'Story', 'Teleplay'].includes(credit.job)
+        )
+        .map((credit) => credit.name)
+        .join(', '),
+      studio: data.productionCompanies
+        .map((company) => company.name)
+        .join(', '),
+      network: data.networks.map((network) => network.name).join(', '),
+      format: 'Series',
+      provider: 'TMDB',
+      externalIds: [data.id, data.externalIds.imdbId, data.externalIds.tvdbId]
+        .filter(Boolean)
+        .join(' '),
+    });
 
     // TMDB issue where it doesnt fallback to English when no overview is available in requested locale.
     if (!data.overview) {

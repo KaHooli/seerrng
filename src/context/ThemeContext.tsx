@@ -24,13 +24,18 @@ import useSWR from 'swr';
 
 export type ThemeMode = 'light' | 'dark';
 
+type ThemeChrome = 'classic';
+
 export type ThemePalette = {
   id: string;
   name: string;
   swatches: string[];
+  // Optional because an installed package supplies raw `scales` instead of
+  // naming one of the built-in scales.
   surface?: ThemeScaleName;
   primary?: ThemeScaleName;
   secondary?: ThemeScaleName;
+  chrome?: ThemeChrome;
   scales?: {
     surface: readonly string[];
     primary: readonly string[];
@@ -44,6 +49,23 @@ export type ThemePalette = {
 // Ordered to match BUILT_IN_THEME_IDS, which the server uses to stop an
 // installed package from claiming an id that a built-in palette already wins.
 export const themePalettes: ThemePalette[] = [
+  {
+    id: 'classic',
+    name: 'Seerr',
+    swatches: ['#1f2937', '#4f46e5', '#9333ea'],
+    surface: 'gray',
+    primary: 'indigo',
+    secondary: 'purple',
+    chrome: 'classic',
+  },
+  {
+    id: 'seerr',
+    name: 'SeerrNG',
+    swatches: ['#0f172a', '#2563eb', '#38bdf8'],
+    surface: 'slate',
+    primary: 'blue',
+    secondary: 'sky',
+  },
   {
     id: 'aurora',
     name: 'Aurora',
@@ -216,9 +238,24 @@ export const themePalettes: ThemePalette[] = [
 
 export const builtInThemeIds: readonly string[] = BUILT_IN_THEME_IDS;
 
+export const DEFAULT_THEME_PALETTE_ID = 'classic';
+
 const shades = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950];
 
 const themeScales = {
+  gray: [
+    '249 250 251',
+    '243 244 246',
+    '229 231 235',
+    '209 213 219',
+    '156 163 175',
+    '107 114 128',
+    '75 85 99',
+    '55 65 81',
+    '31 41 55',
+    '17 24 39',
+    '3 7 18',
+  ],
   slate: [
     '248 250 252',
     '241 245 249',
@@ -498,63 +535,28 @@ const applyThemeChrome = (
   surfaceScale: readonly string[],
   primaryScale: readonly string[],
   secondaryScale: readonly string[],
-  mode: ThemeMode
+  mode: ThemeMode,
+  chrome?: ThemeChrome
 ) => {
-  if (mode === 'dark') {
-    root.style.setProperty('--theme-page-bg', surfaceScale[9]);
-    root.style.setProperty(
-      '--theme-page-glow-start',
-      mixRgb(surfaceScale[8], primaryScale[7], 0.56)
-    );
-    root.style.setProperty('--theme-page-glow-end', surfaceScale[9]);
-    root.style.setProperty(
-      '--theme-searchbar-scrolled',
-      mixRgb(surfaceScale[8], primaryScale[7], 0.44)
-    );
-    root.style.setProperty(
-      '--theme-sidebar-start',
-      mixRgb(surfaceScale[8], primaryScale[8], 0.58)
-    );
-    root.style.setProperty(
-      '--theme-sidebar-end',
-      mixRgb(surfaceScale[10], primaryScale[9], 0.52)
-    );
-    root.style.setProperty(
-      '--theme-sidebar-border',
-      mixRgb(surfaceScale[7], secondaryScale[6], 0.48)
-    );
-    root.style.setProperty(
-      '--theme-sidebar-hover',
-      mixRgb(surfaceScale[7], primaryScale[7], 0.52)
-    );
-  } else {
-    root.style.setProperty('--theme-page-bg', surfaceScale[9]);
-    root.style.setProperty(
-      '--theme-page-glow-start',
-      mixRgb(surfaceScale[8], primaryScale[3], 0.44)
-    );
-    root.style.setProperty('--theme-page-glow-end', surfaceScale[9]);
-    root.style.setProperty(
-      '--theme-searchbar-scrolled',
-      mixRgb(surfaceScale[8], primaryScale[2], 0.38)
-    );
-    root.style.setProperty(
-      '--theme-sidebar-start',
-      mixRgb(primaryScale[7], surfaceScale[2], 0.24)
-    );
-    root.style.setProperty(
-      '--theme-sidebar-end',
-      mixRgb(primaryScale[9], surfaceScale[1], 0.18)
-    );
-    root.style.setProperty(
-      '--theme-sidebar-border',
-      mixRgb(primaryScale[6], secondaryScale[6], 0.42)
-    );
-    root.style.setProperty(
-      '--theme-sidebar-hover',
-      mixRgb(primaryScale[6], secondaryScale[5], 0.32)
-    );
-  }
+  const themeChrome = getThemeChromeTokens(
+    surfaceScale,
+    primaryScale,
+    secondaryScale,
+    mode,
+    chrome
+  );
+
+  root.style.setProperty('--theme-page-bg', themeChrome.pageBg);
+  root.style.setProperty('--theme-page-glow-start', themeChrome.pageGlowStart);
+  root.style.setProperty('--theme-page-glow-end', themeChrome.pageGlowEnd);
+  root.style.setProperty(
+    '--theme-searchbar-scrolled',
+    themeChrome.searchbarScrolled
+  );
+  root.style.setProperty('--theme-sidebar-start', themeChrome.sidebarStart);
+  root.style.setProperty('--theme-sidebar-end', themeChrome.sidebarEnd);
+  root.style.setProperty('--theme-sidebar-border', themeChrome.sidebarBorder);
+  root.style.setProperty('--theme-sidebar-hover', themeChrome.sidebarHover);
 };
 
 const parseRgb = (value: string): [number, number, number] =>
@@ -570,6 +572,11 @@ const mixRgb = (from: string, to: string, amount: number): string => {
     )
     .join(' ');
 };
+
+const rgbToHex = (value: string): string =>
+  `#${parseRgb(value)
+    .map((channel) => channel.toString(16).padStart(2, '0'))
+    .join('')}`;
 
 const createSurfaceScale = (
   surfaceScale: readonly string[],
@@ -610,6 +617,62 @@ const createSurfaceScale = (
       accentMix[index]
     )
   );
+};
+
+type ThemeChromeTokens = {
+  pageBg: string;
+  pageGlowStart: string;
+  pageGlowEnd: string;
+  searchbarScrolled: string;
+  sidebarStart: string;
+  sidebarEnd: string;
+  sidebarBorder: string;
+  sidebarHover: string;
+};
+
+const getThemeChromeTokens = (
+  surfaceScale: readonly string[],
+  primaryScale: readonly string[],
+  secondaryScale: readonly string[],
+  mode: ThemeMode,
+  chrome?: ThemeChrome
+): ThemeChromeTokens => {
+  if (mode === 'dark' && chrome === 'classic') {
+    return {
+      pageBg: surfaceScale[9],
+      pageGlowStart: surfaceScale[8],
+      pageGlowEnd: surfaceScale[9],
+      searchbarScrolled: surfaceScale[7],
+      sidebarStart: surfaceScale[8],
+      sidebarEnd: '19 25 40',
+      sidebarBorder: surfaceScale[7],
+      sidebarHover: surfaceScale[7],
+    };
+  }
+
+  if (mode === 'dark') {
+    return {
+      pageBg: surfaceScale[9],
+      pageGlowStart: mixRgb(surfaceScale[8], primaryScale[7], 0.56),
+      pageGlowEnd: surfaceScale[9],
+      searchbarScrolled: mixRgb(surfaceScale[8], primaryScale[7], 0.44),
+      sidebarStart: mixRgb(surfaceScale[8], primaryScale[8], 0.58),
+      sidebarEnd: mixRgb(surfaceScale[10], primaryScale[9], 0.52),
+      sidebarBorder: mixRgb(surfaceScale[7], secondaryScale[6], 0.48),
+      sidebarHover: mixRgb(surfaceScale[7], primaryScale[7], 0.52),
+    };
+  }
+
+  return {
+    pageBg: surfaceScale[9],
+    pageGlowStart: mixRgb(surfaceScale[8], primaryScale[3], 0.44),
+    pageGlowEnd: surfaceScale[9],
+    searchbarScrolled: mixRgb(surfaceScale[8], primaryScale[2], 0.38),
+    sidebarStart: mixRgb(primaryScale[7], surfaceScale[2], 0.24),
+    sidebarEnd: mixRgb(primaryScale[9], surfaceScale[1], 0.18),
+    sidebarBorder: mixRgb(primaryScale[6], secondaryScale[6], 0.42),
+    sidebarHover: mixRgb(primaryScale[6], secondaryScale[5], 0.32),
+  };
 };
 
 type ThemeContextValue = {
@@ -655,7 +718,11 @@ const getThemePalette = (
   palette: string,
   palettes: ThemePalette[] = themePalettes
 ): ThemePalette =>
-  palettes.find((themePalette) => themePalette.id === palette) ?? palettes[0];
+  palettes.find((themePalette) => themePalette.id === palette) ??
+  palettes.find(
+    (themePalette) => themePalette.id === DEFAULT_THEME_PALETTE_ID
+  ) ??
+  palettes[0];
 
 const getPaletteScales = (palette: ThemePalette) => {
   if (palette.scales) {
@@ -677,11 +744,16 @@ export const getThemeTokens = (
   const scales = getPaletteScales(activePalette);
   const primaryScale = scales.primary;
   const secondaryScale = scales.secondary;
-  const surfaceScale = createSurfaceScale(
-    scales.surface,
+  const surfaceScale =
+    mode === 'dark' && activePalette.chrome === 'classic'
+      ? themeScales.gray
+      : createSurfaceScale(scales.surface, primaryScale, secondaryScale, mode);
+  const chromeTokens = getThemeChromeTokens(
+    surfaceScale,
     primaryScale,
     secondaryScale,
-    mode
+    mode,
+    activePalette.chrome
   );
 
   return {
@@ -689,31 +761,8 @@ export const getThemeTokens = (
     primaryScale,
     secondaryScale,
     surfaceScale,
-    pageBg: surfaceScale[9],
-    pageGlowStart:
-      mode === 'dark'
-        ? mixRgb(surfaceScale[8], primaryScale[7], 0.56)
-        : mixRgb(surfaceScale[8], primaryScale[3], 0.44),
-    searchbarScrolled:
-      mode === 'dark'
-        ? mixRgb(surfaceScale[8], primaryScale[7], 0.44)
-        : mixRgb(surfaceScale[8], primaryScale[2], 0.38),
-    sidebarStart:
-      mode === 'dark'
-        ? mixRgb(surfaceScale[8], primaryScale[8], 0.58)
-        : mixRgb(primaryScale[7], surfaceScale[2], 0.24),
-    sidebarEnd:
-      mode === 'dark'
-        ? mixRgb(surfaceScale[10], primaryScale[9], 0.52)
-        : mixRgb(primaryScale[9], surfaceScale[1], 0.18),
-    sidebarBorder:
-      mode === 'dark'
-        ? mixRgb(surfaceScale[7], secondaryScale[6], 0.48)
-        : mixRgb(primaryScale[6], secondaryScale[6], 0.42),
-    sidebarHover:
-      mode === 'dark'
-        ? mixRgb(surfaceScale[7], primaryScale[7], 0.52)
-        : mixRgb(primaryScale[6], secondaryScale[5], 0.32),
+    chrome: activePalette.chrome,
+    ...chromeTokens,
   };
 };
 
@@ -740,8 +789,15 @@ const applyTheme = (
     themeTokens.surfaceScale,
     themeTokens.primaryScale,
     themeTokens.secondaryScale,
-    mode
+    mode,
+    themeTokens.chrome
   );
+  document
+    .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+    ?.setAttribute('content', rgbToHex(themeTokens.sidebarStart));
+  // Upstream also persists the mode and palette here. This fork persists them
+  // in the setters instead, so that applying the admin-configured default
+  // during hydration does not overwrite a choice the viewer already made.
 };
 
 const hexToRgb = (value: string): string => {
@@ -792,7 +848,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   const [mode, setModeState] = useState<ThemeMode>('dark');
   const [modePreference, setModePreferenceState] =
     useState<ThemeModePreference>('auto');
-  const [palette, setPaletteState] = useState(themePalettes[0].id);
+  const [palette, setPaletteState] = useState(DEFAULT_THEME_PALETTE_ID);
   const hasRestoredTheme = useRef(false);
 
   useEffect(() => {

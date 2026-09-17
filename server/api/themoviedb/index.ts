@@ -761,6 +761,7 @@ interface DiscoverMovieOptions {
   originalLanguage?: string;
   genre?: string;
   studio?: string;
+  country?: string;
   keywords?: string;
   excludeKeywords?: string;
   sortBy?: SortOptions;
@@ -787,6 +788,7 @@ interface DiscoverTvOptions {
   originalLanguage?: string;
   genre?: string;
   network?: number;
+  country?: string;
   keywords?: string;
   excludeKeywords?: string;
   sortBy?: SortOptions;
@@ -1296,6 +1298,7 @@ class TheMovieDb extends ExternalAPI implements TvShowProvider {
     originalLanguage,
     genre,
     studio,
+    country,
     keywords,
     excludeKeywords,
     withRuntimeGte,
@@ -1348,6 +1351,7 @@ class TheMovieDb extends ExternalAPI implements TvShowProvider {
               : primaryReleaseDateLte,
           with_genres: genre,
           with_companies: studio,
+          with_origin_country: country,
           with_keywords: keywords,
           without_keywords: excludeKeywords,
           'with_runtime.gte': withRuntimeGte,
@@ -1383,6 +1387,7 @@ class TheMovieDb extends ExternalAPI implements TvShowProvider {
     originalLanguage,
     genre,
     network,
+    country,
     keywords,
     excludeKeywords,
     withRuntimeGte,
@@ -1435,6 +1440,7 @@ class TheMovieDb extends ExternalAPI implements TvShowProvider {
           include_null_first_air_dates: includeEmptyReleaseDate,
           with_genres: genre,
           with_networks: network,
+          with_origin_country: country,
           with_keywords: keywords,
           without_keywords: excludeKeywords,
           'with_runtime.gte': withRuntimeGte,

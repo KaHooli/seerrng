@@ -45,6 +45,7 @@ interface Album {
   'primary-type'?: string;
   secondary_types?: string[];
   'artist-credit'?: { name: string }[];
+  availableQualities?: ('MP3' | 'FLAC')[];
   mediaInfo?: Media;
 }
 
@@ -223,7 +224,7 @@ const ArtistDetails = () => {
           onCancel={() => setShowBulkRequestModal(false)}
         />
       )}
-      <div className="relative z-10 mb-10 mt-4 flex flex-col items-center gap-6 text-gray-300 lg:flex-row lg:items-start">
+      <div className="relative z-10 mt-4 mb-10 flex flex-col items-center gap-6 text-gray-300 lg:flex-row lg:items-start">
         {data.artistThumb && (
           <div className="relative h-36 w-36 flex-shrink-0 overflow-hidden rounded-full ring-1 ring-gray-700 lg:h-44 lg:w-44">
             <CachedImage
@@ -238,7 +239,7 @@ const ArtistDetails = () => {
         <div className="min-w-0 text-center lg:text-left">
           <div className="flex min-w-0 flex-wrap items-center justify-center gap-3 lg:justify-start">
             <MediaTypeBadge mediaType="artist" variant="inline" />
-            <h1 className="min-w-0 break-words text-3xl font-bold text-white lg:text-5xl">
+            <h1 className="min-w-0 text-3xl font-bold break-words text-white lg:text-5xl">
               {artistName}
             </h1>
             {artistId && (
@@ -324,6 +325,7 @@ const ArtistDetails = () => {
                         artist={album['artist-credit']?.[0]?.name ?? artistName}
                         type={album['primary-type']}
                         status={album.mediaInfo?.status ?? MediaStatus.UNKNOWN}
+                        availableQualities={album.availableQualities}
                         inProgress={
                           (album.mediaInfo?.downloadStatus ?? []).length > 0
                         }

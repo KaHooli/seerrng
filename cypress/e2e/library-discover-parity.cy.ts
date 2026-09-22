@@ -1922,13 +1922,18 @@ describe('Books and Music discover parity', () => {
       .should('include', 'type=book')
       .and('include', 'format=audiobook');
 
+    // The click-through link lives in the card's hover overlay, which mounts
+    // unconditionally only when card text visibility resolves to `always` — a
+    // per-user setting that arrives asynchronously, so asserting the link before
+    // hovering raced that fetch. Hover first, which is what reaching the link by
+    // hand requires anyway.
+    cy.get('[data-testid=title-card]').first().trigger('mouseover');
     cy.get('[data-testid=title-card]')
       .first()
       .within(() => {
         cy.contains('Audiobook').should('be.visible');
         cy.get('a[href*="format=audiobook"]').should('exist');
       });
-    cy.get('[data-testid=title-card]').first().trigger('mouseover');
     cy.contains('button', 'Request Audiobook').should('be.visible');
   });
 });

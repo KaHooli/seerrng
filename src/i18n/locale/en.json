@@ -2348,6 +2348,7 @@
   "components.TransportSecurityNotice.providedDescription": "SeerrNG is using the certificate supplied by the operator. Verify the fingerprint below if your browser or reverse proxy reports a certificate mismatch.",
   "components.TransportSecurityNotice.providedTitle": "HTTPS is enabled",
   "components.TransportSecurityNotice.proxyHttpsDescription": "This browser connection is encrypted, so you can continue setup. The built-in HTTPS listener remains disabled because your reverse proxy provides transport security.",
+  "components.TransportSecurityNotice.proxyHttpsHttpAuthDescription": "This browser connection is encrypted, so your session cookie is sent securely and the built-in HTTPS listener stays disabled because your reverse proxy provides transport security. Authenticated HTTP sessions are still permitted, so anyone who reaches SeerrNG directly rather than through the proxy can sign in without that protection. Turn off \"Allow authenticated sessions over HTTP\" under Settings → Network if the server should only be reachable through the proxy.",
   "components.TransportSecurityNotice.proxyHttpsTitle": "HTTPS is active through your reverse proxy",
   "components.TransportSecurityNotice.redirectHttp": "Redirect HTTP to HTTPS after verification",
   "components.TransportSecurityNotice.restartRequiredDescription": "The browser transport choice was saved but is not active yet. Restart SeerrNG and reload this page before signing in or configuring a media server.",

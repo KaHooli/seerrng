@@ -1,5 +1,6 @@
 import Alert from '@app/components/Common/Alert';
 import Button from '@app/components/Common/Button';
+import { selectTransportNotice } from '@app/components/transportNotice';
 import useToasts from '@app/hooks/useToasts';
 import defineMessages from '@app/utils/defineMessages';
 import type { TlsStatusResponse } from '@server/interfaces/api/settingsInterfaces';
@@ -16,6 +17,8 @@ const messages = defineMessages('components.TransportSecurityNotice', {
   proxyHttpsTitle: 'HTTPS is active through your reverse proxy',
   proxyHttpsDescription:
     'This browser connection is encrypted, so you can continue setup. The built-in HTTPS listener remains disabled because your reverse proxy provides transport security.',
+  proxyHttpsHttpAuthDescription:
+    'This browser connection is encrypted, so your session cookie is sent securely and the built-in HTTPS listener stays disabled because your reverse proxy provides transport security. Authenticated HTTP sessions are still permitted, so anyone who reaches SeerrNG directly rather than through the proxy can sign in without that protection. Turn off "Allow authenticated sessions over HTTP" under Settings → Network if the server should only be reachable through the proxy.',
   insecureTitle: 'Insecure HTTP sign-in is enabled',
   insecureDescription:
     'Direct HTTP browser sign-in is enabled while built-in TLS is disabled. Anyone who can observe this network traffic could steal a session cookie. Use this only on a trusted LAN and prefer HTTPS whenever possible.',
@@ -303,7 +306,9 @@ const TransportSecurityNotice = ({
           (host) => `https://${formatHost(host)}:${data.httpsPort}`
         );
 
-  if (data.pendingRestart && !browserUsesHttps) {
+  const notice = selectTransportNotice(data, browserUsesHttps);
+
+  if (notice === 'restart-required') {
     return (
       <Alert
         type="warning"
@@ -315,30 +320,32 @@ const TransportSecurityNotice = ({
     );
   }
 
-  if (data.mode === 'disabled' && !data.httpAuthAllowed && browserUsesHttps) {
+  if (notice === 'proxy-https' || notice === 'proxy-https-http-auth') {
     return (
       <Alert type="info" title={intl.formatMessage(messages.proxyHttpsTitle)}>
-        {intl.formatMessage(messages.proxyHttpsDescription)}
+        {intl.formatMessage(
+          notice === 'proxy-https-http-auth'
+            ? messages.proxyHttpsHttpAuthDescription
+            : messages.proxyHttpsDescription
+        )}
         {setupControls}
       </Alert>
     );
   }
 
-  if (data.mode === 'disabled' && !data.httpAuthAllowed) {
+  if (notice === 'https-required') {
     return (
-      <>
-        <Alert
-          type="info"
-          title={intl.formatMessage(messages.httpsRequiredTitle)}
-        >
-          {intl.formatMessage(messages.httpsRequiredDescription)}
-          {setupControls}
-        </Alert>
-      </>
+      <Alert
+        type="info"
+        title={intl.formatMessage(messages.httpsRequiredTitle)}
+      >
+        {intl.formatMessage(messages.httpsRequiredDescription)}
+        {setupControls}
+      </Alert>
     );
   }
 
-  if (data.mode === 'disabled' && data.httpAuthAllowed) {
+  if (notice === 'insecure-http-auth') {
     return (
       <Alert type="warning" title={intl.formatMessage(messages.insecureTitle)}>
         {intl.formatMessage(messages.insecureDescription)}

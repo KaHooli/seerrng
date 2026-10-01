@@ -9,7 +9,14 @@ describe('Current batch layout standards', () => {
   });
 
   it('renders Settings fields, help text, headings, selectors, and actions to the shared standard', () => {
-    cy.visit('/settings/main');
+    // The heading colours below are the dark-mode standard. This fork's default
+    // mode is `auto`, and headless Chrome reports a light colour scheme, so pin
+    // dark mode rather than inherit the runner's preference.
+    cy.visit('/settings/main', {
+      onBeforeLoad(win) {
+        win.localStorage.setItem('seerr-theme-mode', 'dark');
+      },
+    });
 
     cy.get('.settings-main-card').should('be.visible');
     cy.get('.settings-page-content .heading, .settings-group-heading').each(

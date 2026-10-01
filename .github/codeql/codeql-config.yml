@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://json.schemastore.org/codeql.json
+name: SeerrNG CodeQL configuration
+
+# Unit and route tests build deliberately insecure fixtures (HTTP-only cookies,
+# unthrottled throwaway Express apps) to exercise the production guards. They
+# never ship, so their findings are noise that hides real production alerts.
+paths-ignore:
+  - '**/*.test.ts'
+  - '**/*.test.tsx'
+  - '**/*.test.mts'
+  - '**/*.test.mjs'
+
+query-filters:
+  # Every result of this query traces back to reading settings.json, which is
+  # where each integration's endpoint and credentials are configured. Sending
+  # configured values to the configured service is the application's purpose,
+  # and the query has no model hook to mark the settings loader as trusted.
+  - exclude:
+      id: js/file-access-to-http

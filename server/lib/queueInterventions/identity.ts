@@ -1,7 +1,7 @@
 import type { QueueItem } from '@server/api/servarr/base';
 import type { DownloadRecoveryServiceType } from '@server/entity/DownloadRecoveryState';
 import type { DVRSettings } from '@server/lib/settings';
-import { createHash } from 'node:crypto';
+import { createHash, scryptSync } from 'node:crypto';
 
 export type InterventionQueueItem = QueueItem & {
   outputPath?: string;
@@ -12,6 +12,26 @@ export type InterventionQueueItem = QueueItem & {
 };
 const hash = (value: unknown) =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+// The authority digest is persisted with each intervention, so the service's
+// API key must not reach it through a fast hash. scrypt keeps the authority
+// sensitive to a key change without exposing a cheaply guessable digest; the
+// result is cached because authorities are recomputed on every queue refresh.
+const AUTHORITY_COMPONENT_SALT = 'seerrng:queue-intervention-authority';
+const AUTHORITY_COMPONENT_CACHE_LIMIT = 32;
+const authorityComponents = new Map<string, string>();
+const deriveAuthorityComponent = (apiKey: string): string => {
+  const cached = authorityComponents.get(apiKey);
+  if (cached !== undefined) return cached;
+  const fingerprint = scryptSync(apiKey, AUTHORITY_COMPONENT_SALT, 32).toString(
+    'hex'
+  );
+  if (authorityComponents.size >= AUTHORITY_COMPONENT_CACHE_LIMIT) {
+    authorityComponents.delete(authorityComponents.keys().next().value!);
+  }
+  authorityComponents.set(apiKey, fingerprint);
+  return fingerprint;
+};
 export const serviceAuthority = (
   type: DownloadRecoveryServiceType,
   server: DVRSettings
@@ -23,7 +43,7 @@ export const serviceAuthority = (
     server.port,
     server.useSsl,
     server.baseUrl,
-    server.apiKey,
+    deriveAuthorityComponent(server.apiKey),
     server.syncEnabled,
     server.is4k,
     'serviceType' in server ? server.serviceType : undefined,

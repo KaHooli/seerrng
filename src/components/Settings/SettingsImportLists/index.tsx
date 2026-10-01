@@ -2,13 +2,15 @@ import Button from '@app/components/Common/Button';
 import LoadingSpinner from '@app/components/Common/LoadingSpinner';
 import PageTitle from '@app/components/Common/PageTitle';
 import SensitiveInput from '@app/components/Common/SensitiveInput';
+import Field from '@app/components/Settings/SettingsField';
+import SettingsFormRow from '@app/components/Settings/SettingsFormRow';
 import useToasts from '@app/hooks/useToasts';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import { ArrowDownOnSquareIcon, BeakerIcon } from '@heroicons/react/24/outline';
 import type { ImportListSettings } from '@server/lib/settings';
 import axios from 'axios';
-import { Field, Form, Formik } from 'formik';
+import { Form, Formik } from 'formik';
 import { useState } from 'react';
 import { useIntl } from 'react-intl';
 import useSWR from 'swr';
@@ -153,86 +155,72 @@ const SettingsImportLists = () => {
         >
           {({ errors, touched, values, isSubmitting, isValid }) => (
             <Form className="section" data-testid="settings-importlists-form">
-              <div className="form-row">
-                <label htmlFor="enabled" className="checkbox-label">
-                  {intl.formatMessage(messages.enabled)}
-                  <span className="label-tip">
-                    {intl.formatMessage(messages.enabledTip)}
-                  </span>
-                </label>
-                <div className="form-input-area">
-                  <Field type="checkbox" id="enabled" name="enabled" />
-                </div>
-              </div>
+              <SettingsFormRow
+                htmlFor="enabled"
+                label={intl.formatMessage(messages.enabled)}
+                description={intl.formatMessage(messages.enabledTip)}
+                labelClassName="checkbox-label"
+              >
+                <Field type="checkbox" id="enabled" name="enabled" />
+              </SettingsFormRow>
 
-              <div className="form-row">
-                <span className="text-label">
-                  {intl.formatMessage(messages.syncSchedule)}
-                  <span className="label-tip">
-                    {intl.formatMessage(messages.syncScheduleTip)}
-                  </span>
-                </span>
-                <div className="form-input-area">
-                  <Button
-                    as="a"
-                    href="/settings/jobs"
-                    buttonType="ghost"
-                    type="button"
-                  >
-                    <span>{intl.formatMessage(messages.goToJobs)}</span>
-                  </Button>
-                </div>
-              </div>
+              <SettingsFormRow
+                htmlFor="goToJobs"
+                label={intl.formatMessage(messages.syncSchedule)}
+                description={intl.formatMessage(messages.syncScheduleTip)}
+              >
+                <Button
+                  as="a"
+                  id="goToJobs"
+                  href="/settings/jobs"
+                  buttonType="ghost"
+                  type="button"
+                >
+                  <span>{intl.formatMessage(messages.goToJobs)}</span>
+                </Button>
+              </SettingsFormRow>
 
-              <div className="form-row">
-                <label htmlFor="maxItemsPerList" className="text-label">
-                  {intl.formatMessage(messages.maxItemsPerList)}
-                  <span className="label-tip">
-                    {intl.formatMessage(messages.maxItemsPerListTip)}
-                  </span>
-                </label>
-                <div className="form-input-area">
-                  <div className="form-input-field">
-                    <Field
-                      id="maxItemsPerList"
-                      name="maxItemsPerList"
-                      type="number"
-                      min="1"
-                      max="5000"
-                    />
-                  </div>
-                  {errors.maxItemsPerList &&
-                    touched.maxItemsPerList &&
-                    typeof errors.maxItemsPerList === 'string' && (
-                      <div className="error">{errors.maxItemsPerList}</div>
-                    )}
+              <SettingsFormRow
+                htmlFor="maxItemsPerList"
+                label={intl.formatMessage(messages.maxItemsPerList)}
+                description={intl.formatMessage(messages.maxItemsPerListTip)}
+              >
+                <div className="form-input-field">
+                  <Field
+                    id="maxItemsPerList"
+                    name="maxItemsPerList"
+                    type="number"
+                    min="1"
+                    max="5000"
+                  />
                 </div>
-              </div>
+                {errors.maxItemsPerList &&
+                  touched.maxItemsPerList &&
+                  typeof errors.maxItemsPerList === 'string' && (
+                    <div className="error">{errors.maxItemsPerList}</div>
+                  )}
+              </SettingsFormRow>
 
-              <div className="form-row">
-                <label htmlFor="syncConcurrency" className="text-label">
-                  {intl.formatMessage(messages.syncConcurrency)}
-                  <span className="label-tip">
-                    {intl.formatMessage(messages.syncConcurrencyTip)}
-                  </span>
-                </label>
-                <div className="form-input-area">
-                  <div className="form-input-field">
-                    <Field
-                      id="syncConcurrency"
-                      name="syncConcurrency"
-                      type="number"
-                      min="1"
-                      max="10"
-                    />
-                  </div>
-                  {errors.syncConcurrency &&
-                    touched.syncConcurrency &&
-                    typeof errors.syncConcurrency === 'string' && (
-                      <div className="error">{errors.syncConcurrency}</div>
-                    )}
+              <SettingsFormRow
+                htmlFor="syncConcurrency"
+                label={intl.formatMessage(messages.syncConcurrency)}
+                description={intl.formatMessage(messages.syncConcurrencyTip)}
+              >
+                <div className="form-input-field">
+                  <Field
+                    id="syncConcurrency"
+                    name="syncConcurrency"
+                    type="number"
+                    min="1"
+                    max="10"
+                  />
                 </div>
-              </div>
+                {errors.syncConcurrency &&
+                  touched.syncConcurrency &&
+                  typeof errors.syncConcurrency === 'string' && (
+                    <div className="error">{errors.syncConcurrency}</div>
+                  )}
+              </SettingsFormRow>
 
               <div className="form-row">
                 <label htmlFor="defaultMode" className="text-label">
@@ -256,77 +244,65 @@ const SettingsImportLists = () => {
                 </h3>
               </div>
 
-              <div className="form-row">
-                <label htmlFor="traktClientId" className="text-label">
-                  {intl.formatMessage(messages.traktClientId)}
-                  <span className="label-tip">
-                    {intl.formatMessage(messages.traktClientIdTip)}
-                  </span>
-                </label>
-                <div className="form-input-area">
-                  <div className="form-input-field">
-                    <SensitiveInput
-                      as="field"
-                      id="traktClientId"
-                      name="traktClientId"
-                      type="text"
-                    />
-                  </div>
-                  <div className="mt-2">
-                    <Button
-                      buttonType="ghost"
-                      type="button"
-                      disabled={isTestingTrakt || !values.traktClientId}
-                      onClick={() => testTrakt(values.traktClientId)}
-                    >
-                      <BeakerIcon />
-                      <span>
-                        {intl.formatMessage(
-                          isTestingTrakt ? messages.testing : messages.test
-                        )}
-                      </span>
-                    </Button>
-                  </div>
+              <SettingsFormRow
+                htmlFor="traktClientId"
+                label={intl.formatMessage(messages.traktClientId)}
+                description={intl.formatMessage(messages.traktClientIdTip)}
+              >
+                <div className="form-input-field">
+                  <SensitiveInput
+                    as="field"
+                    id="traktClientId"
+                    name="traktClientId"
+                    type="text"
+                  />
                 </div>
-              </div>
+                <div className="mt-2">
+                  <Button
+                    buttonType="ghost"
+                    type="button"
+                    disabled={isTestingTrakt || !values.traktClientId}
+                    onClick={() => testTrakt(values.traktClientId)}
+                  >
+                    <BeakerIcon />
+                    <span>
+                      {intl.formatMessage(
+                        isTestingTrakt ? messages.testing : messages.test
+                      )}
+                    </span>
+                  </Button>
+                </div>
+              </SettingsFormRow>
 
-              <div className="form-row">
-                <label htmlFor="tvdbApiKey" className="text-label">
-                  {intl.formatMessage(messages.tvdbApiKey)}
-                  <span className="label-tip">
-                    {intl.formatMessage(messages.tvdbApiKeyTip)}
-                  </span>
-                </label>
-                <div className="form-input-area">
-                  <div className="form-input-field">
-                    <SensitiveInput
-                      as="field"
-                      id="tvdbApiKey"
-                      name="tvdbApiKey"
-                      type="text"
-                    />
-                  </div>
+              <SettingsFormRow
+                htmlFor="tvdbApiKey"
+                label={intl.formatMessage(messages.tvdbApiKey)}
+                description={intl.formatMessage(messages.tvdbApiKeyTip)}
+              >
+                <div className="form-input-field">
+                  <SensitiveInput
+                    as="field"
+                    id="tvdbApiKey"
+                    name="tvdbApiKey"
+                    type="text"
+                  />
                 </div>
-              </div>
+              </SettingsFormRow>
 
-              <div className="form-row">
-                <label htmlFor="mdblistApiKey" className="text-label">
-                  {intl.formatMessage(messages.mdblistApiKey)}
-                  <span className="label-tip">
-                    {intl.formatMessage(messages.mdblistApiKeyTip)}
-                  </span>
-                </label>
-                <div className="form-input-area">
-                  <div className="form-input-field">
-                    <SensitiveInput
-                      as="field"
-                      id="mdblistApiKey"
-                      name="mdblistApiKey"
-                      type="text"
-                    />
-                  </div>
+              <SettingsFormRow
+                htmlFor="mdblistApiKey"
+                label={intl.formatMessage(messages.mdblistApiKey)}
+                description={intl.formatMessage(messages.mdblistApiKeyTip)}
+              >
+                <div className="form-input-field">
+                  <SensitiveInput
+                    as="field"
+                    id="mdblistApiKey"
+                    name="mdblistApiKey"
+                    type="text"
+                  />
                 </div>
-              </div>
+              </SettingsFormRow>
 
               <div className="actions">
                 <div className="flex justify-end">

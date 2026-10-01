@@ -900,19 +900,14 @@ const SettingsMain = () => {
                       type="checkbox"
                       id="enforceTheme"
                       name="enforceTheme"
-                      onChange={() => {
-                        setFieldValue('enforceTheme', !values.enforceTheme);
-                      }}
                     />
                   </SettingsFormRow>
-                  <div className="form-row">
-                    <label htmlFor="themeSourceUrl" className="text-label">
-                      <span>{intl.formatMessage(messages.themeSource)}</span>
-                      <span className="label-tip">
-                        {intl.formatMessage(messages.themeSourceTip)}
-                      </span>
-                    </label>
-                    <div className="form-input-area space-y-3">
+                  <SettingsFormRow
+                    htmlFor="themeSourceUrl"
+                    label={intl.formatMessage(messages.themeSource)}
+                    description={intl.formatMessage(messages.themeSourceTip)}
+                  >
+                    <div className="space-y-3">
                       <div className="form-input-field">
                         <input
                           id="themeSourceUrl"
@@ -1025,7 +1020,7 @@ const SettingsMain = () => {
                         </div>
                       )}
                     </div>
-                  </div>
+                  </SettingsFormRow>
                 </div>
               </section>
               <section className="app-card-sub settings-group-card">

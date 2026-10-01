@@ -44,7 +44,7 @@ describe('safe browser URLs', () => {
     assert.strictEqual(getSafeMarkdownHref('#changes'), '#changes');
     assert.strictEqual(
       getSafeHttpsHref('HTTPS://GITHUB.COM/snapetech/seerrng'),
-      'https://github.com/YunoHost-Apps/seerrng'
+      'https://github.com/snapetech/seerrng'
     );
 
     for (const href of [

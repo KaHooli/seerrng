@@ -41,7 +41,7 @@ test('release package channels wait for the reusable release asset build', () =>
   assert.match(dispatchScript, /release-snap\.yml[\s\S]*optional=false/u);
   assert.match(
     dispatchScript,
-    /Optional package workflow .*failed; continuing without Snap Store publication/u
+    /Optional package workflow .*failed; continuing without that package channel/u
   );
   assert.match(
     dispatchScript,
@@ -81,7 +81,7 @@ test('release package channels wait for the reusable release asset build', () =>
 });
 
 test('container workflows use the canonical lowercase GitHub Container Registry path', () => {
-  const expectedImage = 'ghcr.io/yunohost-apps/seerrng';
+  const expectedImage = 'ghcr.io/snapetech/seerrng';
   for (const name of [
     'ci.yml',
     'helm.yml',
@@ -116,6 +116,9 @@ test('AppImage uses the current launcher and excludes binaries above its glibc b
     path.join(rootDirectory, 'packaging', 'appimage', 'AppRun'),
     'utf8'
   );
+  const applicationPackage = JSON.parse(
+    fs.readFileSync(path.join(rootDirectory, 'package.json'), 'utf8')
+  );
   const desktop = fs.readFileSync(
     path.join(rootDirectory, 'packaging', 'appimage', 'seerrng.desktop'),
     'utf8'
@@ -124,6 +127,19 @@ test('AppImage uses the current launcher and excludes binaries above its glibc b
   assert.equal(launcherCheckout.with.ref, 'main');
   assert.equal(launcherCheckout.with.path, 'appimage-packaging');
   assert.match(build.run, /@next\/swc-linux-x64-gnu/u);
+  assert.ok(
+    build.run.includes(`${applicationPackage.dependencies.next})`),
+    'AppImage must pin its WASM compiler to the app’s Next.js version'
+  );
+  assert.match(build.run, /@next\/swc-wasm-nodejs/u);
+  assert.match(
+    build.run,
+    /next_directory="\$app_dir\/node_modules\/next"[\s\S]*swc_wasm_directory="\$next_directory\/wasm\/@next\/swc-wasm-nodejs"/u
+  );
+  assert.match(
+    build.run,
+    /sha512-Qbh5QIWcyzZfp\+neSFDxSaS0PjyCv7NUVipXcOaEp0\+bCAynyGAoGnZirESQyPwpn\/VXBncpZCVa0cnD\+EWDmQ==/u
+  );
   assert.match(build.run, /dpkg --compare-versions[\s\S]*gt 2\.29/u);
   assert.match(smoke.run, /--appimage-extract-and-run/u);
   assert.match(smoke.run, /api\/v1\/settings\/public/u);
@@ -245,6 +261,8 @@ test('multi-architecture publishers perform the real build once and verify the i
     /vars\.SEERRNG_ENABLE_RELEASE_PIPELINE == 'true'/u
   );
   assert.equal(ci.jobs.publish.needs, undefined);
+  assert.equal(ci.on.workflow_dispatch.inputs.deploy_main.default, true);
+  assert.equal(ci.on.workflow_dispatch.inputs.deploy_main.type, 'boolean');
   assert.equal(
     ci.jobs.publish.outputs.image_digest,
     '${{ steps.resolve-digest.outputs.image_digest }}'
@@ -276,7 +294,7 @@ test('multi-architecture publishers perform the real build once and verify the i
   // Upstream's readiness check still has to be part of the condition.
   assert.equal(
     ci.jobs['deploy-main'].if,
-    "github.ref == 'refs/heads/main' && vars.SEERRNG_ENABLE_RELEASE_PIPELINE == 'true' && needs.preflight-deploy.outputs.ready == 'true'"
+    "github.ref == 'refs/heads/main' && vars.SEERRNG_ENABLE_RELEASE_PIPELINE == 'true' && needs.preflight-deploy.outputs.ready == 'true' && (github.event_name != 'workflow_dispatch' || inputs.deploy_main)"
   );
   assert.match(
     ci.jobs.publish.steps.find(
@@ -418,6 +436,84 @@ test('release assets support trusted reuse and main-only manual dispatch', () =>
       .RELEASE_TAG,
     /inputs\.tag/u
   );
+});
+
+test('release assets build supported native archive platforms', () => {
+  const assets = readWorkflow('release-assets.yml');
+  const build = assets.jobs.build;
+  const publish = assets.jobs.publish;
+  const verifyInventory = publish.steps.find(
+    (step) => step.name === 'Verify archive inventory and checksums'
+  ).run;
+
+  assert.deepEqual(build.strategy.matrix.include, [
+    {
+      runner: 'ubuntu-latest',
+      os: 'linux',
+      arch: 'x64',
+      pnpm_version: '10.24.0',
+    },
+    {
+      runner: 'ubuntu-24.04-arm',
+      os: 'linux',
+      arch: 'arm64',
+      pnpm_version: '10.24.0',
+    },
+    {
+      runner: 'macos-15',
+      os: 'macos',
+      arch: 'arm64',
+      pnpm_version: '10.24.0',
+    },
+    {
+      runner: 'macos-15-intel',
+      os: 'macos',
+      arch: 'x64',
+      pnpm_version: '10.24.0',
+    },
+    {
+      runner: 'windows-2022',
+      os: 'windows',
+      arch: 'x64',
+      pnpm_version: '11.25.0',
+    },
+    {
+      runner: 'windows-11-arm',
+      os: 'windows',
+      arch: 'arm64',
+      pnpm_version: '11.25.0',
+    },
+  ]);
+
+  assert.equal(assets.jobs['build-linux-arm'], undefined);
+  assert.deepEqual(publish.needs, [
+    'resolve',
+    'build',
+    'build-jellyfin-plugin',
+  ]);
+  for (const archive of [
+    'seerrng-${TAG}-macos-x64.tar.gz',
+    'seerrng-${TAG}-windows-arm64.zip',
+  ]) {
+    assert.ok(
+      verifyInventory.includes(`"${archive}"`),
+      `expected the release-asset inventory check to require ${archive}`
+    );
+  }
+
+  const release = readWorkflow('release.yml');
+  const requiredAssets = release.jobs['dispatch-package-channels'].steps.find(
+    (step) => step.name === 'Verify release package assets'
+  ).run;
+  for (const archive of [
+    'seerrng-${TAG}-macos-x64.tar.gz',
+    'seerrng-${TAG}-windows-arm64.zip',
+  ]) {
+    assert.ok(
+      requiredAssets.includes(`"${archive}"`),
+      `expected the release gate to require ${archive}`
+    );
+  }
 });
 
 test('tag preparation keeps Helm metadata aligned with the application release', () => {

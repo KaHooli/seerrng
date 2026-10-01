@@ -265,6 +265,25 @@ describe('release asset construction', () => {
     assert.match(listing, /start\.cmd/);
   });
 
+  it('rejects Linux ARMv7 without a supported Node.js 24 runtime', async () => {
+    const fixture = await createFixture();
+    const distribution = path.join(fixture.root, 'dist-release');
+    await fs.writeFile(
+      path.join(fixture.executableDirectory, 'uname'),
+      '#!/bin/sh\nif [ "$1" = "-s" ]; then echo Linux; else echo armv7l; fi\n',
+      { mode: 0o755 }
+    );
+
+    const result = await run(fixture, ['v1.2.3', distribution]);
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.output, /Unsupported release architecture: armv7l/);
+    await assert.rejects(
+      fs.stat(path.join(distribution, 'seerrng-v1.2.3-linux-arm.tar.gz')),
+      { code: 'ENOENT' }
+    );
+  });
+
   it('rejects an architecture outside the published archive matrix', async () => {
     const fixture = await createFixture();
     const distribution = path.join(fixture.root, 'dist-release');

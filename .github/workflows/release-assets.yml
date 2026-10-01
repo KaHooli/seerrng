@@ -66,15 +66,27 @@ jobs:
           - runner: ubuntu-latest
             os: linux
             arch: x64
+            pnpm_version: 10.24.0
           - runner: ubuntu-24.04-arm
             os: linux
             arch: arm64
+            pnpm_version: 10.24.0
           - runner: macos-15
             os: macos
             arch: arm64
-          - runner: windows-latest
+            pnpm_version: 10.24.0
+          - runner: macos-15-intel
+            os: macos
+            arch: x64
+            pnpm_version: 10.24.0
+          - runner: windows-2022
             os: windows
             arch: x64
+            pnpm_version: 11.25.0
+          - runner: windows-11-arm
+            os: windows
+            arch: arm64
+            pnpm_version: 11.25.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,13 +94,45 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Pnpm Setup
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.22.2'
+          node-version-file: 'package.json'
           package-manager-cache: false
+
+      - name: Prepare isolated pnpm package metadata
+        if: matrix.os == 'windows'
+        shell: bash
+        run: |
+          cat > .github/release-pnpm-tooling.json <<'JSON'
+          {
+            "name": "seerrng-release-tooling",
+            "private": true
+          }
+          JSON
+
+      - name: Pnpm Setup
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ matrix.pnpm_version }}
+          package_json_file: ${{ matrix.os == 'windows' && '.github/release-pnpm-tooling.json' || 'package.json' }}
+
+      - name: Verify pinned pnpm runtime
+        shell: bash
+        env:
+          EXPECTED_PNPM_VERSION: ${{ matrix.pnpm_version }}
+        run: |
+          set -euo pipefail
+          case "$EXPECTED_PNPM_VERSION" in
+            10.*) export npm_config_manage_package_manager_versions=false ;;
+            11.*) export pnpm_config_pm_on_fail=ignore ;;
+            *) echo "Unsupported pnpm version for release build: $EXPECTED_PNPM_VERSION" >&2; exit 1 ;;
+          esac
+          actual_version="$(pnpm --version)"
+          printf 'Using pnpm %s from %s\n' "$actual_version" "$(command -v pnpm)"
+          [[ "$actual_version" == "$EXPECTED_PNPM_VERSION" ]] || {
+            echo "Expected pnpm $EXPECTED_PNPM_VERSION, got $actual_version." >&2
+            exit 1
+          }
 
       - name: Verify runner platform
         shell: bash
@@ -116,9 +160,25 @@ jobs:
 
       - name: Build archive
         shell: bash
-        run: ./scripts/build-release-assets.sh "${TAG}" dist-release
         env:
+          EXPECTED_PNPM_VERSION: ${{ matrix.pnpm_version }}
           TAG: ${{ needs.resolve.outputs.tag }}
+          GYP_MSVS_VERSION: ${{ matrix.os == 'windows' && matrix.arch == 'arm64' && '2026' || 'auto' }}
+          npm_config_engine_strict: ${{ matrix.pnpm_version == '11.25.0' && 'false' || 'true' }}
+        run: |
+          set -euo pipefail
+          case "$EXPECTED_PNPM_VERSION" in
+            10.*) export npm_config_manage_package_manager_versions=false ;;
+            11.*) export pnpm_config_pm_on_fail=ignore ;;
+            *) echo "Unsupported pnpm version for release build: $EXPECTED_PNPM_VERSION" >&2; exit 1 ;;
+          esac
+          actual_version="$(pnpm --version)"
+          printf 'Building with pnpm %s from %s\n' "$actual_version" "$(command -v pnpm)"
+          [[ "$actual_version" == "$EXPECTED_PNPM_VERSION" ]] || {
+            echo "Expected pnpm $EXPECTED_PNPM_VERSION, got $actual_version." >&2
+            exit 1
+          }
+          ./scripts/build-release-assets.sh "${TAG}" dist-release
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -230,7 +290,9 @@ jobs:
             "seerrng-${TAG}-linux-x64.tar.gz"
             "seerrng-${TAG}-linux-arm64.tar.gz"
             "seerrng-${TAG}-macos-arm64.tar.gz"
+            "seerrng-${TAG}-macos-x64.tar.gz"
             "seerrng-${TAG}-windows-x64.zip"
+            "seerrng-${TAG}-windows-arm64.zip"
             "seerrng-jellyfin-bridge-${TAG}.zip"
           )
           for archive in "${expected[@]}"; do

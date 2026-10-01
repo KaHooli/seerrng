@@ -37,8 +37,8 @@ describe('safe browser URLs', () => {
 
   it('allows only HTTPS or same-origin links in provider markdown', () => {
     assert.strictEqual(
-      getSafeMarkdownHref('https://github.com/YunoHost-Apps/seerrng'),
-      'https://github.com/YunoHost-Apps/seerrng'
+      getSafeMarkdownHref('https://github.com/snapetech/seerrng'),
+      'https://github.com/snapetech/seerrng'
     );
     assert.strictEqual(getSafeMarkdownHref('/docs/release'), '/docs/release');
     assert.strictEqual(getSafeMarkdownHref('#changes'), '#changes');
@@ -48,7 +48,7 @@ describe('safe browser URLs', () => {
     );
 
     for (const href of [
-      'http://github.com/YunoHost-Apps/seerrng',
+      'http://github.com/snapetech/seerrng',
       '//attacker.example/release',
       '/\\attacker.example/release',
       'javascript:alert(1)',

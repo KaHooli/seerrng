@@ -1,8 +1,10 @@
 import CachedImage from '@app/components/Common/CachedImage';
 import MiniQuotaDisplay from '@app/components/Layout/UserDropdown/MiniQuotaDisplay';
+import { useNativeRuntime } from '@app/context/NativeRuntimeContext';
 import { useUser } from '@app/hooks/useUser';
 import defineMessages from '@app/utils/defineMessages';
-import { Menu } from '@headlessui/react';
+import { unsubscribeToPushNotifications } from '@app/utils/pushSubscriptionHelpers';
+import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
 import {
   ArrowRightOnRectangleIcon,
   ClockIcon,
@@ -13,6 +15,12 @@ import type { LinkProps } from 'next/link';
 import Link from 'next/link';
 import { forwardRef } from 'react';
 import { useIntl } from 'react-intl';
+
+const PUSH_CLEANUP_REQUEST_TIMEOUT_MS = 3000;
+// exceeds the request timeout so that fires first; the remainder covers the
+// unsubscribe step, whose serviceWorker.ready never settles without an active
+// registration
+const PUSH_CLEANUP_TOTAL_TIMEOUT_MS = PUSH_CLEANUP_REQUEST_TIMEOUT_MS + 2000;
 
 const messages = defineMessages('components.Layout.UserDropdown', {
   myprofile: 'Profile',
@@ -37,11 +45,45 @@ ForwardedLink.displayName = 'ForwardedLink';
 const UserDropdown = () => {
   const intl = useIntl();
   const { user, revalidate } = useUser();
+  const { clearSession } = useNativeRuntime();
 
   const logout = async () => {
+    const cleanUpPushSubscription = async () => {
+      try {
+        const unsubscribedEndpoint = await unsubscribeToPushNotifications(
+          user?.id
+        );
+
+        if (unsubscribedEndpoint) {
+          await axios.delete(
+            `/api/v1/user/${user?.id}/pushSubscription/${encodeURIComponent(
+              unsubscribedEndpoint
+            )}`,
+            { timeout: PUSH_CLEANUP_REQUEST_TIMEOUT_MS }
+          );
+        }
+      } catch {
+        // continue logout regardless
+      }
+    };
+
+    await Promise.race([
+      cleanUpPushSubscription(),
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, PUSH_CLEANUP_TOTAL_TIMEOUT_MS);
+      }),
+    ]);
+
+    try {
+      localStorage.removeItem('pushNotificationsEnabled');
+    } catch {
+      // continue logout regardless
+    }
+
     const response = await axios.post('/api/v1/auth/logout');
 
     if (response.data?.status === 'ok') {
+      clearSession();
       revalidate();
     }
   };
@@ -49,7 +91,7 @@ const UserDropdown = () => {
   return (
     <Menu as="div" className="relative">
       <div>
-        <Menu.Button
+        <MenuButton
           className="flex max-w-xs items-center rounded-full text-sm ring-1 ring-gray-700 hover:ring-gray-500 focus:ring-gray-500 focus:outline-none"
           data-testid="user-menu"
           aria-label="User menu"
@@ -62,13 +104,13 @@ const UserDropdown = () => {
             width={40}
             height={40}
           />
-        </Menu.Button>
+        </MenuButton>
       </div>
-      <Menu.Items
+      <MenuItems
         transition
         className="absolute right-0 z-50 mt-2 w-72 origin-top-right rounded-md shadow-lg transition duration-100 ease-out data-closed:scale-95 data-closed:opacity-0"
       >
-        <div className="divide-y divide-gray-700 rounded-md bg-gray-800/80 ring-1 ring-gray-700 backdrop-blur">
+        <div className="app-user-menu-surface divide-y divide-gray-700 rounded-md ring-1 ring-gray-700 backdrop-blur">
           <div className="flex flex-col space-y-4 px-4 py-4">
             <div className="flex items-center space-x-2">
               <CachedImage
@@ -93,73 +135,73 @@ const UserDropdown = () => {
             {user && <MiniQuotaDisplay userId={user?.id} />}
           </div>
           <div className="p-1">
-            <Menu.Item>
+            <MenuItem>
               {({ active }) => (
                 <ForwardedLink
                   href={`/profile`}
-                  className={`flex items-center rounded px-4 py-2 text-sm font-medium text-gray-200 transition duration-150 ease-in-out ${
+                  className={`user-dropdown-action flex items-center rounded px-4 py-2 text-sm font-medium text-gray-200 transition duration-150 ease-in-out ${
                     active
                       ? 'bg-gradient-to-br from-indigo-600 to-purple-600 text-white'
                       : ''
                   }`}
                   data-testid="user-menu-profile"
                 >
-                  <UserIcon className="mr-2 inline h-5 w-5" />
+                  <UserIcon className="inline h-5 w-5" />
                   <span>{intl.formatMessage(messages.myprofile)}</span>
                 </ForwardedLink>
               )}
-            </Menu.Item>
-            <Menu.Item>
+            </MenuItem>
+            <MenuItem>
               {({ active }) => (
                 <ForwardedLink
-                  href="/requests/status"
-                  className={`flex items-center rounded px-4 py-2 text-sm font-medium text-gray-200 transition duration-150 ease-in-out ${
+                  href="/requests"
+                  className={`user-dropdown-action flex items-center rounded px-4 py-2 text-sm font-medium text-gray-200 transition duration-150 ease-in-out ${
                     active
                       ? 'bg-gradient-to-br from-indigo-600 to-purple-600 text-white'
                       : ''
                   }`}
-                  data-testid="user-menu-settings"
+                  data-testid="user-menu-requests"
                 >
-                  <ClockIcon className="mr-2 inline h-5 w-5" />
+                  <ClockIcon className="inline h-5 w-5" />
                   <span>{intl.formatMessage(messages.requests)}</span>
                 </ForwardedLink>
               )}
-            </Menu.Item>
-            <Menu.Item>
+            </MenuItem>
+            <MenuItem>
               {({ active }) => (
                 <ForwardedLink
                   href={`/profile/settings`}
-                  className={`flex items-center rounded px-4 py-2 text-sm font-medium text-gray-200 transition duration-150 ease-in-out ${
+                  className={`user-dropdown-action flex items-center rounded px-4 py-2 text-sm font-medium text-gray-200 transition duration-150 ease-in-out ${
                     active
                       ? 'bg-gradient-to-br from-indigo-600 to-purple-600 text-white'
                       : ''
                   }`}
                   data-testid="user-menu-settings"
                 >
-                  <CogIcon className="mr-2 inline h-5 w-5" />
+                  <CogIcon className="inline h-5 w-5" />
                   <span>{intl.formatMessage(messages.settings)}</span>
                 </ForwardedLink>
               )}
-            </Menu.Item>
-            <Menu.Item>
+            </MenuItem>
+            <MenuItem>
               {({ active }) => (
                 <a
                   href="#"
-                  className={`flex items-center rounded px-4 py-2 text-sm font-medium text-gray-200 transition duration-150 ease-in-out ${
+                  className={`user-dropdown-action flex items-center rounded px-4 py-2 text-sm font-medium text-gray-200 transition duration-150 ease-in-out ${
                     active
                       ? 'bg-gradient-to-br from-indigo-600 to-purple-600 text-white'
                       : ''
                   }`}
                   onClick={() => logout()}
                 >
-                  <ArrowRightOnRectangleIcon className="mr-2 inline h-5 w-5" />
+                  <ArrowRightOnRectangleIcon className="inline h-5 w-5" />
                   <span>{intl.formatMessage(messages.signout)}</span>
                 </a>
               )}
-            </Menu.Item>
+            </MenuItem>
           </div>
         </div>
-      </Menu.Items>
+      </MenuItems>
     </Menu>
   );
 };

@@ -1,6 +1,6 @@
-import ListenBrainzAPI from '@server/api/listenbrainz';
-import OpenLibraryAPI from '@server/api/openlibrary';
-import TheMovieDb from '@server/api/themoviedb';
+import ListenBrainzAPI from '@server/api/listenbrainz/index';
+import OpenLibraryAPI from '@server/api/openlibrary/index';
+import TheMovieDb from '@server/api/themoviedb/index';
 import { IssueStatus, IssueType, IssueTypeName } from '@server/constants/issue';
 import { MediaType } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
@@ -84,6 +84,31 @@ const getMediaDetails = async (
       };
     }
   }
+  if (
+    media.mediaType === MediaType.COMIC ||
+    media.mediaType === MediaType.MAGAZINE
+  ) {
+    const identifiers =
+      media.identifiers ??
+      (await getRepository(MediaIdentifier).find({
+        where: { media: { id: media.id } },
+      }));
+    const provider =
+      media.mediaType === MediaType.COMIC
+        ? MediaIdentifierProvider.COMICVINE
+        : MediaIdentifierProvider.LAZYLIBRARIAN;
+    const identifier = identifiers.find(
+      (candidate) => candidate.provider === provider
+    )?.value;
+    return {
+      title:
+        media.externalServiceSlug ??
+        identifier ??
+        media.mbId ??
+        String(media.tmdbId),
+      image: '',
+    };
+  }
   return { title: media.mbId ?? String(media.tmdbId), image: '' };
 };
 
@@ -99,7 +124,11 @@ export const buildMediaRequestNotificationPayload = async (
         ? 'Series'
         : entity.type === MediaType.MUSIC
           ? 'Music'
-          : 'Book';
+          : entity.type === MediaType.COMIC
+            ? 'Comic'
+            : entity.type === MediaType.MAGAZINE
+              ? 'Magazine'
+              : 'Book';
   let event: string | undefined;
   let notifyAdmin = true;
   let notifySystem = true;
@@ -139,11 +168,17 @@ export const buildMediaRequestNotificationPayload = async (
     notifyUser: notifyAdmin ? undefined : entity.requestedBy,
     event,
   };
+  const notificationMediaUrl = (mediaUrl: string): string =>
+    type === Notification.MEDIA_AVAILABLE &&
+    Number.isSafeInteger(entity.id) &&
+    entity.id > 0
+      ? `/requests/status?requestId=${entity.id}`
+      : mediaUrl;
   if (entity.type === MediaType.MOVIE) {
     const movie = await new TheMovieDb().getMovie({ movieId: media.tmdbId });
     return {
       ...base,
-      mediaUrl: `/movie/${media.tmdbId}`,
+      mediaUrl: notificationMediaUrl(`/movie/${media.tmdbId}`),
       subject: `${movie.title}${
         movie.release_date ? ` (${movie.release_date.slice(0, 4)})` : ''
       }`,
@@ -159,7 +194,7 @@ export const buildMediaRequestNotificationPayload = async (
     const tv = await new TheMovieDb().getTvShow({ tvId: media.tmdbId });
     return {
       ...base,
-      mediaUrl: `/tv/${media.tmdbId}`,
+      mediaUrl: notificationMediaUrl(`/tv/${media.tmdbId}`),
       subject: `${tv.name}${
         tv.first_air_date ? ` (${tv.first_air_date.slice(0, 4)})` : ''
       }`,
@@ -187,7 +222,7 @@ export const buildMediaRequestNotificationPayload = async (
     const releaseYear = releaseGroup.date?.slice(0, 4);
     return {
       ...base,
-      mediaUrl: `/music/${mbId}`,
+      mediaUrl: notificationMediaUrl(`/music/${mbId}`),
       subject: `${releaseGroup.name}${releaseYear ? ` (${releaseYear})` : ''}`,
       message: artist.name,
       image: album.caa_release_mbid
@@ -230,7 +265,7 @@ export const buildMediaRequestNotificationPayload = async (
       editions.entries.find(({ isbn_10 }) => isbn_10?.[0])?.isbn_10?.[0];
     return {
       ...base,
-      mediaUrl: `/book/${normalizedId}`,
+      mediaUrl: notificationMediaUrl(`/book/${normalizedId}`),
       subject: `${work.title}${releaseYear ? ` (${releaseYear})` : ''}`,
       message: description
         ? truncate(description, {
@@ -245,17 +280,44 @@ export const buildMediaRequestNotificationPayload = async (
       extra: isbn ? [{ name: 'ISBN', value: isbn }] : undefined,
     };
   }
+  if (entity.type === MediaType.COMIC || entity.type === MediaType.MAGAZINE) {
+    const { title, image } = await getMediaDetails(media);
+    const mediaUrl =
+      entity.type === MediaType.COMIC
+        ? media.identifiers?.find(
+            (identifier) =>
+              identifier.provider === MediaIdentifierProvider.COMICVINE
+          )?.value
+        : (media.externalServiceSlug ??
+          media.identifiers?.find(
+            (identifier) =>
+              identifier.provider === MediaIdentifierProvider.LAZYLIBRARIAN
+          )?.value);
+    return {
+      ...base,
+      mediaUrl:
+        notificationMediaUrl(
+          mediaUrl ? `/${entity.type}/${encodeURIComponent(mediaUrl)}` : ''
+        ) || undefined,
+      subject: title,
+      message: `${mediaType} request details are available in SeerrNG.`,
+      image,
+    };
+  }
   throw new Error(`Unsupported media notification request ${entity.id}.`);
 };
 
 const hydrateMediaRequestIntent = async (
   type: Notification,
   requestId: number
-): Promise<NotificationPayload> => {
-  const request = await getRepository(MediaRequest).findOneOrFail({
+): Promise<NotificationPayload | undefined> => {
+  const request = await getRepository(MediaRequest).findOne({
     where: { id: requestId },
     relations: { media: { identifiers: true } },
   });
+  // The request was deleted after its durable notification was queued. There
+  // is no current payload to send, so the outbox should retire this stale row.
+  if (!request) return undefined;
   return buildMediaRequestNotificationPayload(request, request.media, type);
 };
 
@@ -263,12 +325,17 @@ const hydrateIssueIntent = async (
   type: Notification,
   issueId: number,
   modifiedById?: number
-): Promise<NotificationPayload> => {
-  const issue = await getRepository(Issue).findOneByOrFail({ id: issueId });
+): Promise<NotificationPayload | undefined> => {
+  const issue = await getRepository(Issue).findOneBy({ id: issueId });
+  // A deleted issue cannot produce a useful notification payload.
+  if (!issue) return undefined;
   if (modifiedById !== undefined) {
-    issue.modifiedBy = await getRepository(User).findOneByOrFail({
+    const modifiedBy = await getRepository(User).findOneBy({
       id: modifiedById,
     });
+    // The actor is optional. Keep the issue event deliverable when the actor
+    // account has since been removed, while omitting that stale reference.
+    issue.modifiedBy = modifiedBy ?? undefined;
   }
   issue.status =
     type === Notification.ISSUE_RESOLVED
@@ -322,13 +389,17 @@ const hydrateIssueIntent = async (
 const hydrateIssueCommentIntent = async (
   commentId: number
 ): Promise<NotificationPayload | undefined> => {
-  const comment = await getRepository(IssueComment).findOneOrFail({
+  const comment = await getRepository(IssueComment).findOne({
     where: { id: commentId },
     relations: { issue: true },
   });
-  const issue = await getRepository(Issue).findOneByOrFail({
+  // Deleted comments and orphaned issue references cannot be hydrated.
+  if (!comment) return undefined;
+  if (!comment.issue) return undefined;
+  const issue = await getRepository(Issue).findOneBy({
     id: comment.issue.id,
   });
+  if (!issue) return undefined;
   const [firstComment] = sortBy(issue.comments, 'id');
   if (!firstComment || comment.id === firstComment.id) {
     return undefined;

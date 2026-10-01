@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { afterEach, before, describe, it, mock } from 'node:test';
 
 import PushoverAPI from '@server/api/pushover';
@@ -21,6 +22,7 @@ import { runUserSecurityMutation } from '@server/lib/userSecurityMutation';
 import { setupTestDb } from '@server/test/db';
 import type { Express } from 'express';
 import express from 'express';
+import * as OpenApiValidator from 'express-openapi-validator';
 import session from 'express-session';
 import request from 'supertest';
 import router, {
@@ -36,10 +38,49 @@ function createApp() {
   const app = express();
   app.use(express.json());
   app.use(
+    // Test-only session middleware has no network listener or real secret.
+    // codeql[js/clear-text-cookie]
     session({
       secret: 'test-secret',
       resave: false,
       saveUninitialized: false,
+    })
+  );
+  app.use('/api/v1', router);
+  app.use(
+    (
+      err: { status?: number; message?: string },
+      _req: express.Request,
+      res: express.Response,
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      _next: express.NextFunction
+    ) => {
+      res
+        .status(err.status ?? 500)
+        .json({ status: err.status ?? 500, message: err.message });
+    }
+  );
+  return app;
+}
+
+function createOpenApiValidatedApp() {
+  const app = express();
+  app.use(express.json());
+  app.set('trust proxy', 1);
+  app.use(
+    // The in-memory test app uses the same Secure cookie policy as HTTPS.
+    session({
+      secret: 'test-secret',
+      resave: false,
+      saveUninitialized: false,
+      cookie: { secure: true },
+    })
+  );
+  app.use(
+    OpenApiValidator.middleware({
+      apiSpec: path.join(process.cwd(), 'seerr-api.yml'),
+      validateRequests: true,
+      validateSecurity: false,
     })
   );
   app.use('/api/v1', router);
@@ -417,6 +458,29 @@ describe('Top-level API route validation', () => {
 
     assert.strictEqual(anonymous.status, 403);
     assert.strictEqual(authenticated.status, 202);
+  });
+
+  it('keeps cache warming reachable through the OpenAPI request validator', async () => {
+    const validatedApp = createOpenApiValidatedApp();
+    const loginResponse = await request(validatedApp)
+      .post('/api/v1/auth/local')
+      .set('X-Forwarded-Proto', 'https')
+      .send({ email: 'admin@seerr.dev', password: 'test1234' });
+    assert.strictEqual(loginResponse.status, 200);
+    const sessionCookie = loginResponse
+      .get('set-cookie')?.[0]
+      ?.split(';', 1)[0];
+    assert.ok(sessionCookie);
+    assert.match(loginResponse.get('set-cookie')?.[0] ?? '', /; Secure(?:;|$)/);
+
+    const response = await request(validatedApp)
+      .post('/api/v1/imageproxy/warm')
+      .set('X-Forwarded-Proto', 'https')
+      .set('Cookie', sessionCookie)
+      .send({ urls: [] });
+
+    assert.strictEqual(response.status, 202, JSON.stringify(response.body));
+    assert.deepStrictEqual(response.body, { accepted: true });
   });
 
   it('allows unauthenticated login backdrop requests', async () => {

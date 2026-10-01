@@ -1,3 +1,5 @@
+import type { ComicVineVolumeDetails } from '@server/api/comicvine';
+import ComicVineAPI from '@server/api/comicvine';
 import ListenBrainzAPI from '@server/api/listenbrainz';
 import type { LbAlbumDetails } from '@server/api/listenbrainz/interfaces';
 import type {
@@ -15,9 +17,11 @@ import { MediaType } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
 import { MediaSearchMetadata } from '@server/entity/MediaSearchMetadata';
 import type { RequestStatusPageItem } from '@server/lib/requestStatus';
+import { getSettings } from '@server/lib/settings';
 import { mapWithConcurrency } from '@server/utils/concurrency';
 import { matchesAllSearchTerms } from '@server/utils/searchTerms';
 import { In } from 'typeorm';
+import { isIncompleteRequestStatus } from './requestStatusIncomplete';
 
 export const REQUEST_STATUS_SORT_FIELDS = [
   'added',
@@ -207,6 +211,14 @@ const bookMetadata = async (
   releaseDate: nonEmpty(work.first_publish_date),
 });
 
+const comicMetadata = (
+  volume: ComicVineVolumeDetails
+): RequestStatusSortMetadata => ({
+  title: nonEmpty(volume.name),
+  publisher: nonEmpty(volume.publisher?.name),
+  releaseDate: nonEmpty(volume.start_year),
+});
+
 const getIdentifier = (
   item: RequestStatusPageItem,
   provider: string
@@ -224,6 +236,10 @@ const getMetadataCacheKey = (
   }
   if (request.type === MediaType.MUSIC) {
     return request.media.mbId ? `music:${request.media.mbId}` : undefined;
+  }
+  if (request.type === MediaType.COMIC) {
+    const comicVineId = getIdentifier(item, 'comicvine');
+    return comicVineId ? `comic:${comicVineId}` : undefined;
   }
   const workId = getIdentifier(item, 'openlibrary');
   const editionId = getIdentifier(item, 'openlibrary_edition');
@@ -280,6 +296,17 @@ const loadSortMetadata = async (
             : Promise.resolve(undefined),
         ]);
         return bookMetadata(work, edition);
+      }
+      if (item.request.type === MediaType.COMIC) {
+        const comicVineId = getIdentifier(item, 'comicvine');
+        const { comicVineApiKey } = getSettings().main;
+        if (!comicVineId || !comicVineApiKey) {
+          return {};
+        }
+        const volume = await new ComicVineAPI(comicVineApiKey).getVolume(
+          Number(comicVineId)
+        );
+        return volume ? comicMetadata(volume) : {};
       }
     } catch {
       // Sorting must remain available when an external metadata provider is
@@ -386,7 +413,15 @@ const getSortValue = (
     case 'status':
       return STATUS_ORDER.indexOf(item.status.stage);
     case 'incomplete':
-      return item.status.stage === 'library' ? 1 : 0;
+      return isIncompleteRequestStatus(
+        item.status.stage,
+        item.request.type,
+        item.request.is4k
+          ? item.request.media?.status4k
+          : item.request.media?.status
+      )
+        ? 1
+        : 0;
     case 'title':
       return metadata.title;
     case 'director':

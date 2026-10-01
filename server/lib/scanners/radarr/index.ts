@@ -18,6 +18,7 @@ import {
   runWithServarrServiceSnapshots,
 } from '@server/lib/serviceAdmission';
 import type { RadarrSettings } from '@server/lib/settings';
+import { getHttpErrorDetails } from '@server/utils/httpError';
 import { uniqWith } from 'lodash';
 
 type SyncStatus = StatusBase & {
@@ -151,7 +152,10 @@ class RadarrScanner
       await this.cleanupOrphanedMovies();
       this.log('Radarr scan complete', 'info');
     } catch (e) {
-      this.log('Scan interrupted', 'error', { errorMessage: e.message });
+      this.log('Scan interrupted', 'error', {
+        ...getHttpErrorDetails(e),
+        errorStack: e instanceof Error ? e.stack : undefined,
+      });
     } finally {
       this.endRun(sessionId);
     }
@@ -206,6 +210,39 @@ class RadarrScanner
     }
   }
 
+  private async existsInAnyServer(
+    tmdbId: number,
+    is4k: boolean
+  ): Promise<boolean> {
+    const servers = this.servers.filter(
+      (server) =>
+        server.syncEnabled && (this.enable4kMovie && server.is4k) === is4k
+    );
+
+    for (const server of servers) {
+      try {
+        const api = new RadarrAPI({
+          apiKey: server.apiKey,
+          url: RadarrAPI.buildUrl(server, '/api/v3'),
+        });
+        const movies = await api.getLibraryMoviesByTmdbId(tmdbId);
+
+        if (movies.some((movie) => movie.tmdbId === tmdbId)) {
+          return true;
+        }
+      } catch (e) {
+        this.log(
+          `Could not confirm movie ${tmdbId} against Radarr server ${server.name}. Skipping cleanup for it.`,
+          'warn',
+          { errorMessage: e.message }
+        );
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   private async cleanupOrphanedMovies(): Promise<void> {
     const mediaRepository = getRepository(Media);
 
@@ -213,7 +250,10 @@ class RadarrScanner
       await forEachMediaCleanupBatch(
         { mediaType: MediaType.MOVIE, status: MediaStatus.PROCESSING },
         async (media) => {
-          if (!this.scannedTmdbIds.has(media.tmdbId)) {
+          if (
+            !this.scannedTmdbIds.has(media.tmdbId) &&
+            !(await this.existsInAnyServer(media.tmdbId, false))
+          ) {
             const changed = await runMediaEntityMutation(media, () =>
               runWithServarrServiceSnapshots(
                 'radarr',
@@ -263,7 +303,10 @@ class RadarrScanner
           status4k: MediaStatus.PROCESSING,
         },
         async (media) => {
-          if (!this.scanned4kTmdbIds.has(media.tmdbId)) {
+          if (
+            !this.scanned4kTmdbIds.has(media.tmdbId) &&
+            !(await this.existsInAnyServer(media.tmdbId, true))
+          ) {
             const changed = await runMediaEntityMutation(media, () =>
               runWithServarrServiceSnapshots(
                 'radarr',

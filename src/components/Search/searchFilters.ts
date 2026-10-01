@@ -1,9 +1,20 @@
 import type { ParsedUrlQuery } from 'querystring';
 
 export type SearchFilterCategory =
-  'all' | 'movie' | 'tv' | 'book' | 'audiobook' | 'music';
+  | 'all'
+  | 'movie'
+  | 'tv'
+  | 'book'
+  | 'audiobook'
+  | 'music'
+  | 'author'
+  | 'comic'
+  | 'magazine'
+  | 'software';
 
 export const searchContextualFilterKeys = [
+  'artist',
+  'artistId',
   'availability',
   'certification',
   'certificationCountry',
@@ -20,6 +31,7 @@ export const searchContextualFilterKeys = [
   'keywords',
   'minRating',
   'network',
+  'narrator',
   'primaryReleaseDateGte',
   'primaryReleaseDateLte',
   'releaseType',
@@ -55,14 +67,28 @@ export const matchesSearchResultFilter = (
 export const getSearchResultFilter = (query: ParsedUrlQuery): string =>
   typeof query.resultFilter === 'string' ? query.resultFilter : '';
 
+export const getMusicSearchParams = (query: ParsedUrlQuery) =>
+  Object.fromEntries(
+    [
+      'artist',
+      'artistId',
+      'genre',
+      'releaseType',
+      'primaryReleaseDateGte',
+      'primaryReleaseDateLte',
+    ].flatMap((key) =>
+      typeof query[key] === 'string' && query[key] ? [[key, query[key]]] : []
+    )
+  ) as Record<string, string>;
+
 export const getSearchEndpoint = (
   category: SearchFilterCategory,
-  mainQuery = ''
+  mainQuery = '',
+  hasContextualFilters = false
 ): string => {
-  // A populated top search owns the provider request. Media type and contextual
-  // keyword controls narrow that search; they must not replace it with a broad
-  // discovery feed.
-  if (mainQuery.trim()) {
+  // Scoped discovery routes accept catalogue constraints alongside the main
+  // keyword. Use combined search only when no contextual constraints are set.
+  if (mainQuery.trim() && !hasContextualFilters) {
     return '/api/v1/search';
   }
 
@@ -93,7 +119,15 @@ export const isSearchDataReady = ({
   routerReady: boolean;
   category: SearchFilterCategory;
   query: string;
-}): boolean => routerReady && (category !== 'all' || Boolean(query));
+}): boolean =>
+  routerReady &&
+  category !== 'software' &&
+  (category === 'all' ||
+  category === 'author' ||
+  category === 'comic' ||
+  category === 'magazine'
+    ? Boolean(query)
+    : true);
 
 export const getSearchCategoryQuery = (
   currentQuery: ParsedUrlQuery,

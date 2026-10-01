@@ -1,3 +1,4 @@
+import { parseDownloadPathMappings } from '@server/lib/downloadPathMappings';
 import type { AllSettings, NotificationAgentKey } from '@server/lib/settings';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,6 +23,10 @@ export type ExternalRuntimeConfig = Pick<
   | 'sonarr'
   | 'lidarr'
   | 'readarr'
+  | 'mylar'
+  | 'kapowarr'
+  | 'backissue'
+  | 'lazylibrarian'
   | 'notifications'
   | 'network'
 >;
@@ -95,13 +100,39 @@ const validate = (value: unknown): ExternalRuntimeConfig => {
     assertRecord(root[section], section);
   }
   const notifications = assertRecord(root.notifications, 'notifications');
+  const main = assertRecord(root.main, 'main');
   assertRecord(notifications.agents, 'notifications.agents');
   return {
     ...root,
+    main: {
+      ...main,
+      downloadPathMappings: parseDownloadPathMappings(
+        main.downloadPathMappings
+      ),
+    },
     radarr: normalizeServarrServices(root.radarr, 'radarr'),
     sonarr: normalizeServarrServices(root.sonarr, 'sonarr'),
     lidarr: normalizeServarrServices(root.lidarr, 'lidarr'),
     readarr: normalizeServarrServices(root.readarr, 'readarr'),
+    // Lenient for optional comics and magazine services: SEERR_EXTERNAL_CONFIG
+    // is hand-maintained or may predate an integration, so missing keys mean
+    // no configured instances.
+    mylar:
+      root.mylar === undefined
+        ? []
+        : normalizeServarrServices(root.mylar, 'mylar'),
+    kapowarr:
+      root.kapowarr === undefined
+        ? []
+        : normalizeServarrServices(root.kapowarr, 'kapowarr'),
+    backissue:
+      root.backissue === undefined
+        ? []
+        : normalizeServarrServices(root.backissue, 'backissue'),
+    lazylibrarian:
+      root.lazylibrarian === undefined
+        ? []
+        : normalizeServarrServices(root.lazylibrarian, 'lazylibrarian'),
   } as unknown as ExternalRuntimeConfig;
 };
 
@@ -133,6 +164,10 @@ const loadFromSettingsFile = (): ExternalRuntimeConfig | undefined => {
       sonarr: settings.sonarr ?? [],
       lidarr: settings.lidarr ?? [],
       readarr: settings.readarr ?? [],
+      mylar: settings.mylar ?? [],
+      kapowarr: settings.kapowarr ?? [],
+      backissue: settings.backissue ?? [],
+      lazylibrarian: settings.lazylibrarian ?? [],
       notifications: settings.notifications,
       network: settings.network,
     };

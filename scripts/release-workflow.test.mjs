@@ -5,6 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import * as yaml from 'js-yaml';
+import { splitDiscordReleaseBody } from './discord-release-notes.mjs';
 
 const rootDirectory = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -23,15 +24,20 @@ test('release package channels wait for the reusable release asset build', () =>
     (step) => step.name === 'Dispatch package workflows'
   ).run;
 
+  assert.equal(
+    packageDispatch.steps[0].uses,
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+  );
   assert.equal(assetBuild.uses, './.github/workflows/release-assets.yml');
   assert.equal(assetBuild.needs, 'verify');
   assert.equal(assetBuild.with.tag, '${{ inputs.tag || github.ref_name }}');
   assert.equal(assetBuild.permissions.actions, 'read');
   assert.deepEqual(packageDispatch.needs, ['verify', 'build-release-assets']);
-  assert.equal(packageDispatch['timeout-minutes'], 120);
+  assert.equal(packageDispatch['timeout-minutes'], 360);
   assert.match(dispatchScript, /--ref main/u);
+  assert.match(dispatchScript, /release-chocolatey\.yml/u);
   assert.match(dispatchScript, /release-linux-packages\.yml/u);
-  assert.match(dispatchScript, /gh run watch/u);
+  assert.match(dispatchScript, /watch-github-run\.mjs/u);
   assert.match(dispatchScript, /release-snap\.yml[\s\S]*optional=false/u);
   assert.match(
     dispatchScript,
@@ -67,6 +73,63 @@ test('release package channels wait for the reusable release asset build', () =>
     discordStep.run,
     /DISCORD_RELEASE_WEBHOOK is required to complete a release/u
   );
+  assert.match(
+    discordStep.run,
+    /curl --fail --silent --show-error/u,
+    'Discord delivery must fail the release when the webhook returns HTTP error'
+  );
+});
+
+test('container workflows use the canonical lowercase GitHub Container Registry path', () => {
+  const expectedImage = 'ghcr.io/yunohost-apps/seerrng';
+  for (const name of [
+    'ci.yml',
+    'helm.yml',
+    'preview.yml',
+    'release.yml',
+    'trivy-scan.yml',
+  ]) {
+    const source = fs.readFileSync(path.join(workflowDirectory, name), 'utf8');
+    assert.equal(readWorkflow(name).env.GHCR_IMAGE, expectedImage, name);
+    assert.doesNotMatch(
+      source,
+      /ghcr\.io\/\$\{GITHUB_REPOSITORY\}|ghcr\.io\/\$\{\{ github\.repository \}\}/u,
+      `${name} must not interpolate the case-sensitive GitHub repository name into an OCI image reference`
+    );
+  }
+  const release = readWorkflow('release.yml');
+  const digestResolver = release.jobs.publish.steps.find(
+    (step) => step.name === 'Resolve manifest digest'
+  );
+  assert.match(digestResolver.run, /image="\$\{GHCR_IMAGE\}:\$\{VERSION\}"/u);
+});
+
+test('AppImage uses the current launcher and excludes binaries above its glibc baseline', () => {
+  const workflow = readWorkflow('release-linux-packages.yml');
+  const job = workflow.jobs.appimage;
+  const launcherCheckout = job.steps.find(
+    (step) => step.name === 'Checkout AppImage launcher files from main'
+  );
+  const build = job.steps.find((step) => step.name === 'Build AppImage');
+  const smoke = job.steps.find((step) => step.name === 'Smoke-test AppImage');
+  const appRun = fs.readFileSync(
+    path.join(rootDirectory, 'packaging', 'appimage', 'AppRun'),
+    'utf8'
+  );
+  const desktop = fs.readFileSync(
+    path.join(rootDirectory, 'packaging', 'appimage', 'seerrng.desktop'),
+    'utf8'
+  );
+
+  assert.equal(launcherCheckout.with.ref, 'main');
+  assert.equal(launcherCheckout.with.path, 'appimage-packaging');
+  assert.match(build.run, /@next\/swc-linux-x64-gnu/u);
+  assert.match(build.run, /dpkg --compare-versions[\s\S]*gt 2\.29/u);
+  assert.match(smoke.run, /--appimage-extract-and-run/u);
+  assert.match(smoke.run, /api\/v1\/settings\/public/u);
+  assert.match(appRun, /xdg-open[\s\S]*127\.0\.0\.1/mu);
+  assert.match(desktop, /^Exec=AppRun$/mu);
+  assert.match(desktop, /^Terminal=false$/mu);
 });
 
 test('release asset publication can download artifacts from the same run', () => {
@@ -96,6 +159,33 @@ test('package workflows build the requested tag and reject tags outside main', (
       `${workflowName} must verify tag ancestry before publishing`
     );
   }
+});
+
+test('Chocolatey packages only verified Windows release archives', () => {
+  const workflow = readWorkflow('release-chocolatey.yml');
+  const job = workflow.jobs['publish-chocolatey'];
+  const steps = job.steps.map((step) => step.run ?? '').join('\n');
+
+  assert.equal(workflow.on.workflow_dispatch.inputs.tag.required, true);
+  assert.equal(job['runs-on'], 'windows-latest');
+  assert.match(
+    steps,
+    /merge-base --is-ancestor HEAD refs\/remotes\/origin\/main/u
+  );
+  assert.match(steps, /Get-FileHash[\s\S]*SHA-256 mismatch/u);
+  assert.match(steps, /CHOCOLATEY_API_KEY/u);
+  assert.match(steps, /choco push/u);
+});
+
+test('Launchpad retries for the same release tag are serialized', () => {
+  const ppa = readWorkflow('release-ppa.yml');
+
+  assert.equal(
+    ppa.concurrency.group,
+    'release-ppa-${{ inputs.tag || github.ref_name }}'
+  );
+  assert.equal(ppa.concurrency['cancel-in-progress'], false);
+  assert.equal(ppa.jobs['publish-ppa']['timeout-minutes'], 360);
 });
 
 test('release asset uploaders preserve the draft until the final publish gate', () => {
@@ -209,7 +299,7 @@ test('multi-architecture publishers perform the real build once and verify the i
     ci.jobs['scan-main-image'].steps.find(
       (step) => step.name === 'Run Trivy image scan'
     ).run,
-    /ghcr\.io\/\$\{\{ github\.repository \}\}@\$\{\{ needs\.publish\.outputs\.image_digest \}\}/u
+    /\$\{GHCR_IMAGE\}@\$\{IMAGE_DIGEST\}/u
   );
 
   assert.equal(preview.jobs.build, undefined);
@@ -267,6 +357,23 @@ test('multi-architecture publishers perform the real build once and verify the i
       (step) => step.name === 'Verify published architectures'
     ).run,
     /verify-container-manifest\.sh --require-provenance/u
+  );
+  const digestResolver = release.jobs.publish.steps.find(
+    (step) => step.name === 'Resolve manifest digest'
+  );
+  assert.match(
+    digestResolver.run,
+    /image="\$\{GHCR_IMAGE\}:\$\{VERSION\}"/u,
+    'release digest resolution must use GHCR rather than the unreachable Docker Hub blob mirror'
+  );
+  assert.match(
+    digestResolver.run,
+    /docker buildx imagetools inspect "\$image"/u
+  );
+  assert.doesNotMatch(
+    digestResolver.run,
+    /DOCKER_HUB/u,
+    'the digest resolver must not fetch the Docker Hub CloudFront-backed manifests'
   );
   assert.deepEqual(release.jobs['scan-release-image'].needs, 'publish');
   assert.deepEqual(release.jobs['scan-release-image'].strategy.matrix.include, [
@@ -364,6 +471,52 @@ test('release notes flow into the draft release and Discord announcement', () =>
   assert.equal(
     discord.env.RELEASE_BODY,
     '${{ needs.changelog.outputs.release_body }}'
+  );
+  const discordScript = discord.steps.find(
+    (step) => step.name === 'Send Discord announcement'
+  ).run;
+  assert.ok(
+    discord.steps.some((step) => step.name === 'Checkout release tooling')
+  );
+  assert.match(discordScript, /discord-release-notes\.mjs --split/u);
+  assert.match(discordScript, /wait=true/u);
+  assert.doesNotMatch(
+    discordScript,
+    /3797|3800/u,
+    'Discord announcements must not silently truncate later release-note sections'
+  );
+});
+
+test('Discord release-note chunks preserve all text and stay within the limit', () => {
+  const body = '#### Security\n- Secure every copy 🛡️.\n\n'.repeat(240);
+  const chunks = splitDiscordReleaseBody(body, 3600);
+
+  assert.ok(chunks.length > 1);
+  assert.equal(chunks.join(''), body);
+  assert.ok(chunks.every((chunk) => chunk.length <= 3600));
+  assert.ok(chunks.every((chunk) => !/[\uD800-\uDBFF]$/u.test(chunk)));
+  assert.throws(
+    () => splitDiscordReleaseBody('🛡️', 1),
+    /cannot fit this Unicode character/u
+  );
+});
+
+test('a workflow dispatch can correct omitted notes for a published release', () => {
+  const release = readWorkflow('release.yml');
+  const correction = release.jobs['announce-security-correction'];
+
+  assert.equal(
+    release.on.workflow_dispatch.inputs.announce_security_correction.type,
+    'boolean'
+  );
+  assert.equal(
+    correction.if,
+    "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.announce_security_correction == true"
+  );
+  assert.match(
+    correction.steps.find((step) => step.name === 'Post omitted security notes')
+      .run,
+    /releases\/tags\/\$\{TAG\}/u
   );
 });
 

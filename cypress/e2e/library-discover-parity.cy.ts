@@ -1,4 +1,12 @@
 describe('Books and Music discover parity', () => {
+  const openFilterSection = (label: string) => {
+    cy.contains('button', new RegExp(`^${label}$`)).then(($button) => {
+      if ($button.attr('aria-expanded') === 'false') {
+        cy.wrap($button).click();
+      }
+    });
+  };
+
   const themePalettes = [
     'aurora',
     'ember',
@@ -47,8 +55,32 @@ describe('Books and Music discover parity', () => {
     tags: [],
   });
 
+  const assertStandardManageActions = () => {
+    cy.get('[role="dialog"]').then(($dialog) => {
+      const dialogWidth = $dialog[0].getBoundingClientRect().width;
+
+      cy.get(
+        '[data-testid="manage-advanced-actions"] .app-button, [data-testid="modal-cancel-button"]'
+      )
+        .should('have.length.greaterThan', 0)
+        .each(($button) => {
+          const bounds = $button[0].getBoundingClientRect();
+          const styles = window.getComputedStyle($button[0]);
+
+          expect($button).to.have.class('button-standard');
+          expect(bounds.height).to.eq(16);
+          expect(styles.fontSize).to.eq('12px');
+          expect(bounds.width).to.be.lessThan(dialogWidth - 32);
+        });
+    });
+  };
+
   beforeEach(() => {
     cy.loginAsAdmin();
+    cy.mockConfiguredMediaAvailability({
+      booksEnabled: true,
+      musicEnabled: true,
+    });
   });
 
   it('opens the theme picker and persists document theme attributes', () => {
@@ -206,9 +238,11 @@ describe('Books and Music discover parity', () => {
     cy.visit('/discover/books');
     cy.wait('@getBooks');
     cy.contains('[data-testid=page-header]', 'Books').should('be.visible');
+    openFilterSection('Filters');
+    openFilterSection('Sort By');
     cy.get('button[aria-label="Genres"]').should('be.visible');
     cy.contains('Filters').should('be.visible');
-    cy.get('input[aria-label="Search Books"]')
+    cy.get('input[aria-label="Keyword Search"]')
       .should('be.visible')
       .type('left hand');
     cy.contains('button', 'Recommended').should('be.visible');
@@ -235,7 +269,7 @@ describe('Books and Music discover parity', () => {
     cy.contains('button', 'Release Date').click();
     cy.location('search').should('include', 'sortBy=release_date.');
     cy.contains('button', 'Clear Filters').click();
-    cy.location('search').should('include', 'sortBy=release_date.');
+    cy.location('search').should('not.include', 'sortBy=');
     cy.contains('Filters').should('be.visible');
     cy.get('button[aria-label="Release Year"]').should('be.visible');
     cy.get('input[aria-label="Search Music"]')
@@ -256,7 +290,7 @@ describe('Books and Music discover parity', () => {
     cy.location('search').should('include', 'sortBy=release_date.desc');
     cy.contains('button', 'Clear Filters').click();
     cy.location('search').should('not.include', 'genre=');
-    cy.location('search').should('include', 'sortBy=release_date.desc');
+    cy.location('search').should('not.include', 'sortBy=');
 
     cy.intercept('GET', '/api/v1/discover/tv*', {
       page: 1,
@@ -270,7 +304,7 @@ describe('Books and Music discover parity', () => {
     cy.location('search').should('include', 'sortBy=first_air_date.desc');
     cy.contains('button', 'Clear Filters').click();
     cy.location('search').should('not.include', 'status=');
-    cy.location('search').should('include', 'sortBy=first_air_date.desc');
+    cy.location('search').should('not.include', 'sortBy=');
 
     cy.intercept('GET', '/api/v1/discover/books*', {
       page: 1,
@@ -282,6 +316,7 @@ describe('Books and Music discover parity', () => {
       '/discover/books?subject=fantasy&firstPublishYear=2020&sortBy=newest'
     );
     cy.wait('@getBooks');
+    openFilterSection('Filters');
     cy.contains('button', 'Clear Filters').click();
     cy.location('search').should('not.include', 'subject=');
     cy.location('search').should('not.include', 'firstPublishYear=');
@@ -369,34 +404,33 @@ describe('Books and Music discover parity', () => {
     cy.contains('[data-testid=media-title]', 'Requestable Book').should(
       'be.visible'
     );
-    cy.get('[data-testid=format-request-option-ebook]').click();
+    cy.get('[data-testid=format-request-control]')
+      .filter(':has([data-testid="format-request-option-ebook"])')
+      .last()
+      .find('[data-testid=format-request-option-ebook]')
+      .click();
     cy.contains('[data-testid=modal-title]', 'Request Book').should(
       'be.visible'
     );
     cy.contains('[data-testid=media-title]', 'Requestable Book').should(
       'be.visible'
     );
-    cy.contains('legend', 'Format').should('be.visible');
-    cy.get('[role=radiogroup][aria-label=Format]').within(() => {
-      cy.get('[title=Book]')
-        .closest('[role=radio]')
-        .should('have.attr', 'aria-checked', 'true');
-      cy.get('[title=Audiobook]')
-        .closest('[role=radio]')
-        .click()
-        .should('have.attr', 'aria-checked', 'true');
-    });
-    cy.contains('[data-testid=modal-title]', 'Request Audiobook')
-      .scrollIntoView()
-      .should('be.visible');
-    cy.contains('[role=radio]', 'Book + Audiobook')
-      .click()
-      .should('have.attr', 'aria-checked', 'true');
-    cy.contains('[data-testid=modal-title]', 'Request Book + Audiobook')
-      .scrollIntoView()
-      .should('be.visible');
+    cy.get('[role=dialog] [role=group][aria-label=Format]')
+      .last()
+      .within(() => {
+        cy.contains('button', 'Book').should(
+          'have.attr',
+          'aria-pressed',
+          'true'
+        );
+        cy.contains('button', 'Audiobook')
+          .click()
+          .should('have.attr', 'aria-pressed', 'true');
+      });
+    cy.contains('[data-testid=modal-title]', 'Request Book').should(
+      'be.visible'
+    );
     cy.contains('label', 'Edition / ISBN').should('be.visible');
-    cy.get('select[name=isbn]').should('be.visible');
     cy.contains('Automatic best match').should('be.visible');
     cy.contains('Advanced').should('be.visible');
     cy.get('[data-testid=modal-cancel-button]').click();
@@ -443,7 +477,11 @@ describe('Books and Music discover parity', () => {
     cy.contains('[data-testid=media-title]', 'Requestable Album').should(
       'be.visible'
     );
-    cy.get('[data-testid=format-request-option-mp3]').click();
+    cy.get('[data-testid=format-request-control]')
+      .filter(':has([data-testid="format-request-option-mp3"])')
+      .last()
+      .find('[data-testid=format-request-option-mp3]')
+      .click();
     cy.contains('[data-testid=modal-title]', 'Request Music').should(
       'be.visible'
     );
@@ -574,38 +612,25 @@ describe('Books and Music discover parity', () => {
     cy.wait('@getBulkAuthor');
     cy.contains('h1', 'Bulk Author').should('be.visible');
     cy.contains('button', 'Request Bibliography').click();
-    cy.contains(
-      '[data-testid=modal-title]',
-      'Request Book Bibliography'
-    ).should('be.visible');
+    cy.contains('[data-testid=modal-title]', 'Request Bibliography').should(
+      'be.visible'
+    );
     cy.contains('Requestable Work').should('be.visible');
     cy.contains('Already Requested Work').should('be.visible');
     cy.contains('button', 'Load More').should('not.exist');
-    cy.get('[role="radiogroup"][aria-label="Format"] [role="radio"]')
-      .should('have.length', 3)
-      .filter('[aria-checked="true"]')
+    cy.get('[role="group"][aria-label="Format"] button')
+      .should('have.length', 2)
+      .filter('[aria-pressed="true"]')
       .should('contain', 'Book');
-    cy.get('[role="dialog"] table')
-      .contains('td', 'Already Requested Work')
-      .parents('tr')
-      .contains('Requested')
-      .should('be.visible');
-    cy.get('[role="radiogroup"][aria-label="Format"]')
-      .contains('[role="radio"]', 'Book + Audiobook')
+    cy.contains('Already Requested Work')
+      .parent()
+      .should('contain.text', 'Requested');
+    cy.get('[role="group"][aria-label="Format"]')
+      .contains('button', 'Audiobook')
       .click();
-    cy.get('[role="dialog"] table')
-      .contains('td', 'Already Requested Work')
-      .parents('tr')
-      .contains('Not Requested')
-      .should('be.visible');
-    cy.get('[role="radiogroup"][aria-label="Format"]')
-      .contains('[role="radio"]', 'Audiobook')
+    cy.get('[role=dialog]')
+      .contains('button', /^Request$/)
       .click();
-    cy.get('[data-testid=modal-ok-button]').should(
-      'contain',
-      'Request 3 Items as Audiobook'
-    );
-    cy.get('[data-testid=modal-ok-button]').click();
     cy.wait('@bulkBookRequest').then(({ request }) => {
       expect(request?.body.format).to.equal('audiobook');
       expect(request?.body.items).to.have.length(3);
@@ -615,12 +640,12 @@ describe('Books and Music discover parity', () => {
     cy.contains('No default Bookshelf server configured.').should('be.visible');
   });
 
-  it('defaults artist discography bulk requests to albums and switches release types', () => {
+  it('opens artist discography requests through the music collection workflow', () => {
     cy.intercept('GET', '/api/v1/user/*/quota', unrestrictedQuota);
     cy.intercept('GET', '/api/v1/service/lidarr', [
       {
         id: 1,
-        name: 'Lidarr',
+        name: 'Lidarr MP3',
         is4k: false,
         isDefault: true,
         activeProfileId: 1,
@@ -630,96 +655,44 @@ describe('Books and Music discover parity', () => {
       },
     ]);
     cy.intercept('GET', '/api/v1/service/lidarr/1', {
-      ...serviceDetails('Lidarr', '/music'),
+      ...serviceDetails('Lidarr MP3', '/music'),
     });
-    cy.intercept('GET', '/api/v1/artist/bulk-artist*', (req) => {
-      if (req.query.albumType === 'Single') {
-        req.reply({
-          artist: { name: 'Bulk Artist' },
-          releaseGroups: [
-            {
-              id: 'single-one',
-              mediaType: 'album',
-              title: 'Single One',
-              'primary-type': 'Single',
-              'first-release-date': '2021-01-01',
-              'artist-credit': [{ name: 'Bulk Artist' }],
-            },
-          ],
-          typeCounts: { Album: 2, Single: 1 },
-          pagination: {
-            page: 1,
-            pageSize: 50,
-            totalItems: 1,
-            totalPages: 1,
-            albumType: 'Single',
-          },
-        });
-        return;
-      }
-
-      if (req.query.albumType === 'Album' && req.query.page === '2') {
-        req.reply({
-          artist: { name: 'Bulk Artist', area: 'US' },
-          releaseGroups: [
-            {
-              id: 'album-two',
-              mediaType: 'album',
-              title: 'Album Two',
-              'primary-type': 'Album',
-              'first-release-date': '2018-01-01',
-              'artist-credit': [{ name: 'Bulk Artist' }],
-            },
-          ],
-          typeCounts: { Album: 3, Single: 1 },
-          pagination: {
-            page: 2,
-            pageSize: 50,
-            totalItems: 3,
-            totalPages: 2,
-            albumType: 'Album',
-          },
-        });
-        return;
-      }
-
-      req.reply({
-        artist: { name: 'Bulk Artist', area: 'US' },
-        releaseGroups: [
-          {
-            id: 'album-one',
-            mediaType: 'album',
-            title: 'Album One',
-            'primary-type': 'Album',
-            'first-release-date': '2020-01-01',
-            'artist-credit': [{ name: 'Bulk Artist' }],
-          },
-          {
-            id: 'album-owned',
-            mediaType: 'album',
-            title: 'Owned Album',
-            'primary-type': 'Album',
-            'first-release-date': '2019-01-01',
-            'artist-credit': [{ name: 'Bulk Artist' }],
-            mediaInfo: {
-              id: 1302,
-              status: 5,
-              requests: [],
-              watchlists: [],
-              downloadStatus: [],
-            },
-          },
-        ],
-        typeCounts: { Album: 3, Single: 1 },
-        pagination: {
-          page: 1,
-          pageSize: 50,
-          totalItems: 3,
-          totalPages: req.query.albumType === 'Album' ? 2 : 1,
-          albumType: req.query.albumType as string,
-        },
-      });
+    cy.intercept('GET', '/api/v1/artist/bulk-artist*', {
+      artist: { name: 'Bulk Artist', area: 'US' },
+      releaseGroups: [],
+      typeCounts: { Album: 2, Single: 1 },
+      pagination: { page: 1, pageSize: 50, totalItems: 0, totalPages: 1 },
     }).as('getBulkArtist');
+    cy.intercept('GET', '/api/v1/collection-catalog/music/bulk-artist', {
+      id: 'bulk-artist',
+      kind: 'music',
+      name: 'Bulk Artist Collection',
+      overview: 'Artist collection',
+      sourceUrl: 'https://musicbrainz.org/artist/bulk-artist',
+      parts: [
+        {
+          id: 'album-one',
+          title: 'Album One',
+          releaseDate: '2020-01-01',
+          genres: ['rock'],
+          primaryType: 'Album',
+          secondaryTypes: [],
+        },
+        {
+          id: 'single-one',
+          title: 'Single One',
+          releaseDate: '2021-01-01',
+          genres: ['pop'],
+          primaryType: 'Single',
+          secondaryTypes: [],
+        },
+      ],
+    }).as('getMusicCollection');
+    cy.intercept(
+      'POST',
+      '/api/v1/collection-catalog/music/bulk-artist/availability',
+      { supported: true, checkedAt: 1, destinations: [] }
+    );
     cy.intercept('POST', '/api/v1/request/bulk', {
       statusCode: 207,
       body: {
@@ -733,28 +706,18 @@ describe('Books and Music discover parity', () => {
     cy.wait('@getBulkArtist');
     cy.contains('h1', 'Bulk Artist').should('be.visible');
     cy.contains('button', 'Request Discography').click();
-    cy.wait('@getBulkArtist').then((interception) => {
-      expect(interception.request.query.albumType).to.eq('Album');
-      expect(interception.response?.body.releaseGroups).to.have.length(2);
-    });
-    cy.wait('@getBulkArtist').then((interception) => {
-      expect(interception.request.query.albumType).to.eq('Album');
-      expect(interception.request.query.page).to.eq('2');
-      expect(interception.response?.body.releaseGroups[0].id).to.eq(
-        'album-two'
-      );
-    });
-    cy.contains('[data-testid=modal-title]', 'Request Discography').should(
-      'be.visible'
-    );
-    cy.contains('Album Two').should('be.visible');
-    cy.contains('label', 'Release Type').find('select').select('Single');
-    cy.wait('@getBulkArtist').then((interception) => {
-      expect(interception.request.query.albumType).to.eq('Single');
-      expect(interception.response?.body.releaseGroups[0].id).to.eq(
-        'single-one'
-      );
-    });
+    cy.location('pathname').should('eq', '/collections/music/bulk-artist');
+    cy.wait('@getMusicCollection');
+    cy.contains('Bulk Artist Discography').should('be.visible');
+    cy.contains('Album One').should('be.visible');
+    cy.get('button[aria-label="Release Type"]').click();
+    cy.contains('[role=option]', 'Single').click();
+    cy.contains('Single One').should('be.visible');
+    cy.get('button[aria-label="Single One"]').click();
+    cy.get('[role=group][aria-label=Request]')
+      .find('[data-testid=format-request-option-mp3]')
+      .should('be.visible')
+      .and('be.enabled');
   });
 
   it('keeps book and music service setup modals aligned with video services', () => {
@@ -778,23 +741,40 @@ describe('Books and Music discover parity', () => {
     );
     cy.contains('label', 'API Key')
       .scrollIntoView()
-      .contains('Find it in Lidarr')
+      .closest('.form-row')
+      .contains('.settings-form-row-description', 'Find it in Lidarr')
       .should('be.visible');
     cy.contains('label', 'URL Base')
       .scrollIntoView()
-      .contains('If you set a URL Base in Lidarr')
+      .closest('.form-row')
+      .contains(
+        '.settings-form-row-description',
+        'If you set a URL Base in Lidarr'
+      )
       .should('be.visible');
     cy.contains('label', 'External URL')
       .scrollIntoView()
-      .contains('For clickable links on media pages')
+      .closest('.form-row')
+      .contains(
+        '.settings-form-row-description',
+        'For clickable links on media pages'
+      )
       .should('be.visible');
     cy.contains('label', 'Enable Scan')
       .scrollIntoView()
-      .contains('Scan Lidarr for existing media')
+      .closest('.form-row')
+      .contains(
+        '.settings-form-row-description',
+        'Scan Lidarr for existing media'
+      )
       .should('be.visible');
     cy.contains('label', 'Enable Automatic Search')
       .scrollIntoView()
-      .contains('Automatically trigger a search in Lidarr')
+      .closest('.form-row')
+      .contains(
+        '.settings-form-row-description',
+        'Automatically trigger a search in Lidarr'
+      )
       .should('be.visible');
     cy.get('select[name=activeMetadataProfileId]')
       .scrollIntoView()
@@ -808,31 +788,106 @@ describe('Books and Music discover parity', () => {
     cy.contains(
       'Bookshelf is the recommended book backend. Readarr-compatible servers, including Chaptarr, can also be used. For Chaptarr, set Book Format to match the configured root folder; Seerr sends that format explicitly on every request.'
     ).should('be.visible');
+    cy.contains('a', 'Bookshelf Hardcover migration guide')
+      .should(
+        'have.attr',
+        'href',
+        'https://github.com/YunoHost-Apps/seerrng/blob/main/docs/using-seerr/bookshelf-hardcover-migration.md'
+      )
+      .and('have.attr', 'target', '_blank');
     cy.contains('label', 'Book Format').should('be.visible');
     cy.get('select[name=serviceType]').should('be.visible');
     cy.contains('label', 'API Key')
       .scrollIntoView()
-      .contains('Find it in Bookshelf or Readarr')
+      .closest('.form-row')
+      .contains(
+        '.settings-form-row-description',
+        'Find it in Bookshelf or Readarr'
+      )
       .should('be.visible');
     cy.contains('label', 'URL Base')
       .scrollIntoView()
-      .contains('If you set a URL Base in Bookshelf, Chaptarr, or Readarr')
+      .closest('.form-row')
+      .contains(
+        '.settings-form-row-description',
+        'If you set a URL Base in Bookshelf, Chaptarr, or Readarr'
+      )
       .should('be.visible');
     cy.contains('label', 'External URL')
       .scrollIntoView()
-      .contains('For clickable links on media pages')
+      .closest('.form-row')
+      .contains(
+        '.settings-form-row-description',
+        'For clickable links on media pages'
+      )
       .should('be.visible');
     cy.contains('label', 'Enable Scan')
       .scrollIntoView()
-      .contains('Scan Bookshelf for existing books')
+      .closest('.form-row')
+      .contains(
+        '.settings-form-row-description',
+        'Scan Bookshelf for existing books'
+      )
       .should('be.visible');
     cy.contains('label', 'Enable Automatic Search')
       .scrollIntoView()
-      .contains('Automatically trigger a search in Bookshelf')
+      .closest('.form-row')
+      .contains(
+        '.settings-form-row-description',
+        'Automatically trigger a search in Bookshelf'
+      )
       .should('be.visible');
     cy.get('select[name=activeMetadataProfileId]')
       .scrollIntoView()
       .should('be.visible');
+  });
+
+  it('links split Bookshelf deployment guidance to SeerrNG documentation', () => {
+    cy.intercept('GET', '/api/v1/settings/radarr', []);
+    cy.intercept('GET', '/api/v1/settings/sonarr', []);
+    cy.intercept('GET', '/api/v1/settings/lidarr', []);
+    cy.intercept('GET', '/api/v1/settings/readarr', [
+      {
+        id: 1,
+        name: 'Bookshelf Ebooks',
+        hostname: 'bookshelf-ebook',
+        port: 8787,
+        useSsl: false,
+        baseUrl: '',
+        isDefault: true,
+        serviceType: 'ebook',
+        activeProfileName: 'Books',
+      },
+      {
+        id: 2,
+        name: 'Bookshelf Audiobooks',
+        hostname: 'bookshelf-audiobook',
+        port: 8788,
+        useSsl: false,
+        baseUrl: '',
+        isDefault: true,
+        serviceType: 'audiobook',
+        activeProfileName: 'Audiobooks',
+      },
+    ]);
+    cy.intercept('GET', '/api/v1/overrideRule', []);
+
+    cy.visit('/settings/services');
+
+    cy.contains('h3', 'Bookshelf Settings')
+      .scrollIntoView()
+      .should('be.visible');
+    cy.contains(
+      'Your Book and Audiobook connections use different addresses.'
+    ).should('be.visible');
+    cy.contains('a', 'Bookshelf deployment options')
+      .should(
+        'have.attr',
+        'href',
+        'https://github.com/YunoHost-Apps/seerrng/blob/main/docs/using-seerr/bookshelf-backend.md'
+      )
+      .and('have.attr', 'target', '_blank')
+      .and('have.attr', 'rel', 'noopener noreferrer');
   });
 
   it('uses medium-specific default service warnings for music and book formats', () => {
@@ -957,11 +1012,11 @@ describe('Books and Music discover parity', () => {
         'be.visible'
       );
       cy.get('button[aria-label="Issue Type"]').click();
-      cy.contains('[role=option]', 'Audio').should('be.visible');
-      cy.contains('Other').should('be.visible');
-      cy.contains('Video').should('not.exist');
-      cy.contains('Subtitle').should('not.exist');
     });
+    cy.contains('[role=option]', 'Audio').should('be.visible');
+    cy.contains('[role=option]', 'Other').should('be.visible');
+    cy.contains('[role=option]', 'Video').should('not.exist');
+    cy.contains('[role=option]', 'Subtitle').should('not.exist');
   });
 
   it('confirms book and music blocklist actions with video-style modals', () => {
@@ -1333,7 +1388,8 @@ describe('Books and Music discover parity', () => {
     cy.location('search').should('include', 'mediaType=music');
   });
 
-  it('only marks dual-format book requests partial when one format is missing', () => {
+  it('marks a missing dual-format book side as partial when its service ID is zero', () => {
+    cy.viewport(1440, 1600);
     const requestedBy = {
       id: 1,
       displayName: 'Admin',
@@ -1358,7 +1414,7 @@ describe('Books and Music discover parity', () => {
         status: 5,
         status4k: 1,
         tmdbId: 0,
-        serviceId: 1,
+        serviceId: 0,
         externalServiceId: 101,
         audiobookServiceId: 2,
         audiobookExternalServiceId: 202,
@@ -1655,11 +1711,12 @@ describe('Books and Music discover parity', () => {
 
     cy.visit('/book/OLMANAGEW?manage=1');
     cy.wait('@getManagedBook');
-    cy.contains('Manage Book').should('be.visible');
+    cy.get('[role="dialog"][aria-label="Manage Book"]').should('be.visible');
     cy.contains('Downloads').should('be.visible');
     cy.get('[title="Book"]').should('be.visible');
     cy.get('[title="Audiobook"]').should('be.visible');
     cy.contains('Open Book in Bookshelf').should('be.visible');
+    assertStandardManageActions();
     cy.get('body').type('{esc}');
 
     cy.intercept('GET', '/api/v1/music/55555555-5555-5555-5555-555555555555', {
@@ -1694,10 +1751,11 @@ describe('Books and Music discover parity', () => {
 
     cy.visit('/music/55555555-5555-5555-5555-555555555555?manage=1');
     cy.wait('@getManagedMusic');
-    cy.contains('Manage Music').should('be.visible');
+    cy.get('[role="dialog"][aria-label="Manage Music"]').should('be.visible');
     cy.contains('Downloads').should('be.visible');
     cy.contains('Managed Album').should('be.visible');
     cy.contains('Open in Lidarr').should('be.visible');
+    assertStandardManageActions();
   });
 
   it('uses matching book service link labels on issue details', () => {
@@ -1917,6 +1975,7 @@ describe('Books and Music discover parity', () => {
 
     cy.visit('/search?query=pride%20and%20prejudice');
     cy.wait('@bookSearch');
+    openFilterSection('Media Filters');
     cy.contains('button', 'Audiobooks').click();
     cy.location('search')
       .should('include', 'type=book')

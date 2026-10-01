@@ -82,9 +82,33 @@ const PROXIED_IMAGE_PREFIXES = {
     source: /^https:\/\/(?:www|r2)\.theaudiodb\.com\//,
     target: '/imageproxy/theaudiodb/',
   },
+  musicFanart: {
+    source: /^https:\/\/assets\.fanart\.tv\//,
+    target: '/imageproxy/fanart/',
+  },
   book: {
     source: /^https:\/\/covers\.openlibrary\.org\//,
     target: '/imageproxy/openlibrarycovers/',
+  },
+  comicVine: {
+    source: /^https:\/\/comicvine\.gamespot\.com\//,
+    target: '/imageproxy/comicvine/',
+  },
+  comicVineStatic: {
+    source: /^https:\/\/comicvine\.cbsistatic\.com\//,
+    target: '/imageproxy/comicvinestatic/',
+  },
+  comicVineStatic1: {
+    source: /^https:\/\/comicvine1\.cbsistatic\.com\//,
+    target: '/imageproxy/comicvinestatic1/',
+  },
+  anilist: {
+    source: /^https:\/\/s4\.anilist\.co\//,
+    target: '/imageproxy/anilist/',
+  },
+  igdb: {
+    source: /^https:\/\/images\.igdb\.com\//,
+    target: '/imageproxy/igdb/',
   },
 };
 

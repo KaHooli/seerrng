@@ -1,5 +1,8 @@
+import ComicVineAPI from '@server/api/comicvine';
 import { getCoverArtArchiveThumbnailUrl } from '@server/api/coverartarchive/urls';
 import { DEFAULT_EXTERNAL_API_TIMEOUT_MS } from '@server/api/externalapi';
+import GoogleBooksAPI from '@server/api/googlebooks';
+import LazyLibrarianAPI from '@server/api/lazylibrarian';
 import ListenBrainzAPI from '@server/api/listenbrainz';
 import type {
   LbFreshReleasesResponse,
@@ -11,8 +14,13 @@ import MusicBrainz from '@server/api/musicbrainz';
 import type { MbAlbumResult } from '@server/api/musicbrainz/interfaces';
 import type { OpenLibrarySearchDoc } from '@server/api/openlibrary';
 import OpenLibraryAPI from '@server/api/openlibrary';
+import RadarrAPI, { type RadarrMovie } from '@server/api/servarr/radarr';
 import type { SortOptions } from '@server/api/themoviedb';
-import TheMovieDb, { SortOptionsIterable } from '@server/api/themoviedb';
+import TheMovieDb, {
+  MovieSortOptionsIterable,
+  SortOptionsIterable,
+  TvSortOptionsIterable,
+} from '@server/api/themoviedb';
 import type {
   TmdbCollectionResult,
   TmdbKeyword,
@@ -22,9 +30,16 @@ import type {
 } from '@server/api/themoviedb/interfaces';
 import { MAX_DISCOVER_KEYWORD_IDS } from '@server/constants/discover';
 import { MediaStatus, MediaType } from '@server/constants/media';
+import {
+  MUSIC_PRIMARY_TYPES,
+  musicReleaseTypeField,
+} from '@server/constants/musicReleaseTypes';
 import { getRepository } from '@server/datasource';
 import type MediaEntity from '@server/entity/Media';
 import Media from '@server/entity/Media';
+import MediaIdentifier, {
+  MediaIdentifierProvider,
+} from '@server/entity/MediaIdentifier';
 import { MediaSearchMetadata } from '@server/entity/MediaSearchMetadata';
 import { User } from '@server/entity/User';
 import type {
@@ -33,13 +48,27 @@ import type {
 } from '@server/interfaces/api/discoverInterfaces';
 import { findBookMediaByOpenLibraryIds } from '@server/lib/bookMediaMatcher';
 import {
+  getComicCatalogIndexStatus,
+  searchComicCatalogIndex,
+} from '@server/lib/comicCatalogIndex';
+import { findComicMediaByComicVineIds } from '@server/lib/comicMediaMatcher';
+import {
   normalizeMusicBrainzId,
   normalizeOpenLibraryWorkId,
 } from '@server/lib/externalIds';
+import { getExternalRuntimeConfig } from '@server/lib/externalRuntimeConfig';
 import { extractImageCacheUrls } from '@server/lib/imageCacheUrls';
 import { enqueueImageCacheWarm } from '@server/lib/imageCacheWarmer';
+import { normalizeMagazineTitle } from '@server/lib/magazineIdentity';
+import { findMagazineMediaByTitles } from '@server/lib/magazineMediaMatcher';
+import { isMediaCategoryEnabled } from '@server/lib/mediaCategories';
 import { hydrateMediaSummaryRelations } from '@server/lib/mediaSummaryHydration';
-import { getAvailableMusicQualities } from '@server/lib/musicQualityAvailability';
+import {
+  getAvailableMusicQualities,
+  getMusicQualityStatuses,
+} from '@server/lib/musicQualityAvailability';
+import { runWithServarrServiceSnapshot } from '@server/lib/serviceAdmission';
+import type { RadarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import {
   clampNumber,
@@ -54,9 +83,15 @@ import {
   isUserSessionCredentialVersionCurrent,
   runUserSecurityMutation,
 } from '@server/lib/userSecurityMutation';
+import { filterVideoSearchResults } from '@server/lib/videoSearchFilters';
 import { getCombinedWatchlist } from '@server/lib/watchlist';
 import logger from '@server/logger';
-import { mapOpenLibrarySearchDoc } from '@server/models/Book';
+import { mapOpenLibrarySearchDoc, type BookResult } from '@server/models/Book';
+import { mapComicVineVolumeResult } from '@server/models/Comic';
+import {
+  mapGoogleBooksMagazine,
+  mapLazyLibrarianMagazine,
+} from '@server/models/Magazine';
 import { mapProductionCompany } from '@server/models/Movie';
 import {
   mapAlbumResult,
@@ -68,14 +103,25 @@ import {
 } from '@server/models/Search';
 import { mapNetwork } from '@server/models/Tv';
 import {
+  getBookshelfAudiobookLibrary,
+  getBookshelfAudiobookLibraryPage,
+  searchBookshelfCatalogs,
+  searchBookshelfNarrators,
+} from '@server/utils/bookshelfCatalog';
+import {
   mapWithConcurrency,
   settlePromisesWithin,
 } from '@server/utils/concurrency';
+import { filterEntityResponse } from '@server/utils/entityResponse';
+import { getHttpErrorDetails } from '@server/utils/httpError';
+import {
+  buildMusicAlbumSearchQuery,
+  parseMusicSearchFilters,
+} from '@server/utils/musicSearchFilters';
 import { parsePositiveInt } from '@server/utils/pagination';
 import { parsePositiveRouteId } from '@server/utils/routeId';
 import {
   matchesAllSearchTerms,
-  toBooleanAndQuery,
   toFieldedBooleanAndQuery,
 } from '@server/utils/searchTerms';
 import { isCollection, isMovie, isPerson } from '@server/utils/typeHelpers';
@@ -127,6 +173,7 @@ export const createTmdbWithBlocklistSettings = (): TheMovieDb => {
 const discoverRoutes = Router();
 const MAX_DISCOVER_QUERY_LENGTH = 256;
 const MAX_DISCOVER_FILTER_LENGTH = 512;
+const MAGAZINE_CATALOG_LOOKUP_TIMEOUT_MS = 20_000;
 export const MAX_GENRE_SLIDER_ITEMS = 50;
 export const GENRE_SLIDER_CONCURRENCY = 10;
 export const EXTERNAL_DISCOVER_RATE_LIMIT = {
@@ -137,9 +184,61 @@ const MAX_TMDB_KEYWORD_ID = 1_000_000_000;
 const trendingMediaTypes = ['all', 'movie', 'tv'] as const;
 const trendingTimeWindows = ['day', 'week'] as const;
 
+discoverRoutes.use((req, res, next) => {
+  const route = req.path;
+  const category =
+    route === '/movies' || route.startsWith('/movies/')
+      ? 'movie'
+      : route === '/tv' || route.startsWith('/tv/')
+        ? 'tv'
+        : route === '/music'
+          ? 'music'
+          : route === '/comics'
+            ? 'comic'
+            : route === '/magazines'
+              ? 'magazine'
+              : route === '/genreslider/movie'
+                ? 'movie'
+                : route === '/genreslider/tv'
+                  ? 'tv'
+                  : undefined;
+
+  if (category && !isMediaCategoryEnabled(category)) {
+    return res.status(404).json({ status: 404, message: 'Not found.' });
+  }
+
+  if (route === '/books') {
+    const format = req.query.format;
+    const ebookEnabled = isMediaCategoryEnabled('ebook');
+    const audiobookEnabled = isMediaCategoryEnabled('audiobook');
+    if (
+      (format === 'audiobook' && !audiobookEnabled) ||
+      (format === 'ebook' && !ebookEnabled) ||
+      (format !== 'audiobook' &&
+        format !== 'ebook' &&
+        !ebookEnabled &&
+        !audiobookEnabled)
+    ) {
+      return res.status(404).json({ status: 404, message: 'Not found.' });
+    }
+  }
+
+  if (route === '/trending') {
+    const mediaType = req.query.mediaType;
+    if (
+      (mediaType === 'movie' && !isMediaCategoryEnabled('movie')) ||
+      (mediaType === 'tv' && !isMediaCategoryEnabled('tv'))
+    ) {
+      return res.status(404).json({ status: 404, message: 'Not found.' });
+    }
+  }
+
+  return next();
+});
+
 discoverRoutes.use('/home', discoverHomeRoutes);
 discoverRoutes.use(
-  ['/music', '/books'],
+  ['/music', '/books', '/magazines'],
   rateLimit({
     ...EXTERNAL_DISCOVER_RATE_LIMIT,
     standardHeaders: true,
@@ -220,7 +319,7 @@ const parseTmdbKeywordFilter = (
 };
 
 const getErrorLogFields = (error: unknown) => ({
-  errorMessage: error instanceof Error ? error.message : 'Unknown error',
+  ...getHttpErrorDetails(error),
   errorStack: error instanceof Error ? error.stack : undefined,
 });
 
@@ -430,15 +529,21 @@ const mapDiscoverAlbumResult = (
   relatedMediaMap: Map<string, MediaEntity>
 ) => {
   const media = getRelatedMusicMedia(relatedMediaMap, album.id);
+  const services = getSettings().lidarr;
   const availableQualities = getAvailableMusicQualities(
     media,
     media?.requests ?? [],
-    getSettings().lidarr
+    services
   );
 
   return {
     ...mapAlbumResult(album, media),
     availableQualities,
+    qualityStatuses: getMusicQualityStatuses(
+      media,
+      media?.requests ?? [],
+      services
+    ),
   };
 };
 
@@ -447,14 +552,10 @@ const normalizeLocalAlbumType = (
 ): AlbumResult['primary-type'] => {
   const normalized = value?.trim().toLocaleLowerCase();
 
-  if (normalized === 'single') {
-    return 'Single';
-  }
-  if (normalized === 'ep') {
-    return 'EP';
-  }
-
-  return 'Album';
+  return (
+    MUSIC_PRIMARY_TYPES.find((type) => type.toLowerCase() === normalized) ??
+    'Album'
+  );
 };
 
 const getLocalAvailableMusic = async ({
@@ -462,6 +563,7 @@ const getLocalAvailableMusic = async ({
   page,
   itemsPerPage,
   query,
+  artist,
   genreFilter,
   releaseTypeFilter,
   releaseDateGte,
@@ -473,6 +575,7 @@ const getLocalAvailableMusic = async ({
   page: number;
   itemsPerPage: number;
   query: string;
+  artist?: string;
   genreFilter: string[];
   releaseTypeFilter: string[];
   releaseDateGte?: string;
@@ -495,6 +598,44 @@ const getLocalAvailableMusic = async ({
   );
   const settings = getSettings();
   const requestedQuality = availability.toLocaleUpperCase();
+  const sortAscending = sortByValue.endsWith('.asc');
+  const sortByBase = sortByValue.replace(/\.(?:asc|desc)$/, '');
+
+  // Scanned local metadata only stores the primary type. Resolve secondary
+  // membership in bounded catalogue batches, before local pagination.
+  const secondaryTypes = releaseTypeFilter.filter(
+    (type) => musicReleaseTypeField(type) === 'secondarytype'
+  );
+  const secondaryMatches = new Set<string>();
+  if (secondaryTypes.length) {
+    const ids = media
+      .filter((item) =>
+        getAvailableMusicQualities(
+          item,
+          item.requests ?? [],
+          settings.lidarr
+        ).includes(requestedQuality as 'MP3' | 'FLAC')
+      )
+      .map((item) => item.mbId)
+      .filter(
+        (id): id is string =>
+          !!id && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)
+      );
+    const batches = Array.from(
+      { length: Math.ceil(ids.length / 100) },
+      (_, index) => ids.slice(index * 100, index * 100 + 100)
+    );
+    const api = new MusicBrainz();
+    const results = await mapWithConcurrency(batches, 2, (batch) =>
+      api.searchAlbumWithTotal({
+        query: `(${batch.map((id) => `rgid:"${id}"`).join(' OR ')}) AND ${buildMusicAlbumSearchQuery('', { releaseType: secondaryTypes.join(',') })}`,
+        limit: 100,
+        offset: 0,
+      })
+    );
+    for (const result of results)
+      for (const album of result.results) secondaryMatches.add(album.id);
+  }
 
   const matches = media
     .map((item) => {
@@ -522,6 +663,7 @@ const getLocalAvailableMusic = async ({
     })
     .filter(
       ({
+        item,
         searchMetadata,
         availableQualities,
         genres,
@@ -529,6 +671,7 @@ const getLocalAvailableMusic = async ({
         albumType,
       }) =>
         Boolean(searchMetadata?.title) &&
+        (!artist || matchesAllSearchTerms([searchMetadata?.artist], artist)) &&
         availableQualities.includes(requestedQuality as 'MP3' | 'FLAC') &&
         (!query ||
           matchesAllSearchTerms(
@@ -536,8 +679,10 @@ const getLocalAvailableMusic = async ({
             query
           )) &&
         (!releaseTypeFilter.length ||
-          releaseTypeFilter.some(
-            (type) => type.toLocaleLowerCase() === albumType.toLocaleLowerCase()
+          releaseTypeFilter.some((type) =>
+            musicReleaseTypeField(type) === 'secondarytype'
+              ? secondaryMatches.has(item.mbId ?? '')
+              : type.toLocaleLowerCase() === albumType.toLocaleLowerCase()
           )) &&
         (!genreFilter.length ||
           genreFilter.some((filterGenre) =>
@@ -550,21 +695,22 @@ const getLocalAvailableMusic = async ({
         (!releaseDateLte || releaseDate <= releaseDateLte)
     )
     .sort((left, right) => {
-      if (sortByValue.startsWith('release_date')) {
+      if (sortByBase === 'release_date') {
         const comparison = left.releaseDate.localeCompare(right.releaseDate);
-        return sortByValue === 'release_date.asc' ? comparison : -comparison;
+        return sortAscending ? comparison : -comparison;
       }
 
       const leftAdded =
         left.item.mediaAddedAt?.getTime() ?? left.item.updatedAt.getTime();
       const rightAdded =
         right.item.mediaAddedAt?.getTime() ?? right.item.updatedAt.getTime();
-      return (
+      const comparison =
         rightAdded - leftAdded ||
         (left.searchMetadata?.title ?? '').localeCompare(
           right.searchMetadata?.title ?? ''
-        )
-      );
+        );
+
+      return sortAscending ? -comparison : comparison;
     });
 
   const offset = (page - 1) * itemsPerPage;
@@ -609,6 +755,11 @@ const getLocalAvailableMusic = async ({
           item
         ),
         availableQualities,
+        qualityStatuses: getMusicQualityStatuses(
+          item,
+          item.requests ?? [],
+          settings.lidarr
+        ),
       })
     ),
   };
@@ -809,16 +960,22 @@ const rotateItems = <T>(items: T[], offset: number): T[] => [
 
 const musicSortOptions = new Set([
   'ranked',
+  'ranked.asc',
   'popular.week',
+  'popular.week.asc',
   'popular.month',
+  'popular.month.asc',
   'popular.year',
+  'popular.year.asc',
   'listen_count.desc',
+  'listen_count.asc',
   'release_date.desc',
   'release_date.asc',
 ]);
 
 const bookSortOptions = new Set([
   'ranked',
+  'ranked.asc',
   'newest',
   'oldest',
   'random',
@@ -826,6 +983,8 @@ const bookSortOptions = new Set([
   'rating.desc',
   'rating.asc',
   'editions',
+  'editions.asc',
+  'trending',
 ]);
 
 const tmdbSortOptions = new Set<string>(SortOptionsIterable);
@@ -889,8 +1048,15 @@ const QueryFilterOptions = z.object({
 });
 
 export type FilterOptions = z.infer<typeof QueryFilterOptions>;
-const ApiQuerySchema = QueryFilterOptions.omit({
+const MovieApiQuerySchema = QueryFilterOptions.omit({
   certificationMode: true,
+}).extend({
+  sortBy: z.enum(MovieSortOptionsIterable).optional().catch(undefined),
+});
+const TvApiQuerySchema = QueryFilterOptions.omit({
+  certificationMode: true,
+}).extend({
+  sortBy: z.enum(TvSortOptionsIterable).optional().catch(undefined),
 });
 const SEEDED_DISCOVERY_SHUFFLE_WINDOW = 80;
 const AVAILABLE_MEDIA_STATUSES = [
@@ -965,6 +1131,219 @@ const parseLocalRuntime = (runtime?: string | null): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+type LiveRadarrMovie = {
+  movie: RadarrMovie;
+  server: RadarrSettings;
+};
+
+type LiveRadarrMovieAvailability = {
+  hd: Map<number, LiveRadarrMovie>;
+  isHdAuthoritative: boolean;
+  is4k: Map<number, LiveRadarrMovie>;
+  is4kAuthoritative: boolean;
+};
+
+const getLiveRadarrMovieAvailability =
+  async (): Promise<LiveRadarrMovieAvailability> => {
+    const servers = getExternalRuntimeConfig().radarr.filter(
+      (server) => server.syncEnabled
+    );
+    const hdServers = servers.filter((server) => !server.is4k);
+    const servers4k = servers.filter((server) => server.is4k);
+    const result: LiveRadarrMovieAvailability = {
+      hd: new Map(),
+      isHdAuthoritative: hdServers.length > 0,
+      is4k: new Map(),
+      is4kAuthoritative: servers4k.length > 0,
+    };
+
+    await Promise.all(
+      servers.map(async (server) => {
+        const movies = await runWithServarrServiceSnapshot(
+          'radarr',
+          server,
+          async (current) =>
+            new RadarrAPI({
+              apiKey: current.apiKey,
+              url: RadarrAPI.buildUrl(current, '/api/v3'),
+            }).getMovies()
+        );
+        const destination = server.is4k ? result.is4k : result.hd;
+
+        for (const movie of movies) {
+          if (movie.hasFile && !destination.has(movie.tmdbId)) {
+            destination.set(movie.tmdbId, { movie, server });
+          }
+        }
+      })
+    );
+
+    return result;
+  };
+
+const clearStaleAvailableStatus = (
+  status: MediaStatus | undefined
+): MediaStatus =>
+  status === MediaStatus.AVAILABLE || status === MediaStatus.PARTIALLY_AVAILABLE
+    ? MediaStatus.UNKNOWN
+    : (status ?? MediaStatus.UNKNOWN);
+
+const getLiveAvailableMovieDiscoverResponse = async ({
+  quality,
+  page,
+  query,
+  user,
+}: {
+  quality: 'hd' | '4k';
+  page: number;
+  query: FilterOptions;
+  user?: User;
+}) => {
+  const availability = await getLiveRadarrMovieAvailability();
+  const isRequestedQualityAuthoritative =
+    quality === '4k'
+      ? availability.is4kAuthoritative
+      : availability.isHdAuthoritative;
+
+  if (!isRequestedQualityAuthoritative) {
+    return undefined;
+  }
+
+  const requestedMovies =
+    quality === '4k' ? availability.is4k : availability.hd;
+  const requestedGenreIds = splitNumericFilter(query.genre);
+
+  const movies = [...requestedMovies.values()]
+    .map(({ movie, server }) => {
+      const genreIds = getLocalVideoGenreIds(
+        MediaType.MOVIE,
+        movie.genres ?? []
+      );
+      const releaseDate = movie.year ? String(movie.year) : '';
+      const runtime = movie.runtime;
+
+      return {
+        movie,
+        server,
+        genreIds,
+        releaseDate,
+        runtime,
+      };
+    })
+    .filter(
+      ({ movie, genreIds, releaseDate, runtime }) =>
+        (!query.search ||
+          matchesAllSearchTerms(
+            [movie.title, movie.originalTitle, movie.overview],
+            query.search
+          )) &&
+        (!requestedGenreIds.length ||
+          requestedGenreIds.every((genreId) => genreIds.includes(genreId))) &&
+        (!query.primaryReleaseDateGte ||
+          releaseDate >= query.primaryReleaseDateGte) &&
+        (!query.primaryReleaseDateLte ||
+          releaseDate <= query.primaryReleaseDateLte) &&
+        (!query.withRuntimeGte ||
+          (runtime ?? 0) >= Number(query.withRuntimeGte)) &&
+        (!query.withRuntimeLte ||
+          (runtime ?? Number.POSITIVE_INFINITY) <= Number(query.withRuntimeLte))
+    )
+    .sort((left, right) => {
+      const sortOption = getValidatedTmdbSort(query.sortBy);
+      const ascending = sortOption.endsWith('.asc');
+      const direction = ascending ? 1 : -1;
+
+      if (
+        sortOption.startsWith('release_date') ||
+        sortOption.startsWith('primary_release_date')
+      ) {
+        return left.releaseDate.localeCompare(right.releaseDate) * direction;
+      }
+      if (sortOption.startsWith('original_title')) {
+        return (
+          (left.movie.originalTitle || left.movie.title).localeCompare(
+            right.movie.originalTitle || right.movie.title
+          ) * direction
+        );
+      }
+      if (sortOption.startsWith('vote_average')) {
+        return (
+          ((left.movie.ratings?.value ?? 0) -
+            (right.movie.ratings?.value ?? 0)) *
+          direction
+        );
+      }
+
+      return left.movie.title.localeCompare(right.movie.title);
+    });
+
+  const itemsPerPage = 20;
+  const pageStart = (page - 1) * itemsPerPage;
+  const pageItems = movies.slice(pageStart, pageStart + itemsPerPage);
+  const pageTmdbIds = pageItems.map(({ movie }) => movie.tmdbId);
+  const persistedMedia = pageTmdbIds.length
+    ? await getRepository(Media).find({
+        where: { mediaType: MediaType.MOVIE, tmdbId: In(pageTmdbIds) },
+      })
+    : [];
+  await hydrateMediaSummaryRelations(persistedMedia, user);
+  const mediaByTmdbId = new Map(
+    persistedMedia.map((media) => [media.tmdbId, media])
+  );
+
+  return {
+    page,
+    totalPages: Math.max(1, Math.ceil(movies.length / itemsPerPage)),
+    totalResults: movies.length,
+    results: pageItems.map(({ movie, server, genreIds, releaseDate }) => {
+      const persisted = mediaByTmdbId.get(movie.tmdbId);
+      const hdMovie = availability.hd.get(movie.tmdbId);
+      const movie4k = availability.is4k.get(movie.tmdbId);
+      const media = new Media({
+        ...persisted,
+        mediaType: MediaType.MOVIE,
+        tmdbId: movie.tmdbId,
+        status: availability.isHdAuthoritative
+          ? hdMovie
+            ? MediaStatus.AVAILABLE
+            : clearStaleAvailableStatus(persisted?.status)
+          : (persisted?.status ?? MediaStatus.UNKNOWN),
+        status4k: availability.is4kAuthoritative
+          ? movie4k
+            ? MediaStatus.AVAILABLE
+            : clearStaleAvailableStatus(persisted?.status4k)
+          : (persisted?.status4k ?? MediaStatus.UNKNOWN),
+        serviceId: hdMovie?.server.id ?? persisted?.serviceId,
+        externalServiceId: hdMovie?.movie.id ?? persisted?.externalServiceId,
+        serviceId4k: movie4k?.server.id ?? persisted?.serviceId4k,
+        externalServiceId4k:
+          movie4k?.movie.id ?? persisted?.externalServiceId4k,
+      });
+
+      return mapMovieResult(
+        {
+          id: movie.tmdbId,
+          media_type: 'movie',
+          title: movie.title,
+          original_title: movie.originalTitle || movie.title,
+          release_date: releaseDate,
+          adult: false,
+          video: false,
+          popularity: 0,
+          poster_path: `/api/v1/movie/${movie.tmdbId}/cover?serviceId=${server.id}&externalServiceId=${movie.id}&is4k=${server.is4k}`,
+          backdrop_path: undefined,
+          vote_count: movie.ratings?.votes ?? 0,
+          vote_average: movie.ratings?.value ?? 0,
+          genre_ids: genreIds,
+          overview: movie.overview ?? '',
+          original_language: '',
+        },
+        media
+      );
+    }),
+  };
+};
+
 const getLocalAvailableVideoDiscoverResponse = async ({
   mediaType,
   quality,
@@ -978,6 +1357,29 @@ const getLocalAvailableVideoDiscoverResponse = async ({
   query: FilterOptions;
   user?: User;
 }) => {
+  if (mediaType === MediaType.MOVIE) {
+    try {
+      const liveResponse = await getLiveAvailableMovieDiscoverResponse({
+        quality,
+        page,
+        query,
+        user,
+      });
+      if (liveResponse) {
+        return liveResponse;
+      }
+    } catch (e) {
+      logger.warn(
+        'Unable to retrieve live Radarr availability; using indexed movie availability',
+        {
+          label: 'API',
+          quality,
+          errorMessage: e.message,
+        }
+      );
+    }
+  }
+
   const statusField = quality === '4k' ? 'status4k' : 'status';
   const mediaItems = await getRepository(Media)
     .createQueryBuilder('media')
@@ -1140,11 +1542,31 @@ const shuffleRankedWindow = <T>(
   return [...windowedResults, ...rankedResults.slice(windowSize)];
 };
 
+const findMatchingVideoKeywordIds = async (
+  tmdb: TheMovieDb,
+  search: string
+): Promise<string | undefined> => {
+  try {
+    const response = await tmdb.searchKeyword({ query: search });
+    const ids = response.results
+      .filter((keyword) => matchesAllSearchTerms([keyword.name], search))
+      .slice(0, MAX_DISCOVER_KEYWORD_IDS)
+      .map((keyword) => keyword.id);
+    return ids.length ? ids.join('|') : undefined;
+  } catch (error) {
+    logger.debug('Unable to include TMDB keywords in discovery search', {
+      label: 'API',
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+};
+
 discoverRoutes.get('/movies', async (req, res, next) => {
   const tmdb = createTmdbWithRegionLanguage(req.user);
 
   try {
-    const parsedQuery = ApiQuerySchema.safeParse({ ...req.query });
+    const parsedQuery = MovieApiQuerySchema.safeParse({ ...req.query });
     if (!parsedQuery.success) {
       return res.status(400).json({
         status: 400,
@@ -1192,6 +1614,9 @@ discoverRoutes.get('/movies', async (req, res, next) => {
         })
       );
     }
+    const matchingKeywordIdsPromise = query.search
+      ? findMatchingVideoKeywordIds(tmdb, query.search)
+      : Promise.resolve(undefined);
     const data = query.search
       ? await tmdb.searchMovies({
           query: query.search,
@@ -1200,7 +1625,7 @@ discoverRoutes.get('/movies', async (req, res, next) => {
         })
       : await tmdb.getDiscoverMovies({
           page,
-          sortBy: getValidatedTmdbSort(query.sortBy),
+          sortBy: query.sortBy,
           language: req.locale ?? query.language,
           originalLanguage: query.language,
           genre: query.genre,
@@ -1227,6 +1652,28 @@ discoverRoutes.get('/movies', async (req, res, next) => {
           certificationLte: query.certificationLte,
           certificationCountry: query.certificationCountry,
         });
+    const matchingKeywordIds = await matchingKeywordIdsPromise;
+    const taggedData = matchingKeywordIds
+      ? await tmdb.getDiscoverMovies({
+          page,
+          language: req.locale ?? query.language,
+          keywords: matchingKeywordIds,
+        })
+      : undefined;
+    const taggedIds = new Set(taggedData?.results.map((result) => result.id));
+    const combinedResults = [...data.results, ...(taggedData?.results ?? [])];
+    data.results = await filterVideoSearchResults(
+      tmdb,
+      'movie',
+      combinedResults.filter(
+        (result, index) =>
+          combinedResults.findIndex(
+            (candidate) => candidate.id === result.id
+          ) === index
+      ),
+      query,
+      req.locale
+    );
     const providerResults =
       query.search || query.sortBy
         ? data.results
@@ -1235,11 +1682,13 @@ discoverRoutes.get('/movies', async (req, res, next) => {
             parsedShuffleSeed.value
           );
     const rankedResults = query.search
-      ? providerResults.filter((result) =>
-          matchesAllSearchTerms(
-            [result.title, result.original_title],
-            query.search ?? ''
-          )
+      ? providerResults.filter(
+          (result) =>
+            taggedIds.has(result.id) ||
+            matchesAllSearchTerms(
+              [result.title, result.original_title],
+              query.search ?? ''
+            )
         )
       : providerResults;
 
@@ -1248,7 +1697,8 @@ discoverRoutes.get('/movies', async (req, res, next) => {
       rankedResults.map((result) => ({
         tmdbId: result.id,
         mediaType: MediaType.MOVIE,
-      }))
+      })),
+      { includeActiveRequest: true }
     );
 
     let keywordData: TmdbKeyword[] = [];
@@ -1266,8 +1716,8 @@ discoverRoutes.get('/movies', async (req, res, next) => {
 
     return res.status(200).json({
       page: data.page,
-      totalPages: data.total_pages,
-      totalResults: data.total_results,
+      totalPages: Math.max(data.total_pages, taggedData?.total_pages ?? 0),
+      totalResults: data.total_results + (taggedData?.total_results ?? 0),
       keywords: keywordData,
       results: rankedResults.map((result) =>
         mapMovieResult(
@@ -1287,6 +1737,7 @@ discoverRoutes.get('/movies', async (req, res, next) => {
     return next({
       status: 500,
       message: 'Unable to retrieve popular movies.',
+      cause: e,
     });
   }
 });
@@ -1326,7 +1777,8 @@ discoverRoutes.get<{ language: string }>(
         rankedResults.map((result) => ({
           tmdbId: result.id,
           mediaType: MediaType.MOVIE,
-        }))
+        })),
+        { includeActiveRequest: true }
       );
 
       return res.status(200).json({
@@ -1397,7 +1849,8 @@ discoverRoutes.get<{ genreId: string }>(
         rankedResults.map((result) => ({
           tmdbId: result.id,
           mediaType: MediaType.MOVIE,
-        }))
+        })),
+        { includeActiveRequest: true }
       );
 
       return res.status(200).json({
@@ -1460,7 +1913,8 @@ discoverRoutes.get<{ studioId: string }>(
         rankedResults.map((result) => ({
           tmdbId: result.id,
           mediaType: MediaType.MOVIE,
-        }))
+        })),
+        { includeActiveRequest: true }
       );
 
       return res.status(200).json({
@@ -1522,7 +1976,8 @@ discoverRoutes.get('/movies/upcoming', async (req, res, next) => {
       data.results.map((result) => ({
         tmdbId: result.id,
         mediaType: MediaType.MOVIE,
-      }))
+      })),
+      { includeActiveRequest: true }
     );
 
     return res.status(200).json({
@@ -1555,7 +2010,7 @@ discoverRoutes.get('/tv', async (req, res, next) => {
   const tmdb = createTmdbWithRegionLanguage(req.user);
 
   try {
-    const parsedQuery = ApiQuerySchema.safeParse({ ...req.query });
+    const parsedQuery = TvApiQuerySchema.safeParse({ ...req.query });
     if (!parsedQuery.success) {
       return res.status(400).json({
         status: 400,
@@ -1615,6 +2070,9 @@ discoverRoutes.get('/tv', async (req, res, next) => {
         })
       );
     }
+    const matchingKeywordIdsPromise = query.search
+      ? findMatchingVideoKeywordIds(tmdb, query.search)
+      : Promise.resolve(undefined);
     const data = query.search
       ? await tmdb.searchTvShows({
           query: query.search,
@@ -1623,7 +2081,7 @@ discoverRoutes.get('/tv', async (req, res, next) => {
         })
       : await tmdb.getDiscoverTv({
           page,
-          sortBy: getValidatedTmdbSort(query.sortBy),
+          sortBy: query.sortBy,
           language: req.locale ?? query.language,
           genre: query.genre,
           network,
@@ -1651,6 +2109,28 @@ discoverRoutes.get('/tv', async (req, res, next) => {
           certificationLte: query.certificationLte,
           certificationCountry: query.certificationCountry,
         });
+    const matchingKeywordIds = await matchingKeywordIdsPromise;
+    const taggedData = matchingKeywordIds
+      ? await tmdb.getDiscoverTv({
+          page,
+          language: req.locale ?? query.language,
+          keywords: matchingKeywordIds,
+        })
+      : undefined;
+    const taggedIds = new Set(taggedData?.results.map((result) => result.id));
+    const combinedResults = [...data.results, ...(taggedData?.results ?? [])];
+    data.results = await filterVideoSearchResults(
+      tmdb,
+      'tv',
+      combinedResults.filter(
+        (result, index) =>
+          combinedResults.findIndex(
+            (candidate) => candidate.id === result.id
+          ) === index
+      ),
+      query,
+      req.locale
+    );
     const providerResults =
       query.search || query.sortBy
         ? data.results
@@ -1659,11 +2139,13 @@ discoverRoutes.get('/tv', async (req, res, next) => {
             parsedShuffleSeed.value
           );
     const rankedResults = query.search
-      ? providerResults.filter((result) =>
-          matchesAllSearchTerms(
-            [result.name, result.original_name],
-            query.search ?? ''
-          )
+      ? providerResults.filter(
+          (result) =>
+            taggedIds.has(result.id) ||
+            matchesAllSearchTerms(
+              [result.name, result.original_name],
+              query.search ?? ''
+            )
         )
       : providerResults;
 
@@ -1672,7 +2154,8 @@ discoverRoutes.get('/tv', async (req, res, next) => {
       rankedResults.map((result) => ({
         tmdbId: result.id,
         mediaType: MediaType.TV,
-      }))
+      })),
+      { includeActiveRequest: true }
     );
 
     let keywordData: TmdbKeyword[] = [];
@@ -1690,8 +2173,8 @@ discoverRoutes.get('/tv', async (req, res, next) => {
 
     return res.status(200).json({
       page: data.page,
-      totalPages: data.total_pages,
-      totalResults: data.total_results,
+      totalPages: Math.max(data.total_pages, taggedData?.total_pages ?? 0),
+      totalResults: data.total_results + (taggedData?.total_results ?? 0),
       keywords: keywordData,
       results: rankedResults.map((result) =>
         mapTvResult(
@@ -1710,6 +2193,7 @@ discoverRoutes.get('/tv', async (req, res, next) => {
     return next({
       status: 500,
       message: 'Unable to retrieve popular series.',
+      cause: e,
     });
   }
 });
@@ -1749,7 +2233,8 @@ discoverRoutes.get<{ language: string }>(
         rankedResults.map((result) => ({
           tmdbId: result.id,
           mediaType: MediaType.TV,
-        }))
+        })),
+        { includeActiveRequest: true }
       );
 
       return res.status(200).json({
@@ -1822,7 +2307,8 @@ discoverRoutes.get<{ genreId: string }>(
         rankedResults.map((result) => ({
           tmdbId: result.id,
           mediaType: MediaType.TV,
-        }))
+        })),
+        { includeActiveRequest: true }
       );
 
       return res.status(200).json({
@@ -1887,7 +2373,8 @@ discoverRoutes.get<{ networkId: string }>(
         rankedResults.map((result) => ({
           tmdbId: result.id,
           mediaType: MediaType.TV,
-        }))
+        })),
+        { includeActiveRequest: true }
       );
 
       return res.status(200).json({
@@ -1949,7 +2436,8 @@ discoverRoutes.get('/tv/upcoming', async (req, res, next) => {
       data.results.map((result) => ({
         tmdbId: result.id,
         mediaType: MediaType.TV,
-      }))
+      })),
+      { includeActiveRequest: true }
     );
 
     return res.status(200).json({
@@ -2055,20 +2543,28 @@ discoverRoutes.get('/trending', async (req, res, next) => {
       result: (typeof data.results)[number],
       media?: Media
     ) => unknown;
+    const availableTrendingResults = data.results.filter((result) =>
+      isMovie(result)
+        ? isMediaCategoryEnabled('movie')
+        : isPerson(result) || isCollection(result)
+          ? true
+          : isMediaCategoryEnabled('tv')
+    );
 
     const media = await Media.getRelatedMedia(
       req.user,
-      data.results.map((result) => ({
+      availableTrendingResults.map((result) => ({
         tmdbId: result.id,
         mediaType: isMovie(result) ? MediaType.MOVIE : MediaType.TV,
-      }))
+      })),
+      { includeActiveRequest: true }
     );
 
     return res.status(200).json({
       page: data.page,
       totalPages: data.total_pages,
       totalResults: data.total_results,
-      results: data.results.map((result) => {
+      results: availableTrendingResults.map((result) => {
         // - If "type" is set (case: "movie" or "tv"), the mediaType must also match.
         // - If "type" is not set (case: "all"), only filter by tmdbId.
         const selectedMedia = media.find(
@@ -2087,6 +2583,7 @@ discoverRoutes.get('/trending', async (req, res, next) => {
     return next({
       status: 500,
       message: 'Unable to retrieve trending items.',
+      cause: e,
     });
   }
 });
@@ -2122,7 +2619,8 @@ discoverRoutes.get<{ keywordId: string }>(
         rankedResults.map((result) => ({
           tmdbId: result.id,
           mediaType: MediaType.MOVIE,
-        }))
+        })),
+        { includeActiveRequest: true }
       );
 
       return res.status(200).json({
@@ -2201,6 +2699,7 @@ discoverRoutes.get<{ language: string }, GenreSliderItem[]>(
       return next({
         status: 500,
         message: 'Unable to retrieve movie genre slider.',
+        cause: e,
       });
     }
   }
@@ -2254,12 +2753,19 @@ discoverRoutes.get<{ language: string }, GenreSliderItem[]>(
       return next({
         status: 500,
         message: 'Unable to retrieve series genre slider.',
+        cause: e,
       });
     }
   }
 );
 
 discoverRoutes.get('/music', async (req, res) => {
+  const parsedMusicFilters = parseMusicSearchFilters(req.query);
+  if ('error' in parsedMusicFilters)
+    return res
+      .status(400)
+      .json({ status: 400, message: parsedMusicFilters.error });
+  const musicFilters = parsedMusicFilters.value;
   const listenBrainz = new ListenBrainzAPI();
   const musicBrainz = new MusicBrainz();
   const itemsPerPage = 20;
@@ -2267,7 +2773,8 @@ discoverRoutes.get('/music', async (req, res) => {
   const days = parsePositiveInt(req.query.days, 14, 365);
   const hasCustomDays = typeof req.query.days === 'string';
   const sortByValue = getValidatedSort(req.query.sortBy, musicSortOptions);
-  const sortAscending = sortByValue === 'release_date.asc';
+  const sortAscending = sortByValue.endsWith('.asc');
+  const sortByBase = sortByValue.replace(/\.(?:asc|desc)$/, '');
   const parsedGenre = parseOptionalDiscoverString(
     req.query.genre,
     'Genre',
@@ -2346,7 +2853,6 @@ discoverRoutes.get('/music', async (req, res) => {
         .filter(Boolean)
     : [];
   const query = parsedQuery.value ?? '';
-  const providerSearchQuery = toBooleanAndQuery(query);
   const shuffleSeed = parsedShuffleSeed.value;
   const releaseDateGte = parsedReleaseDateGte.value;
   const releaseDateLte = parsedReleaseDateLte.value;
@@ -2359,6 +2865,7 @@ discoverRoutes.get('/music', async (req, res) => {
           page,
           itemsPerPage,
           query,
+          artist: musicFilters.artist,
           genreFilter,
           releaseTypeFilter,
           releaseDateGte,
@@ -2369,57 +2876,54 @@ discoverRoutes.get('/music', async (req, res) => {
       );
     }
 
-    if (query) {
-      const providerWindow = getProviderWindow(page, itemsPerPage);
-      const albumWindow = await musicBrainz.searchAlbum({
-        query: providerSearchQuery,
-        limit: providerWindow.limit,
-        offset: providerWindow.offset,
+    if (
+      query ||
+      musicFilters.artistId ||
+      musicFilters.artist ||
+      releaseDateGte ||
+      releaseDateLte ||
+      releaseTypeFilter.length
+    ) {
+      const response = await musicBrainz.searchAlbumWithTotal({
+        query: buildMusicAlbumSearchQuery(query, musicFilters),
+        limit: itemsPerPage,
+        offset: (page - 1) * itemsPerPage,
       });
-      const filteredAlbums = albumWindow.filter((album) => {
-        const releaseDate = album['first-release-date'] ?? '';
-        const albumGenres = (album.tags ?? []).map((tag) =>
-          tag.name.toLocaleLowerCase()
-        );
-
-        return (
-          matchesAllSearchTerms(
-            [
-              album.title,
-              ...album['artist-credit'].flatMap((credit) => [
-                credit.name,
-                credit.artist.name,
-                credit.artist['sort-name'],
-              ]),
-              ...albumGenres,
-            ],
-            query
-          ) &&
-          (!releaseTypeFilter.length ||
-            releaseTypeFilter.includes(album['primary-type'])) &&
-          (!genreFilter.length ||
-            genreFilter.some((genre) =>
-              albumGenres.includes(genre.toLocaleLowerCase())
-            )) &&
-          (!releaseDateGte || releaseDate >= releaseDateGte) &&
-          (!releaseDateLte || releaseDate <= releaseDateLte)
-        );
-      });
-      const albums = dedupeMusicAlbums(
-        filteredAlbums.slice(providerWindow.sliceStart, providerWindow.sliceEnd)
-      );
-      const relatedMediaMap = await getRelatedMusicMediaMap(
+      const albums = dedupeMusicAlbums(response.results)
+        .filter(
+          (album) =>
+            !query ||
+            matchesAllSearchTerms(
+              [
+                album.title,
+                ...album['artist-credit'].map((credit) => credit.name),
+                ...(album.tags ?? []).map((tag) => tag.name),
+              ],
+              query
+            )
+        )
+        .sort((a, b) => {
+          if (sortByBase === 'release_date') {
+            const comparison = (a['first-release-date'] ?? '').localeCompare(
+              b['first-release-date'] ?? ''
+            );
+            return sortAscending ? comparison : -comparison;
+          }
+          const comparison = scoreMusicAlbum(b) - scoreMusicAlbum(a);
+          return sortAscending ? -comparison : comparison;
+        });
+      const related = await getRelatedMusicMediaMap(
         albums.map((album) => album.id),
         req.user
       );
-
       return res.status(200).json({
         page,
-        totalPages: albums.length === itemsPerPage ? page + 1 : page,
-        totalResults: getUnknownTotalResults(page, albums.length, itemsPerPage),
-        results: albums.map((album) =>
-          mapDiscoverAlbumResult(album, relatedMediaMap)
+        totalPages: Math.max(
+          1,
+          Math.ceil(response.totalResults / itemsPerPage)
         ),
+        totalResults: response.totalResults,
+        results: albums.map((album) => mapDiscoverAlbumResult(album, related)),
       });
     }
 
@@ -2437,12 +2941,13 @@ discoverRoutes.get('/music', async (req, res) => {
           offset: providerWindow.offset,
         });
       const sortedAlbums = dedupeMusicAlbums(releaseGroups).sort((a, b) => {
-        if (sortByValue === 'ranked') {
+        if (sortByBase === 'ranked') {
           return scoreMusicAlbum(b) - scoreMusicAlbum(a);
         }
 
-        if (sortByValue === 'listen_count.desc') {
-          return (b.score ?? 0) - (a.score ?? 0);
+        if (sortByBase === 'listen_count' || sortByBase.startsWith('popular')) {
+          const comparison = (b.score ?? 0) - (a.score ?? 0);
+          return sortAscending ? -comparison : comparison;
         }
 
         const left = a['first-release-date'] ?? '';
@@ -2452,20 +2957,24 @@ discoverRoutes.get('/music', async (req, res) => {
           : right.localeCompare(left);
       });
       const albums =
-        sortByValue === 'ranked'
-          ? diversifyMusicAlbumsByArtist(
-              shuffleRankedWindow(
-                rankByQualityScore(
-                  sortedAlbums,
-                  scoreMusicAlbum,
-                  0.08,
-                  4,
+        sortByBase === 'ranked'
+          ? (() => {
+              const rankedAlbums = diversifyMusicAlbumsByArtist(
+                shuffleRankedWindow(
+                  rankByQualityScore(
+                    sortedAlbums,
+                    scoreMusicAlbum,
+                    0.08,
+                    4,
+                    shuffleSeed
+                  ),
                   shuffleSeed
                 ),
-                shuffleSeed
-              ),
-              providerWindow.sliceEnd
-            ).slice(providerWindow.sliceStart, providerWindow.sliceEnd)
+                providerWindow.sliceEnd
+              ).slice(providerWindow.sliceStart, providerWindow.sliceEnd);
+
+              return sortAscending ? rankedAlbums.reverse() : rankedAlbums;
+            })()
           : sortedAlbums.slice(
               providerWindow.sliceStart,
               providerWindow.sliceEnd
@@ -2488,24 +2997,30 @@ discoverRoutes.get('/music', async (req, res) => {
     const providerWindow = getProviderWindow(page, itemsPerPage);
     const hasReleaseDateFilter = Boolean(releaseDateGte || releaseDateLte);
 
-    if (!genreFilter.length && sortByValue.startsWith('popular')) {
+    if (
+      !genreFilter.length &&
+      (sortByBase.startsWith('popular') || sortByBase === 'listen_count')
+    ) {
       const range =
-        sortByValue === 'popular.week'
-          ? 'week'
-          : sortByValue === 'popular.year'
-            ? 'year'
-            : 'month';
+        sortByBase === 'listen_count'
+          ? 'all_time'
+          : sortByBase === 'popular.week'
+            ? 'week'
+            : sortByBase === 'popular.year'
+              ? 'year'
+              : 'month';
       const topAlbums = await listenBrainz.getTopAlbums({
         range,
         offset: providerWindow.offset,
         count: providerWindow.limit,
       });
-      const albums = diversifyMusicAlbumsByArtist(
+      const chartAlbums = diversifyMusicAlbumsByArtist(
         dedupeMusicAlbums(
           topAlbums.payload.release_groups.map(mapTopAlbumRelease)
         ),
         providerWindow.sliceEnd
       ).slice(providerWindow.sliceStart, providerWindow.sliceEnd);
+      const albums = sortAscending ? chartAlbums.reverse() : chartAlbums;
       const relatedMediaMap = await getRelatedMusicMediaMap(
         albums.map((album) => album.id),
         req.user
@@ -2525,7 +3040,7 @@ discoverRoutes.get('/music', async (req, res) => {
     }
 
     if (
-      sortByValue === 'ranked' &&
+      sortByBase === 'ranked' &&
       !releaseTypeFilter.length &&
       !hasReleaseDateFilter &&
       !hasCustomDays
@@ -2622,7 +3137,7 @@ discoverRoutes.get('/music', async (req, res) => {
             );
           });
 
-        const fallbackAlbums = diversifyMusicAlbumsByArtist(
+        const rankedFallbackAlbums = diversifyMusicAlbumsByArtist(
           shuffleRankedWindow(
             rankByQualityScore(
               [...fallbackAlbumsById.values()].sort(
@@ -2637,6 +3152,9 @@ discoverRoutes.get('/music', async (req, res) => {
           ),
           providerWindow.sliceEnd
         ).slice(providerWindow.sliceStart, providerWindow.sliceEnd);
+        const fallbackAlbums = sortAscending
+          ? rankedFallbackAlbums.reverse()
+          : rankedFallbackAlbums;
 
         if (!fallbackAlbums.length) {
           return res.status(200).json(emptyDiscoverResponse(page));
@@ -2701,7 +3219,7 @@ discoverRoutes.get('/music', async (req, res) => {
         );
       });
 
-      const albums = diversifyMusicAlbumsByArtist(
+      const rankedAlbums = diversifyMusicAlbumsByArtist(
         shuffleRankedWindow(
           rankByQualityScore(
             [...albumsById.values()].sort(
@@ -2716,6 +3234,7 @@ discoverRoutes.get('/music', async (req, res) => {
         ),
         providerWindow.sliceEnd
       ).slice(providerWindow.sliceStart, providerWindow.sliceEnd);
+      const albums = sortAscending ? rankedAlbums.reverse() : rankedAlbums;
       const relatedMediaMap = await getRelatedMusicMediaMap(
         albums.map((album) => album.id),
         req.user
@@ -2736,6 +3255,7 @@ discoverRoutes.get('/music', async (req, res) => {
       freshReleases = await listenBrainz.getFreshReleases({
         days,
         sort: 'release_date',
+        order: sortByBase === 'release_date' && !sortAscending ? 'desc' : 'asc',
         offset: providerWindow.offset,
         count: providerWindow.limit,
       });
@@ -2753,6 +3273,7 @@ discoverRoutes.get('/music', async (req, res) => {
       freshReleases = await listenBrainz.getFreshReleases({
         days: 7,
         sort: 'release_date',
+        order: sortByBase === 'release_date' && !sortAscending ? 'desc' : 'asc',
         offset: providerWindow.offset,
         count: providerWindow.limit,
       });
@@ -2768,12 +3289,14 @@ discoverRoutes.get('/music', async (req, res) => {
             )
         )
     ).sort((a, b) => {
-      if (sortByValue === 'ranked') {
-        return scoreMusicRelease(b) - scoreMusicRelease(a);
+      if (sortByBase === 'ranked') {
+        const comparison = scoreMusicRelease(b) - scoreMusicRelease(a);
+        return sortAscending ? -comparison : comparison;
       }
 
-      if (sortByValue === 'listen_count.desc') {
-        return (b.listen_count ?? 0) - (a.listen_count ?? 0);
+      if (sortByBase === 'listen_count' || sortByBase.startsWith('popular')) {
+        const comparison = (b.listen_count ?? 0) - (a.listen_count ?? 0);
+        return sortAscending ? -comparison : comparison;
       }
 
       const left = a.release_date ?? '';
@@ -2783,31 +3306,35 @@ discoverRoutes.get('/music', async (req, res) => {
         : right.localeCompare(left);
     });
     const releases =
-      sortByValue === 'ranked'
-        ? diversifyMusicAlbumsByArtist(
-            shuffleRankedWindow(
-              rankByQualityScore(
-                sortedReleases.map(mapFreshReleaseAlbum),
-                scoreMusicAlbum,
-                0.08,
-                4,
+      sortByBase === 'ranked'
+        ? (() => {
+            const rankedReleases = diversifyMusicAlbumsByArtist(
+              shuffleRankedWindow(
+                rankByQualityScore(
+                  sortedReleases.map(mapFreshReleaseAlbum),
+                  scoreMusicAlbum,
+                  0.08,
+                  4,
+                  shuffleSeed
+                ),
                 shuffleSeed
               ),
-              shuffleSeed
-            ),
-            providerWindow.sliceEnd
-          )
-            .slice(providerWindow.sliceStart, providerWindow.sliceEnd)
-            .map((album) => {
-              const release = sortedReleases.find(
-                (sortedRelease) =>
-                  getMusicBrainzIdKey(sortedRelease.release_group_mbid) ===
-                  getMusicBrainzIdKey(album.id)
-              );
+              providerWindow.sliceEnd
+            )
+              .slice(providerWindow.sliceStart, providerWindow.sliceEnd)
+              .map((album) => {
+                const release = sortedReleases.find(
+                  (sortedRelease) =>
+                    getMusicBrainzIdKey(sortedRelease.release_group_mbid) ===
+                    getMusicBrainzIdKey(album.id)
+                );
 
-              return release;
-            })
-            .filter((release): release is LbRelease => !!release)
+                return release;
+              })
+              .filter((release): release is LbRelease => !!release);
+
+            return sortAscending ? rankedReleases.reverse() : rankedReleases;
+          })()
         : sortedReleases.slice(
             providerWindow.sliceStart,
             providerWindow.sliceEnd
@@ -2822,7 +3349,7 @@ discoverRoutes.get('/music', async (req, res) => {
         {
           ...mapFreshReleaseAlbum(release),
           score:
-            sortByValue === 'ranked'
+            sortByBase === 'ranked'
               ? scoreMusicRelease(release)
               : (release.listen_count ?? 0),
         },
@@ -2842,6 +3369,12 @@ discoverRoutes.get('/music', async (req, res) => {
       ...getErrorLogFields(e),
       requestQuery: getDiscoverLogQuery(req.query),
     });
+    if (query || Object.values(musicFilters).some(Boolean)) {
+      return res.status(503).json({
+        status: 503,
+        message: 'Music search is temporarily unavailable. Please try again.',
+      });
+    }
     return res.status(200).json(emptyDiscoverResponse(page));
   }
 });
@@ -2870,6 +3403,14 @@ discoverRoutes.get('/books', async (req, res) => {
   const parsedSearchQuery = parseOptionalDiscoverString(
     req.query.query,
     'Query'
+  );
+  const parsedAuthorQuery = parseOptionalDiscoverString(
+    req.query.author,
+    'Author'
+  );
+  const parsedNarratorQuery = parseOptionalDiscoverString(
+    req.query.narrator,
+    'Narrator'
   );
   const parsedFirstPublishYear = parseOptionalDiscoverString(
     req.query.firstPublishYear,
@@ -2903,6 +3444,16 @@ discoverRoutes.get('/books', async (req, res) => {
       .status(400)
       .json({ status: 400, message: parsedSearchQuery.error });
   }
+  if ('error' in parsedAuthorQuery) {
+    return res
+      .status(400)
+      .json({ status: 400, message: parsedAuthorQuery.error });
+  }
+  if ('error' in parsedNarratorQuery) {
+    return res
+      .status(400)
+      .json({ status: 400, message: parsedNarratorQuery.error });
+  }
   if ('error' in parsedFirstPublishYear) {
     return res
       .status(400)
@@ -2923,6 +3474,14 @@ discoverRoutes.get('/books', async (req, res) => {
   }
 
   const rawSearchQuery = parsedSearchQuery.value ?? '';
+  const authorQuery = parsedAuthorQuery.value ?? '';
+  const narratorQuery = parsedNarratorQuery.value ?? '';
+  if (narratorQuery && parsedFormat.value !== 'audiobook') {
+    return res.status(400).json({
+      status: 400,
+      message: 'Narrator Search requires the audiobook format.',
+    });
+  }
   const legacySubjectQuery = rawSearchQuery
     .match(/^subject:(.+)$/i)?.[1]
     ?.trim();
@@ -2965,7 +3524,14 @@ discoverRoutes.get('/books', async (req, res) => {
   }
   const shuffleSeed = parsedShuffleSeed.value;
   const hasSearchQuery = !!searchQuery;
+  const ebookEnabled =
+    parsedFormat.value !== 'audiobook' && isMediaCategoryEnabled('ebook');
+  const audiobookEnabled =
+    parsedFormat.value !== 'ebook' && isMediaCategoryEnabled('audiobook');
+  const pageSizePerFormat = itemsPerPage;
   const sortByValue = requestedSortBy ?? (hasSearchQuery ? 'newest' : 'ranked');
+  const sortAscending = sortByValue.endsWith('.asc');
+  const sortByBase = sortByValue.replace(/\.(?:asc|desc)$/, '');
   const bookDiscoveryContext = {
     format:
       parsedFormat.value === 'audiobook'
@@ -2974,8 +3540,9 @@ discoverRoutes.get('/books', async (req, res) => {
           ? 'book'
           : 'all',
     keyword: searchQuery || undefined,
+    ...(narratorQuery ? { narrator: narratorQuery } : {}),
     page,
-    pageSize: itemsPerPage,
+    pageSize: pageSizePerFormat,
     sort: sortByValue,
     genre: subjectQuery || undefined,
     firstPublishYear: firstPublishYear || undefined,
@@ -2993,8 +3560,14 @@ discoverRoutes.get('/books', async (req, res) => {
   if (hasSearchQuery && hasSubjectFilter) {
     queryParts.push(`subject:${subjectQuery}`);
   }
+  if (authorQuery) {
+    queryParts.push(toFieldedBooleanAndQuery(authorQuery, ['author']));
+  }
   if (language) {
     queryParts.push(`language:${language}`);
+  }
+  if (sortByBase === 'trending') {
+    queryParts.push('trending_score_hourly_sum:[1 TO *]');
   }
   if (firstPublishYear && firstPublishYear !== 'before-1970') {
     queryParts.push(`first_publish_year:${firstPublishYear}`);
@@ -3005,17 +3578,140 @@ discoverRoutes.get('/books', async (req, res) => {
     hasSearchQuery ||
     parsedRatingNumber !== undefined ||
     firstPublishYear === 'before-1970';
+  const filterAndSortAudiobooks = (books: BookResult[]) =>
+    books
+      .filter(
+        (book) =>
+          (!searchQuery ||
+            matchesAllSearchTerms(
+              [book.title, book.author, ...(book.subjects ?? [])],
+              searchQuery
+            )) &&
+          (!authorQuery || matchesAllSearchTerms([book.author], authorQuery)) &&
+          (!narratorQuery ||
+            matchesAllSearchTerms(book.narrators ?? [], narratorQuery)) &&
+          (!subjectQuery ||
+            matchesAllSearchTerms(book.subjects ?? [], subjectQuery)) &&
+          (!language || book.languages?.includes(language)) &&
+          (parsedRatingNumber === undefined ||
+            (book.ratingsAverage ?? 0) >= parsedRatingNumber) &&
+          (!firstPublishYear ||
+            (firstPublishYear === 'before-1970'
+              ? (book.firstPublishYear ?? Number.POSITIVE_INFINITY) < 1970
+              : book.firstPublishYear === Number(firstPublishYear)))
+      )
+      .sort((left, right) => {
+        const comparison =
+          sortByBase === 'rating'
+            ? (right.ratingsAverage ?? -1) - (left.ratingsAverage ?? -1)
+            : sortByBase === 'editions'
+              ? (right.isbnCandidates?.length ?? 0) -
+                (left.isbnCandidates?.length ?? 0)
+              : sortByValue === 'newest' || sortByValue === 'oldest'
+                ? (right.firstPublishYear ?? -1) - (left.firstPublishYear ?? -1)
+                : 0;
+        return (
+          (sortAscending || sortByValue === 'oldest'
+            ? -comparison
+            : comparison) || left.title.localeCompare(right.title)
+        );
+      });
+  const searchAudiobookResults = async (): Promise<BookResult[]> => {
+    const books = narratorQuery
+      ? await searchBookshelfNarrators(getSettings().readarr, narratorQuery)
+      : hasSearchQuery || authorQuery
+        ? await searchBookshelfCatalogs(
+            getSettings().readarr,
+            searchQuery || authorQuery,
+            'audiobook',
+            { failOnAllUnavailable: true }
+          )
+        : await getBookshelfAudiobookLibrary(getSettings().readarr);
+    return filterAndSortAudiobooks(books);
+  };
+  const canPageAudiobookBrowse =
+    audiobookEnabled &&
+    getSettings().readarr.filter((server) => server.serviceType === 'audiobook')
+      .length === 1 &&
+    !hasSearchQuery &&
+    !authorQuery &&
+    !narratorQuery &&
+    !subjectQuery &&
+    !language &&
+    parsedRatingNumber === undefined &&
+    !firstPublishYear &&
+    sortByBase === 'ranked';
+  const audiobookSearchOutcome = audiobookEnabled
+    ? (canPageAudiobookBrowse
+        ? getBookshelfAudiobookLibraryPage(
+            getSettings().readarr,
+            (page - 1) * itemsPerPage,
+            itemsPerPage
+          ).then(({ books, totalCount }) => ({
+            books: filterAndSortAudiobooks(books),
+            totalCount,
+            pageResolved: true,
+          }))
+        : searchAudiobookResults().then((books) => ({
+            books,
+            totalCount: books.length,
+            pageResolved: false,
+          }))
+      ).catch((error: unknown) => ({
+        books: [] as BookResult[],
+        totalCount: 0,
+        pageResolved: false,
+        error,
+      }))
+    : Promise.resolve({
+        books: [] as BookResult[],
+        totalCount: 0,
+        pageResolved: false,
+      });
   const providerWindow = needsLocalFiltering
-    ? getProviderWindow(page, itemsPerPage, itemsPerPage)
+    ? getProviderWindow(page, pageSizePerFormat, pageSizePerFormat)
     : undefined;
   const providerPage = providerWindow
     ? Math.floor(providerWindow.offset / providerWindow.limit) + 1
     : page;
   const providerLimit = providerWindow?.limit ?? itemsPerPage;
 
+  if (!ebookEnabled) {
+    try {
+      const outcome = await audiobookSearchOutcome;
+      if ('error' in outcome) throw outcome.error;
+      const books = outcome.books;
+      const offset = (page - 1) * itemsPerPage;
+      const resultCount = outcome.pageResolved
+        ? outcome.totalCount
+        : books.length;
+      return res.status(200).json({
+        page,
+        totalPages: Math.max(Math.ceil(resultCount / itemsPerPage), 1),
+        totalResults: resultCount,
+        results: outcome.pageResolved
+          ? books
+          : books.slice(offset, offset + itemsPerPage),
+      });
+    } catch (error) {
+      logger.error('Failed to search audiobook catalog', {
+        label: 'Discover Books',
+        ...getErrorLogFields(error),
+        discoveryContext: bookDiscoveryContext,
+      });
+      return res.status(503).json({
+        status: 503,
+        message: 'The audiobook catalog is unavailable. Please try again.',
+      });
+    }
+  }
+
   try {
     const openLibrarySort =
-      sortByValue === 'ranked' && !hasSearchQuery && !hasSubjectFilter
+      sortByBase === 'ranked' &&
+      !hasSearchQuery &&
+      !hasSubjectFilter &&
+      !authorQuery
         ? 'random'
         : sortByValue === 'newest'
           ? 'new'
@@ -3023,13 +3719,13 @@ discoverRoutes.get('/books', async (req, res) => {
             ? 'old'
             : sortByValue === 'random'
               ? 'random'
-              : sortByValue === 'rating' ||
-                  sortByValue === 'rating.desc' ||
-                  sortByValue === 'rating.asc'
+              : sortByBase === 'rating'
                 ? 'rating'
-                : sortByValue === 'editions'
+                : sortByBase === 'editions'
                   ? 'editions'
-                  : undefined;
+                  : sortByBase === 'trending'
+                    ? 'trending'
+                    : undefined;
     const books = await settlePromisesWithin(
       [
         openLibrary.searchBooks({
@@ -3085,8 +3781,8 @@ discoverRoutes.get('/books', async (req, res) => {
 
       return true;
     });
-    const sortedDocs =
-      sortByValue === 'ranked' && !hasSearchQuery
+    const rankedDocs =
+      sortByBase === 'ranked' && !hasSearchQuery
         ? shuffleRankedWindow(
             rankByQualityScore(
               [...dedupedDocs].sort(
@@ -3099,13 +3795,22 @@ discoverRoutes.get('/books', async (req, res) => {
             ),
             shuffleSeed
           )
-        : sortByValue === 'rating.asc'
-          ? [...dedupedDocs].sort(
-              (a, b) =>
-                (a.ratings_average ?? Number.POSITIVE_INFINITY) -
-                (b.ratings_average ?? Number.POSITIVE_INFINITY)
-            )
-          : dedupedDocs;
+        : undefined;
+    const sortedDocs = rankedDocs
+      ? sortAscending
+        ? [...rankedDocs].reverse()
+        : rankedDocs
+      : sortByValue === 'rating.asc'
+        ? [...dedupedDocs].sort(
+            (a, b) =>
+              (a.ratings_average ?? Number.POSITIVE_INFINITY) -
+              (b.ratings_average ?? Number.POSITIVE_INFINITY)
+          )
+        : sortByBase === 'editions' && sortAscending
+          ? [...dedupedDocs].reverse()
+          : sortByBase === 'random'
+            ? shuffleRankedWindow(dedupedDocs, shuffleSeed, dedupedDocs.length)
+            : dedupedDocs;
     const pagedDocs = providerWindow
       ? sortedDocs.slice(providerWindow.sliceStart, providerWindow.sliceEnd)
       : sortedDocs;
@@ -3115,28 +3820,98 @@ discoverRoutes.get('/books', async (req, res) => {
       ids,
       req.user
     );
+    const audiobookOutcome = await audiobookSearchOutcome;
+    if ('error' in audiobookOutcome) {
+      logger.warn(
+        'Audiobook catalog search failed during combined discovery.',
+        {
+          label: 'Discover Books',
+          ...getErrorLogFields(audiobookOutcome.error),
+          discoveryContext: bookDiscoveryContext,
+        }
+      );
+    }
+    const audiobookOffset = (page - 1) * itemsPerPage;
+    const audiobookResults = audiobookOutcome.pageResolved
+      ? audiobookOutcome.books
+      : audiobookOutcome.books.slice(
+          audiobookOffset,
+          audiobookOffset + itemsPerPage
+        );
+    const audiobookTotalResults = audiobookOutcome.pageResolved
+      ? audiobookOutcome.totalCount
+      : audiobookOutcome.books.length;
+    const ebookResults = pagedDocs.map((doc) => ({
+      ...mapOpenLibrarySearchDoc(
+        doc,
+        mediaByOpenLibraryId.get(normalizeOpenLibraryWorkId(doc.key))
+      ),
+      score:
+        sortByBase === 'trending'
+          ? (doc.trending_score_hourly_sum ?? scoreBookDoc(doc))
+          : scoreBookDoc(doc),
+    }));
+    const results: BookResult[] = [];
+    for (
+      let index = 0;
+      results.length < itemsPerPage &&
+      (index < audiobookResults.length || index < ebookResults.length);
+      index += 1
+    ) {
+      const audiobook = audiobookResults[index];
+      const ebook = ebookResults[index];
+      if (audiobook) results.push(audiobook);
+      if (results.length < itemsPerPage && ebook) results.push(ebook);
+    }
+    const ebookTotalPages = needsLocalFiltering
+      ? providerHasMore
+        ? page + 1
+        : page
+      : Math.max(Math.ceil(books.numFound / itemsPerPage), 1);
+    const ebookTotalResults = needsLocalFiltering
+      ? providerHasMore
+        ? page * itemsPerPage + 1
+        : (page - 1) * itemsPerPage + pagedDocs.length
+      : books.numFound;
 
     return res.status(200).json({
       page,
-      totalPages: needsLocalFiltering
-        ? providerHasMore
-          ? page + 1
-          : page
-        : Math.max(Math.ceil(books.numFound / itemsPerPage), 1),
-      totalResults: needsLocalFiltering
-        ? providerHasMore
-          ? page * itemsPerPage + 1
-          : (page - 1) * itemsPerPage + pagedDocs.length
-        : books.numFound,
-      results: pagedDocs.map((doc) => ({
-        ...mapOpenLibrarySearchDoc(
-          doc,
-          mediaByOpenLibraryId.get(normalizeOpenLibraryWorkId(doc.key))
-        ),
-        score: scoreBookDoc(doc),
-      })),
+      totalPages: Math.max(
+        ebookTotalPages,
+        Math.ceil(audiobookTotalResults / itemsPerPage),
+        1
+      ),
+      totalResults: ebookTotalResults + audiobookTotalResults,
+      results,
     });
   } catch (e) {
+    const audiobookOutcome = await audiobookSearchOutcome;
+    if (audiobookOutcome.books.length > 0) {
+      const offset = (page - 1) * itemsPerPage;
+      const results = audiobookOutcome.pageResolved
+        ? audiobookOutcome.books
+        : audiobookOutcome.books.slice(offset, offset + itemsPerPage);
+      const audiobookTotalResults = audiobookOutcome.pageResolved
+        ? audiobookOutcome.totalCount
+        : audiobookOutcome.books.length;
+      logger.warn(
+        'Open Library failed during combined discovery; returning audiobook results.',
+        {
+          label: 'Discover Books',
+          ...getErrorLogFields(e),
+          discoveryContext: bookDiscoveryContext,
+        }
+      );
+      return res.status(200).json({
+        page,
+        totalPages: Math.max(
+          Math.ceil(audiobookTotalResults / itemsPerPage),
+          1
+        ),
+        totalResults: audiobookTotalResults,
+        results,
+      });
+    }
     logger.error('Failed to fetch book discovery results', {
       label: 'Discover Books',
       ...getErrorLogFields(e),
@@ -3144,8 +3919,440 @@ discoverRoutes.get('/books', async (req, res) => {
     });
     return res.status(503).json({
       status: 503,
+      message: getSettings().readarr.some(
+        (server) => audiobookEnabled && server.serviceType === 'audiobook'
+      )
+        ? 'Book discovery catalogs are unavailable right now. Please try again.'
+        : 'Open Library, the service used for book searches, timed out or is unavailable. Please try again.',
+    });
+  }
+});
+
+discoverRoutes.get('/comics', async (req, res) => {
+  const { comicVineApiKey } = getSettings().main;
+  if (!comicVineApiKey) {
+    return res.status(200).json({
+      page: 1,
+      totalPages: 0,
+      totalResults: 0,
+      results: [],
+      comicVineConfigured: false,
+    });
+  }
+
+  const itemsPerPage = 20;
+  const page = parsePositiveInt(req.query.page, 1, 500);
+  const parsedSearchQuery = parseOptionalDiscoverString(
+    req.query.query,
+    'Query'
+  );
+  if ('error' in parsedSearchQuery) {
+    return res
+      .status(400)
+      .json({ status: 400, message: parsedSearchQuery.error });
+  }
+  const query = parsedSearchQuery.value || '*';
+  const parsedPublisher = parseOptionalDiscoverString(
+    req.query.publisher,
+    'Publisher',
+    128
+  );
+  const parseIntegerFilter = (
+    value: unknown,
+    fieldName: string,
+    minimum: number,
+    maximum: number
+  ): { value?: number; error?: string } => {
+    if (value === undefined) return {};
+    if (
+      typeof value !== 'string' ||
+      !/^\d{1,6}$/.test(value) ||
+      Number(value) < minimum ||
+      Number(value) > maximum
+    ) {
+      return {
+        error: `${fieldName} must be between ${minimum} and ${maximum}.`,
+      };
+    }
+    return { value: Number(value) };
+  };
+  const startYear = parseIntegerFilter(
+    req.query.startYear,
+    'Start year',
+    1800,
+    2200
+  );
+  const minIssues = parseIntegerFilter(
+    req.query.minIssues,
+    'Minimum issues',
+    0,
+    100000
+  );
+  const maxIssues = parseIntegerFilter(
+    req.query.maxIssues,
+    'Maximum issues',
+    0,
+    100000
+  );
+  if (
+    'error' in parsedPublisher ||
+    startYear.error ||
+    minIssues.error ||
+    maxIssues.error ||
+    (minIssues.value !== undefined &&
+      maxIssues.value !== undefined &&
+      minIssues.value > maxIssues.value)
+  ) {
+    return res.status(400).json({
+      status: 400,
       message:
-        'Open Library, the service used for book searches, timed out or is unavailable. Please try again.',
+        ('error' in parsedPublisher && parsedPublisher.error) ||
+        startYear.error ||
+        minIssues.error ||
+        maxIssues.error ||
+        'Minimum issues cannot exceed maximum issues.',
+    });
+  }
+  const publisher = parsedPublisher.value?.trim() || undefined;
+  const hasMetadataFilters =
+    publisher !== undefined ||
+    startYear.value !== undefined ||
+    minIssues.value !== undefined ||
+    maxIssues.value !== undefined;
+
+  try {
+    // User-selected filters choose the indexed catalog query; this does not
+    // gate authorization or change which catalog data the route can expose.
+    if (hasMetadataFilters) {
+      const scan = await getComicCatalogIndexStatus();
+      if (scan.completeGeneration === 0) {
+        return res.status(200).json({
+          page: 1,
+          totalPages: 0,
+          totalResults: 0,
+          results: [],
+          comicVineConfigured: true,
+          indexing: true,
+          indexedResults: scan.indexedResults,
+          expectedResults: scan.totalResults,
+          indexError: scan.lastError,
+        });
+      }
+      const indexed = await searchComicCatalogIndex(scan.completeGeneration, {
+        query,
+        publisher,
+        startYear: startYear.value,
+        minIssues: minIssues.value,
+        maxIssues: maxIssues.value,
+        page,
+        limit: itemsPerPage,
+      });
+      const mediaByComicVineId = await findComicMediaByComicVineIds(
+        indexed.results.map((volume) => volume.id),
+        req.user
+      );
+      return res.status(200).json({
+        page,
+        totalPages: Math.ceil(indexed.totalResults / itemsPerPage),
+        totalResults: indexed.totalResults,
+        results: indexed.results.map((volume) =>
+          mapComicVineVolumeResult(volume, mediaByComicVineId.get(volume.id))
+        ),
+        comicVineConfigured: true,
+        indexing: false,
+        lastIndexedAt: scan.lastCompletedAt,
+      });
+    }
+    const comicVine = new ComicVineAPI(comicVineApiKey);
+    const response = await comicVine.searchVolumes({
+      query,
+      page,
+      limit: itemsPerPage,
+    });
+    const mediaByComicVineId = await findComicMediaByComicVineIds(
+      response.results.map((volume) => volume.id),
+      req.user
+    );
+
+    return res.status(200).json({
+      page,
+      totalPages: Math.max(
+        Math.ceil(response.number_of_total_results / itemsPerPage),
+        1
+      ),
+      totalResults: response.number_of_total_results,
+      results: response.results.map((volume) =>
+        mapComicVineVolumeResult(volume, mediaByComicVineId.get(volume.id))
+      ),
+      comicVineConfigured: true,
+    });
+  } catch (e) {
+    logger.error('Failed to fetch comic discovery results', {
+      label: 'Discover Comics',
+      ...getErrorLogFields(e),
+    });
+    return res.status(503).json({
+      status: 503,
+      message:
+        'ComicVine, the service used for comic searches, timed out or is unavailable. Please try again.',
+    });
+  }
+});
+
+discoverRoutes.get('/magazines', async (req, res) => {
+  const parsedSearchQuery = parseOptionalDiscoverString(
+    req.query.query,
+    'Query',
+    256
+  );
+  if ('error' in parsedSearchQuery) {
+    return res
+      .status(400)
+      .json({ status: 400, message: parsedSearchQuery.error });
+  }
+  const query = parsedSearchQuery.value?.trim().toLowerCase() ?? '';
+  const publicQuery = parsedSearchQuery.value?.trim() ?? '';
+  const catalog = req.query.catalog ?? 'tracked';
+  if (catalog !== 'tracked' && catalog !== 'public') {
+    return res
+      .status(400)
+      .json({ status: 400, message: 'Catalog must be tracked or public.' });
+  }
+  const page = parsePositiveInt(req.query.page, 1, 500);
+  const itemsPerPage = 20;
+  const settings = getExternalRuntimeConfig();
+
+  if (catalog === 'public') {
+    if (!publicQuery) {
+      return res
+        .status(200)
+        .json({ page, totalPages: 0, totalResults: 0, results: [] });
+    }
+
+    const googleBooksApiKey = getSettings().main.googleBooksApiKey?.trim();
+    if (!googleBooksApiKey) {
+      return res.status(503).json({
+        status: 503,
+        message:
+          'Public magazine search requires a Google Books API key. Configure it in Settings > Main.',
+      });
+    }
+
+    try {
+      const response = await new GoogleBooksAPI(
+        googleBooksApiKey
+      ).searchMagazines({
+        query: publicQuery,
+        page,
+        limit: itemsPerPage,
+      });
+      const mediaByTitle = await findMagazineMediaByTitles(
+        response.results.map((magazine) => magazine.title),
+        req.user
+      );
+      const results = response.results.map((magazine) => {
+        const media = mediaByTitle.get(normalizeMagazineTitle(magazine.title));
+        return mapGoogleBooksMagazine(
+          magazine,
+          media,
+          settings.lazylibrarian.length > 0
+        );
+      });
+
+      return res.status(200).json({
+        page,
+        totalPages: Math.max(
+          Math.ceil(response.totalItems / itemsPerPage),
+          response.totalItems > 0 ? 1 : 0
+        ),
+        totalResults: response.totalItems,
+        results: filterEntityResponse(results, req.user),
+      });
+    } catch (error) {
+      logger.error('Failed to fetch public magazine discovery results', {
+        label: 'Discover Magazines',
+        ...getErrorLogFields(error),
+      });
+      return res.status(503).json({
+        status: 503,
+        message: 'Google Books is unavailable. Try again shortly.',
+      });
+    }
+  }
+
+  if (settings.lazylibrarian.length === 0) {
+    return res
+      .status(200)
+      .json({ page, totalPages: 0, totalResults: 0, results: [] });
+  }
+
+  try {
+    const magazinesByTitle = new Map<
+      string,
+      Awaited<ReturnType<LazyLibrarianAPI['getMagazines']>>[number] & {
+        serviceId: number;
+      }
+    >();
+    const configuredServices = [...settings.lazylibrarian];
+    type MagazineCatalogOutcome =
+      | {
+          status: 'fulfilled';
+          index: number;
+          serviceId: number;
+          value: (Awaited<
+            ReturnType<LazyLibrarianAPI['getMagazines']>
+          >[number] & {
+            serviceId: number;
+          })[];
+        }
+      | {
+          status: 'rejected';
+          index: number;
+          serviceId: number;
+          reason: unknown;
+        };
+    const completedCatalogs: MagazineCatalogOutcome[] = [];
+    let nextService = 0;
+    let deadlineReached = false;
+    const lookupSignal = AbortSignal.timeout(
+      MAGAZINE_CATALOG_LOOKUP_TIMEOUT_MS - 1_000
+    );
+    const workers = Array.from(
+      { length: Math.min(2, configuredServices.length) },
+      async () => {
+        while (
+          !deadlineReached &&
+          !lookupSignal.aborted &&
+          nextService < configuredServices.length
+        ) {
+          const index = nextService++;
+          const service = configuredServices[index];
+          try {
+            const magazines = await runWithServarrServiceSnapshot(
+              'lazylibrarian',
+              service,
+              async (current) =>
+                (
+                  await new LazyLibrarianAPI({
+                    url: LazyLibrarianAPI.buildUrl(current),
+                    apiKey: current.apiKey,
+                  }).getMagazines(lookupSignal)
+                ).map((magazine) => ({ ...magazine, serviceId: current.id }))
+            );
+            completedCatalogs.push({
+              status: 'fulfilled',
+              index,
+              serviceId: service.id,
+              value: magazines,
+            });
+          } catch (reason) {
+            completedCatalogs.push({
+              status: 'rejected',
+              index,
+              serviceId: service.id,
+              reason,
+            });
+          }
+        }
+      }
+    );
+    const { timedOut } = await settlePromisesWithin(
+      [Promise.all(workers)],
+      MAGAZINE_CATALOG_LOOKUP_TIMEOUT_MS
+    );
+    deadlineReached = true;
+    const lookupTimedOut = timedOut || lookupSignal.aborted;
+    const catalogs = [...completedCatalogs].sort(
+      (left, right) => left.index - right.index
+    );
+    if (lookupTimedOut) {
+      logger.warn('Magazine catalog discovery reached its service deadline', {
+        label: 'Discover Magazines',
+        timeoutMs: MAGAZINE_CATALOG_LOOKUP_TIMEOUT_MS,
+        completedServices: catalogs.length,
+        configuredServices: configuredServices.length,
+      });
+    }
+    let availableCatalogs = 0;
+    for (const catalog of catalogs) {
+      if (catalog.status === 'rejected') {
+        logger.warn('Failed to fetch a LazyLibrarian magazine catalog', {
+          label: 'Discover Magazines',
+          serviceId: catalog.serviceId,
+          ...getErrorLogFields(catalog.reason),
+        });
+        continue;
+      }
+      availableCatalogs += 1;
+      for (const magazine of catalog.value) {
+        const key = normalizeMagazineTitle(magazine.title);
+        if (key && !magazinesByTitle.has(key)) {
+          magazinesByTitle.set(key, magazine);
+        }
+      }
+    }
+    if (availableCatalogs === 0) {
+      throw new Error('All LazyLibrarian magazine catalogs are unavailable.');
+    }
+
+    const matched = [...magazinesByTitle.entries()]
+      .filter(([key, magazine]) =>
+        query ? `${magazine.title.toLowerCase()} ${key}`.includes(query) : true
+      )
+      .sort((left, right) => left[1].title.localeCompare(right[1].title));
+    const pageItems = matched.slice(
+      (page - 1) * itemsPerPage,
+      page * itemsPerPage
+    );
+    const identifiers = pageItems.length
+      ? await getRepository(MediaIdentifier).find({
+          where: {
+            provider: MediaIdentifierProvider.LAZYLIBRARIAN,
+            value: In(pageItems.map(([key]) => key)),
+          },
+          relations: { media: true },
+          relationLoadStrategy: 'query',
+        })
+      : [];
+    const mediaByTitle = new Map(
+      identifiers
+        .filter(
+          (identifier) => identifier.media?.mediaType === MediaType.MAGAZINE
+        )
+        .map((identifier) => [identifier.value, identifier.media])
+    );
+    const hydratedMedia = await hydrateMediaSummaryRelations(
+      [...mediaByTitle.values()],
+      req.user
+    );
+    const hydratedById = new Map(
+      hydratedMedia.map((media) => [media.id, media])
+    );
+    const results = pageItems.map(([key, magazine]) =>
+      mapLazyLibrarianMagazine(
+        magazine,
+        [],
+        mediaByTitle.get(key)
+          ? hydratedById.get(mediaByTitle.get(key)!.id)
+          : undefined,
+        magazine.serviceId
+      )
+    );
+
+    return res.status(200).json({
+      page,
+      totalPages: Math.max(Math.ceil(matched.length / itemsPerPage), 1),
+      totalResults: matched.length,
+      results: filterEntityResponse(results, req.user),
+    });
+  } catch (error) {
+    logger.error('Failed to fetch magazine discovery results', {
+      label: 'Discover Magazines',
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    return res.status(503).json({
+      status: 503,
+      message: 'LazyLibrarian is unavailable. Try again shortly.',
     });
   }
 });

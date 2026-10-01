@@ -8,6 +8,8 @@ import {
 import { sortCrewPriority } from '@app/utils/creditHelpers';
 import { getTmdbPosterImageUrl } from '@app/utils/imageCache';
 import type { BookDetails } from '@server/models/Book';
+import type { ComicDetails } from '@server/models/Comic';
+import type { MagazineDetails } from '@server/models/Magazine';
 import type { MovieDetails } from '@server/models/Movie';
 import type { MusicDetails } from '@server/models/Music';
 import type { TvDetails } from '@server/models/Tv';
@@ -16,7 +18,12 @@ import type { ReactNode } from 'react';
 import { useIntl } from 'react-intl';
 
 export type IssueMediaDetails =
-  MovieDetails | TvDetails | MusicDetails | BookDetails;
+  | MovieDetails
+  | TvDetails
+  | MusicDetails
+  | BookDetails
+  | ComicDetails
+  | MagazineDetails;
 
 export type IssueSummaryDetail = {
   label?: string;
@@ -32,9 +39,19 @@ export const isIssueMusic = (media: IssueMediaDetails): media is MusicDetails =>
 export const isIssueBook = (media: IssueMediaDetails): media is BookDetails =>
   (media as BookDetails).mediaType === 'book';
 
+export const isIssueComic = (media: IssueMediaDetails): media is ComicDetails =>
+  (media as ComicDetails).mediaType === 'comic';
+
+export const isIssueMagazine = (
+  media: IssueMediaDetails
+): media is MagazineDetails =>
+  (media as MagazineDetails).mediaType === 'magazine';
+
 export const isIssueMovie = (media: IssueMediaDetails): media is MovieDetails =>
   !isIssueMusic(media) &&
   !isIssueBook(media) &&
+  !isIssueComic(media) &&
+  !isIssueMagazine(media) &&
   (media as MovieDetails).title !== undefined;
 
 const linkedValues = (values: LinkedValue[]) =>
@@ -56,7 +73,7 @@ const linkedValues = (values: LinkedValue[]) =>
 
 interface IssueMediaSummaryProps {
   data: IssueMediaDetails;
-  mediaType: 'movie' | 'tv' | 'music' | 'book';
+  mediaType: 'movie' | 'tv' | 'music' | 'book' | 'comic' | 'magazine';
   is4k?: boolean;
   mediaHref?: string;
   artwork?: string;
@@ -80,51 +97,70 @@ const IssueMediaSummary = ({
   const isMovie = isIssueMovie(data);
   const isMusic = isIssueMusic(data);
   const isBook = isIssueBook(data);
-  const title = isMovie || isMusic || isBook ? data.title : data.name;
+  const isComic = isIssueComic(data);
+  const isMagazine = isIssueMagazine(data);
+  const title =
+    isMovie || isMusic || isBook || isComic || isMagazine
+      ? data.title
+      : data.name;
   const releaseDate = isMovie
     ? data.releaseDate
     : isMusic
       ? data.releaseDate
       : isBook
         ? data.firstPublishYear?.toString()
-        : data.firstAirDate;
+        : isComic
+          ? data.startYear
+          : isMagazine
+            ? data.latestIssue
+            : data.firstAirDate;
   const releaseYear = releaseDate?.match(/^\d{4}/)?.[0];
   const runtime = isBook
     ? data.numberOfPages
       ? intl.formatNumber(data.numberOfPages)
       : unavailable
-    : isMusic
-      ? data.tracks.length > 0
-        ? `${intl.formatNumber(
-            Math.round(
-              data.tracks.reduce((total, track) => total + track.length, 0) /
-                60000
-            )
-          )} minutes`
+    : isMagazine
+      ? data.issueCount !== undefined
+        ? intl.formatNumber(data.issueCount)
         : unavailable
-      : isMovie
-        ? data.runtime
-          ? `${intl.formatNumber(data.runtime)} minutes`
+      : isMusic
+        ? data.tracks.length > 0
+          ? `${intl.formatNumber(
+              Math.round(
+                data.tracks.reduce((total, track) => total + track.length, 0) /
+                  60000
+              )
+            )} minutes`
           : unavailable
-        : data.episodeRunTime[0]
-          ? `${intl.formatNumber(data.episodeRunTime[0])} minutes`
-          : unavailable;
+        : isComic
+          ? data.issueCount
+            ? `${intl.formatNumber(data.issueCount)} issues`
+            : unavailable
+          : isMovie
+            ? data.runtime
+              ? `${intl.formatNumber(data.runtime)} minutes`
+              : unavailable
+            : data.episodeRunTime[0]
+              ? `${intl.formatNumber(data.episodeRunTime[0])} minutes`
+              : unavailable;
   const posterSrc =
-    isMusic || isBook
+    isMusic || isBook || isComic || isMagazine
       ? data.posterPath || '/images/seerr_poster_not_found.png'
       : getTmdbPosterImageUrl(data.posterPath) ||
         '/images/seerr_poster_not_found.png';
-  const posterType = isBook ? 'book' : isMusic ? 'music' : 'tmdb';
+  const posterType =
+    isBook || isComic || isMagazine ? 'book' : isMusic ? 'music' : 'tmdb';
   const artworkSrc =
     artwork ??
     (isMusic
       ? data.artistBackdrop || data.posterPath
-      : isBook
+      : isBook || isComic || isMagazine
         ? data.posterPath
         : data.backdropPath
           ? `https://image.tmdb.org/t/p/w1920_and_h800_multi_faces/${data.backdropPath}`
           : posterSrc);
-  const artworkType = isBook ? 'book' : isMusic ? 'music' : 'tmdb';
+  const artworkType =
+    isBook || isComic || isMagazine ? 'book' : isMusic ? 'music' : 'tmdb';
   const mediaLabel = getIssueMediaAndFormatLabel(mediaType, is4k);
   const secondaryRows: SummaryRow[] = isMovie
     ? [
@@ -190,28 +226,37 @@ const IssueMediaSummary = ({
               values: [{ label: data.publisher ?? unavailable }],
             },
           ]
-        : [
-            {
-              label: 'Creator',
-              values:
-                data.createdBy.length > 0
-                  ? data.createdBy.slice(0, 2).map((person) => ({
-                      label: person.name,
-                      href: `/person/${person.id}`,
-                    }))
-                  : [{ label: unavailable }],
-            },
-            {
-              label: 'Network',
-              values:
-                data.networks.length > 0
-                  ? data.networks.slice(0, 2).map((network) => ({
-                      label: network.name,
-                      href: `/discover/tv/network/${network.id}`,
-                    }))
-                  : [{ label: unavailable }],
-            },
-          ];
+        : isMagazine
+          ? []
+          : isComic
+            ? [
+                {
+                  label: 'Publisher',
+                  values: [{ label: data.publisher ?? unavailable }],
+                },
+              ]
+            : [
+                {
+                  label: 'Creator',
+                  values:
+                    data.createdBy.length > 0
+                      ? data.createdBy.slice(0, 2).map((person) => ({
+                          label: person.name,
+                          href: `/person/${person.id}`,
+                        }))
+                      : [{ label: unavailable }],
+                },
+                {
+                  label: 'Network',
+                  values:
+                    data.networks.length > 0
+                      ? data.networks.slice(0, 2).map((network) => ({
+                          label: network.name,
+                          href: `/discover/tv/network/${network.id}`,
+                        }))
+                      : [{ label: unavailable }],
+                },
+              ];
   const genres: LinkedValue[] = isMusic
     ? (data.tags?.releaseGroup ?? []).slice(0, 3).map((genre) => ({
         label: genre.tag,
@@ -220,13 +265,19 @@ const IssueMediaSummary = ({
       ? (data.subjects ?? []).slice(0, 3).map((subject) => ({
           label: subject,
         }))
-      : data.genres.slice(0, 3).map((genre) => ({
-          label: genre.name,
-          href:
-            mediaType === 'movie'
-              ? `/discover/movies/genre/${genre.id}`
-              : `/discover/tv/genre/${genre.id}`,
-        }));
+      : isMagazine
+        ? []
+        : isComic
+          ? (data.aliases ?? []).slice(0, 3).map((alias) => ({
+              label: alias,
+            }))
+          : data.genres.slice(0, 3).map((genre) => ({
+              label: genre.name,
+              href:
+                mediaType === 'movie'
+                  ? `/discover/movies/genre/${genre.id}`
+                  : `/discover/tv/genre/${genre.id}`,
+            }));
   const bookWorkId = isBook
     ? normalizeOpenLibraryWorkId(data.id?.toString() ?? '')
     : undefined;
@@ -238,13 +289,17 @@ const IssueMediaSummary = ({
         ? `/tv/${data.id}`
         : mediaType === 'music' && isMusic
           ? `/music/${encodeApiPathSegment(data.id)}`
-          : bookWorkId
-            ? `/book/${encodeApiPathSegment(bookWorkId)}`
-            : undefined);
+          : isComic
+            ? `/comic/${encodeApiPathSegment(data.id)}`
+            : isMagazine
+              ? `/magazine/${encodeApiPathSegment(data.id)}`
+              : bookWorkId
+                ? `/book/${encodeApiPathSegment(bookWorkId)}`
+                : undefined);
 
   return (
     <article
-      className={`${embedded ? 'refreshed-inset-surface' : 'refreshed-card-surface shadow-lg shadow-gray-950/20'} relative rounded-xl border border-gray-700 p-3`}
+      className={`${embedded ? 'app-card-inset refreshed-inset-surface' : 'app-card-main refreshed-card-surface shadow-lg shadow-gray-950/20'} relative rounded-xl border border-gray-700 p-3`}
     >
       {!embedded && artworkSrc && (
         <div
@@ -265,8 +320,10 @@ const IssueMediaSummary = ({
         </div>
       )}
       <div className="relative z-10">
-        <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] gap-3 sm:grid-cols-[80px_minmax(0,1fr)]">
-          <div className="relative h-24 w-16 overflow-hidden rounded-lg ring-1 ring-gray-600 sm:h-[120px] sm:w-20">
+        <div
+          className={`${embedded ? '' : 'app-card-inset refreshed-inset-surface detail-summary-card'} grid min-w-0 grid-cols-[64px_minmax(0,1fr)] gap-3 sm:grid-cols-[80px_minmax(0,1fr)]`}
+        >
+          <div className="detail-card-poster relative overflow-hidden rounded-lg ring-1 ring-gray-600">
             <CachedImage
               type={posterType}
               src={posterSrc}
@@ -281,21 +338,21 @@ const IssueMediaSummary = ({
             {resolvedHref ? (
               <Link
                 href={resolvedHref}
-                className="-mt-0.5 block truncate text-lg leading-5 font-semibold text-white hover:underline"
+                className="detail-summary-title block truncate text-lg leading-5 font-semibold text-white hover:underline"
               >
                 {title}
                 {releaseYear ? ` (${releaseYear})` : ''}
               </Link>
             ) : (
-              <h3 className="-mt-0.5 truncate text-lg leading-5 font-semibold text-white">
+              <h3 className="detail-summary-title truncate text-lg leading-5 font-semibold text-white">
                 {title}
                 {releaseYear ? ` (${releaseYear})` : ''}
               </h3>
             )}
 
-            <div className="card:grid-cols-3 mt-4 grid min-h-0 min-w-0 flex-1 grid-cols-1 items-stretch">
-              <div className="card:col-span-2 card:pr-3 min-w-0">
-                <dl className="card:grid-cols-[max-content_0.75rem_6rem_0.75rem_1px_0.75rem_minmax(0,1fr)] card:gap-x-0 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-0.5 text-xs leading-4">
+            <div className="detail-card-heading-spacing detail-three-column-grid grid min-h-0 min-w-0 flex-1 items-stretch">
+              <div className="detail-paired-column-span min-w-0">
+                <dl className="media-detail-rows detail-paired-columns grid min-w-0 content-start text-xs">
                   <dt className="card:col-start-1 card:row-start-1 font-medium text-gray-100">
                     Media &amp; Format:
                   </dt>
@@ -303,20 +360,24 @@ const IssueMediaSummary = ({
                     {mediaLabel}
                   </dd>
                   <dt className="card:col-start-1 card:row-start-2 font-medium text-gray-100">
-                    {isBook ? 'First Published' : 'Release Date'}:
+                    {isBook
+                      ? 'First Published'
+                      : isMagazine
+                        ? 'Latest Issue'
+                        : 'Release Date'}
+                    :
                   </dt>
                   <dd className="card:col-start-3 card:row-start-2 m-0 truncate">
                     {releaseDate || unavailable}
                   </dd>
                   <dt className="card:col-start-1 card:row-start-3 font-medium text-gray-100">
-                    {isBook ? 'Pages' : 'Runtime'}:
+                    {isBook ? 'Pages' : isMagazine ? 'Issues' : 'Runtime'}:
                   </dt>
                   <dd className="card:col-start-3 card:row-start-3 m-0 truncate">
                     {runtime}
                   </dd>
 
-                  <div className="card:col-start-5 card:row-span-3 card:row-start-1 card:block hidden bg-gray-600" />
-                  <div className="card:col-span-1 card:col-start-7 card:row-span-3 card:row-start-1 card:mt-0 card:border-t-0 card:pt-0 col-span-2 mt-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-0.5 border-t border-gray-600 pt-2">
+                  <div className="media-detail-rows media-detail-column-divider card:col-span-1 card:col-start-5 card:row-span-3 card:row-start-1 col-span-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3">
                     {secondaryRows.slice(0, 3).map((row) => (
                       <div className="contents" key={row.label}>
                         <dt className="font-medium text-gray-100">
@@ -329,16 +390,16 @@ const IssueMediaSummary = ({
                     ))}
                   </div>
 
-                  <dt className="card:col-start-1 card:row-start-4 mt-0.5 font-medium text-gray-100">
+                  <dt className="card:col-start-1 card:row-start-4 font-medium text-gray-100">
                     Genres:
                   </dt>
-                  <dd className="card:col-span-5 card:col-start-3 card:row-start-4 m-0 mt-0.5 line-clamp-2 min-w-0 break-words">
+                  <dd className="card:col-span-3 card:col-start-3 card:row-start-4 m-0 line-clamp-2 min-w-0 break-words">
                     {genres.length > 0 ? linkedValues(genres) : unavailable}
                   </dd>
                 </dl>
               </div>
 
-              <dl className="card:relative card:mt-0 card:border-t-0 card:pl-3 card:pt-0 card:before:absolute card:before:bottom-1 card:before:left-0 card:before:top-0 card:before:w-px card:before:bg-gray-600 mt-2 grid h-full min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-0.5 border-t border-gray-600 pt-2 text-xs leading-4">
+              <dl className="media-detail-rows media-detail-column-divider grid h-full min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 text-xs">
                 {rightDetails.map((detail, index) => (
                   <div className="contents" key={`${detail.label}-${index}`}>
                     <dt

@@ -1,19 +1,19 @@
-import MusicBrainzLogo from '@app/assets/musicbrainz.svg';
-import LidarrLogo from '@app/assets/services/lidarr.svg';
-import Badge from '@app/components/Common/Badge';
+import CollectionNavigation from '@app/components/CollectionDetails/CollectionNavigation';
 import CachedImage from '@app/components/Common/CachedImage';
 import PlayOnDeviceButton from '@app/components/Common/PlayOnDeviceButton';
-import Tooltip from '@app/components/Common/Tooltip';
 import AlbumTrackList from '@app/components/MediaDetails/AlbumTrackList';
 import AvailabilityValue from '@app/components/MediaDetails/AvailabilityValue';
 import DetailDisclosureButton from '@app/components/MediaDetails/DetailDisclosureButton';
+import MediaDetailArtwork from '@app/components/MediaDetails/MediaDetailArtwork';
+import MediaQualitySelect from '@app/components/MediaDetails/MediaQualitySelect';
+import MusicRatings from '@app/components/MediaDetails/MusicRatings';
+import { subjectTagClassName } from '@app/components/MediaDetails/subjectTagStyle';
 import MediaSlider from '@app/components/MediaSlider';
+import useDetailDisclosurePins from '@app/hooks/useDetailDisclosurePins';
 import usePlaybackCatalog from '@app/hooks/usePlaybackCatalog';
 import { encodeApiPathSegment } from '@app/utils/apiPath';
 import defineMessages from '@app/utils/defineMessages';
 import { resolveCanonicalPlaybackSelection } from '@app/utils/playbackSelection';
-import { getSafeHref } from '@app/utils/safeUrl';
-import { MediaStatus } from '@server/constants/media';
 import type { MusicDetails, MusicRatingResponse } from '@server/models/Music';
 import Link from 'next/link';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
@@ -28,79 +28,101 @@ const messages = defineMessages('components.MusicDetails.Layout', {
   albumType: 'Album Type',
   trackCount: 'Track Count',
   status: 'Status',
-  viewArtists: 'View Artists',
+  viewArtists: 'Artists',
   subjectTags: 'Subject Tags',
   fullArtistList: 'Full Artist List',
   noArtists: 'No artist information available',
   noTags: 'No subject tags available',
-  albumDetails: 'Album Details',
+  albumDetails: 'Details',
   artistType: 'Artist Type',
   origin: 'Origin',
   musicBrainz: 'MusicBrainz',
   similarArtists: 'Similar Artists',
-  notAvailable: 'Not available',
+  notAvailable: 'Not Available',
   minutes: '{minutes} minutes',
   available: 'Available',
   albumArtist: 'Album Artist',
   trackArtist: 'Track Artist',
   musicBrainzRating: 'MusicBrainz rating: {score} from {votes} votes',
   lidarrRating: 'Lidarr rating: {score} from {votes} votes',
+  quality: 'Quality',
 });
 
 interface MusicDetailsLayoutProps {
   data: MusicDetails;
   primaryActions: ReactNode;
   secondaryActions: ReactNode;
-  playbackActions?: (itemIds: string[]) => ReactNode;
+  indexerSearchAction: ReactNode;
+  indexerCompanionActions: ReactNode;
+  reportIssueAction: ReactNode;
+  requestAction: ReactNode;
+  catalogActions?: ReactNode;
+  playbackActions?: (itemIds: string[], useFlac: boolean) => ReactNode;
   ratingData?: MusicRatingResponse;
   additionalContent?: ReactNode;
 }
-
-const getAvailabilityText = (
-  status: MediaStatus | undefined,
-  unavailable: string
-) => {
-  switch (status) {
-    case MediaStatus.AVAILABLE:
-      return 'Available';
-    case MediaStatus.PARTIALLY_AVAILABLE:
-      return 'Partially Available';
-    case MediaStatus.PROCESSING:
-      return 'Processing';
-    case MediaStatus.PENDING:
-      return 'Requested';
-    case MediaStatus.BLOCKLISTED:
-      return 'Blocklisted';
-    default:
-      return unavailable;
-  }
-};
-
-const subjectTagTones = [
-  'border-indigo-400/80 bg-indigo-500/20 text-indigo-100 hover:bg-indigo-500/35',
-  'border-purple-400/80 bg-purple-500/20 text-purple-100 hover:bg-purple-500/35',
-  'border-emerald-400/80 bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/35',
-  'border-amber-400/80 bg-amber-500/20 text-amber-100 hover:bg-amber-500/35',
-  'border-sky-400/80 bg-sky-500/20 text-sky-100 hover:bg-sky-500/35',
-  'border-rose-400/80 bg-rose-500/20 text-rose-100 hover:bg-rose-500/35',
-] as const;
 
 const MusicDetailsLayout = ({
   data,
   primaryActions,
   secondaryActions,
+  indexerSearchAction,
+  indexerCompanionActions,
+  reportIssueAction,
+  requestAction,
+  catalogActions,
   playbackActions,
   ratingData,
   additionalContent,
 }: MusicDetailsLayoutProps) => {
   const intl = useIntl();
+  const { pins, togglePinned } = useDetailDisclosurePins('music');
+  const [showDetails, setShowDetails] = useState(false);
+  useEffect(() => {
+    setShowDetails(pins.details);
+  }, [pins.details, data.id]);
   const [showArtists, setShowArtists] = useState(false);
   const [showTags, setShowTags] = useState(false);
   const [selectedPlaybackItemIds, setSelectedPlaybackItemIds] = useState<
     string[]
   >([]);
-  const { data: playbackCatalog } = usePlaybackCatalog(data.mediaInfo?.id);
-  const safeRatingUrl = getSafeHref(ratingData?.rating?.url);
+  const qualityLabels = [
+    ...new Set(
+      (data.availableServices ?? [])
+        .map((service) => service.quality.trim().toLocaleUpperCase())
+        .filter(Boolean)
+    ),
+  ];
+  const qualityAvailability = (['MP3', 'FLAC'] as const).map((quality) => ({
+    quality,
+    available: qualityLabels.some((label) => label.includes(quality)),
+  }));
+  const [selectedQuality, setSelectedQuality] = useState<'mp3' | 'flac'>(() =>
+    !qualityAvailability.some(
+      ({ quality, available }) => quality === 'MP3' && available
+    ) &&
+    qualityAvailability.some(
+      ({ quality, available }) => quality === 'FLAC' && available
+    )
+      ? 'flac'
+      : 'mp3'
+  );
+  const { data: mp3PlaybackCatalog } = usePlaybackCatalog(
+    data.mediaInfo?.id,
+    false
+  );
+  const { data: flacPlaybackCatalog } = usePlaybackCatalog(
+    data.mediaInfo?.id,
+    true
+  );
+  const playbackCatalog =
+    selectedQuality === 'flac' ? flacPlaybackCatalog : mp3PlaybackCatalog;
+  useEffect(() => {
+    setShowArtists(pins.artists);
+  }, [pins.artists]);
+  useEffect(() => {
+    setShowTags(pins.subjectTags);
+  }, [pins.subjectTags]);
   useEffect(() => {
     const allowedIds = new Set(
       playbackCatalog?.groups.flatMap((group) =>
@@ -148,17 +170,6 @@ const MusicDetailsLayout = ({
   const runtimeMinutes = Math.round(
     data.tracks.reduce((total, track) => total + track.length, 0) / 60000
   );
-  const qualityLabels = [
-    ...new Set(
-      (data.availableServices ?? [])
-        .map((service) => service.quality.trim().toLocaleUpperCase())
-        .filter(Boolean)
-    ),
-  ];
-  const qualityAvailability = (['MP3', 'FLAC'] as const).map((quality) => ({
-    quality,
-    available: qualityLabels.some((label) => label.includes(quality)),
-  }));
   const mediaAndFormat = `Music · Album${
     qualityLabels.length > 0 ? ` · ${qualityLabels.join(' + ')}` : ''
   }`;
@@ -224,25 +235,11 @@ const MusicDetailsLayout = ({
 
   return (
     <div className="media-page">
-      <article className="refreshed-card-surface refreshed-detail-text relative overflow-hidden rounded-xl border border-gray-700 p-3 shadow-lg shadow-gray-950/20">
-        {backdrop && (
-          <div className="pointer-events-none absolute inset-0 z-0" aria-hidden>
-            <CachedImage
-              type="music"
-              src={backdrop}
-              alt=""
-              fill
-              priority
-              sizes="100vw"
-              className="object-cover object-top"
-            />
-            <div className="refreshed-artwork-scrim" />
-            <div className="refreshed-artwork-gradient" />
-          </div>
-        )}
+      <article className="media-detail-card app-card-main refreshed-card-surface refreshed-detail-text relative overflow-hidden rounded-xl border border-gray-700 p-3 shadow-lg shadow-gray-950/20">
+        {backdrop && <MediaDetailArtwork type="music" src={backdrop} />}
 
         <div className="relative z-10">
-          <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] gap-3 sm:grid-cols-[80px_minmax(0,1fr)]">
+          <div className="app-card-inset refreshed-inset-surface detail-summary-card grid min-w-0 grid-cols-[64px_minmax(0,1fr)] gap-3 sm:grid-cols-[80px_minmax(0,1fr)]">
             <div
               className="relative h-24 w-16 overflow-hidden rounded-lg ring-1 ring-gray-600 sm:h-[120px] sm:w-20"
               data-testid="media-details-poster"
@@ -260,35 +257,16 @@ const MusicDetailsLayout = ({
 
             <div className="flex min-w-0 flex-col">
               <h1
-                className="text-lg leading-5 font-semibold text-white"
+                className="detail-summary-title text-lg leading-5 font-semibold text-white"
                 data-testid="media-title"
               >
                 {data.title}
                 {data.releaseDate ? ` (${data.releaseDate.slice(0, 4)})` : ''}
               </h1>
 
-              {qualityLabels.length > 0 && (
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  {qualityLabels.map((quality, index) => (
-                    <span
-                      key={quality}
-                      className={`inline-flex h-[22px] cursor-default items-center rounded-full border px-2 text-[11px] leading-none font-semibold whitespace-nowrap uppercase ${subjectTagTones[index % subjectTagTones.length]}`}
-                    >
-                      {quality}
-                    </span>
-                  ))}
-                  <Badge
-                    badgeType="success"
-                    className="h-[22px] items-center !px-2 !text-[11px] !leading-none"
-                  >
-                    {intl.formatMessage(messages.available)}
-                  </Badge>
-                </div>
-              )}
-
-              <div className="card:grid-cols-3 mt-4 grid min-w-0 flex-1 grid-cols-1">
-                <div className="card:col-span-2 card:pr-3 min-w-0">
-                  <dl className="card:grid-cols-[max-content_0.75rem_6rem_0.75rem_1px_0.75rem_minmax(0,1fr)] card:gap-x-0 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-0.5 text-xs leading-4">
+              <div className="detail-card-heading-spacing detail-three-column-grid grid min-w-0 flex-1">
+                <div className="detail-paired-column-span min-w-0">
+                  <dl className="media-detail-rows detail-paired-columns grid min-w-0 content-start text-xs">
                     <dt className="card:col-start-1 card:row-start-1 font-medium text-gray-100">
                       {intl.formatMessage(messages.mediaAndFormat)}:
                     </dt>
@@ -311,8 +289,7 @@ const MusicDetailsLayout = ({
                           })
                         : unavailable}
                     </dd>
-                    <div className="card:col-start-5 card:row-span-3 card:row-start-1 card:block hidden bg-gray-600" />
-                    <div className="card:col-span-1 card:col-start-7 card:row-span-3 card:row-start-1 card:mt-0 card:border-t-0 card:pt-0 col-span-2 mt-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-0.5 border-t border-gray-600 pt-2">
+                    <div className="media-detail-rows media-detail-column-divider card:col-span-1 card:col-start-5 card:row-span-3 card:row-start-1 col-span-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3">
                       <dt className="font-medium text-gray-100">
                         {intl.formatMessage(messages.artist)}:
                       </dt>
@@ -337,12 +314,11 @@ const MusicDetailsLayout = ({
                         {intl.formatNumber(data.tracks.length)}
                       </dd>
                     </div>
-
-                    <dt className="card:col-start-1 card:row-start-4 mt-0.5 font-medium text-gray-100">
+                    <dt className="card:col-start-1 card:row-start-4 font-medium text-gray-100">
                       {intl.formatMessage(messages.genres)}:
                     </dt>
                     <dd
-                      className="card:col-span-5 card:col-start-3 card:row-start-4 m-0 mt-0.5 min-w-0 break-words"
+                      className="card:col-span-3 card:col-start-3 card:row-start-4 m-0 min-w-0 break-words"
                       data-testid="media-details-genres"
                     >
                       {tags.length > 0
@@ -362,26 +338,28 @@ const MusicDetailsLayout = ({
                   </dl>
                 </div>
 
-                <dl className="card:relative card:mt-0 card:border-t-0 card:pl-3 card:pt-0 card:before:absolute card:before:bottom-0 card:before:left-0 card:before:top-0 card:before:w-px card:before:bg-gray-600 mt-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-0.5 border-t border-gray-600 pt-2 text-xs leading-4">
-                  {qualityAvailability.map(({ quality, available }) => (
-                    <div className="contents" key={quality}>
-                      <dt className="font-medium text-gray-100 uppercase">
-                        {quality}:
-                      </dt>
-                      <dd className="m-0 truncate font-medium">
-                        <AvailabilityValue
-                          tone={available ? 'available' : 'unavailable'}
-                        >
-                          {intl.formatMessage(
-                            available
-                              ? messages.available
-                              : messages.notAvailable
-                          )}
-                        </AvailabilityValue>
-                      </dd>
-                    </div>
-                  ))}
-                </dl>
+                <div className="media-detail-column-divider flex min-w-0 flex-col text-xs leading-4">
+                  <dl className="media-detail-rows grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3">
+                    {qualityAvailability.map(({ quality, available }) => (
+                      <div className="contents" key={quality}>
+                        <dt className="font-medium text-gray-100 uppercase">
+                          {quality}:
+                        </dt>
+                        <dd className="m-0 truncate font-medium">
+                          <AvailabilityValue
+                            tone={available ? 'available' : 'unavailable'}
+                          >
+                            {intl.formatMessage(
+                              available
+                                ? messages.available
+                                : messages.notAvailable
+                            )}
+                          </AvailabilityValue>
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
               </div>
             </div>
           </div>
@@ -390,90 +368,103 @@ const MusicDetailsLayout = ({
             tracks={data.tracks}
             twoColumnsOnly
             catalog={playbackCatalog}
+            availableRecordingIds={data.trackAvailability?.[selectedQuality]}
             selectedItemIds={selectedPlaybackItemIds}
             onSelectionChange={setSelectedPlaybackItemIds}
           />
 
-          {(playbackActions || ratingData?.rating) && (
+          {(playbackActions || ratingData) && (
             <div
               className="media-rating-row"
               data-testid="music-playback-rating-row"
             >
-              {playbackActions?.(effectivePlaybackItemIds)}
-              {playbackActions && (
-                <PlayOnDeviceButton
-                  mediaId={data.mediaInfo?.id}
-                  itemIds={effectivePlaybackItemIds}
-                />
-              )}
-              {ratingData?.rating && safeRatingUrl && (
-                <Tooltip
-                  content={intl.formatMessage(
-                    ratingData.rating.source === 'lidarr'
-                      ? messages.lidarrRating
-                      : messages.musicBrainzRating,
-                    {
-                      score: intl.formatNumber(ratingData.rating.score, {
-                        maximumFractionDigits: 1,
-                      }),
-                      votes: intl.formatNumber(ratingData.rating.votes),
-                    }
-                  )}
-                >
-                  <a
-                    href={safeRatingUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="media-rating-link"
-                    aria-label={intl.formatMessage(
-                      ratingData.rating.source === 'lidarr'
-                        ? messages.lidarrRating
-                        : messages.musicBrainzRating,
-                      {
-                        score: intl.formatNumber(ratingData.rating.score, {
-                          maximumFractionDigits: 1,
-                        }),
-                        votes: intl.formatNumber(ratingData.rating.votes),
-                      }
-                    )}
-                  >
-                    {ratingData.rating.source === 'lidarr' ? (
-                      <LidarrLogo className="media-rating-icon" />
-                    ) : (
-                      <MusicBrainzLogo className="media-rating-icon" />
-                    )}
-                    <span className="media-rating-value">
-                      {intl.formatNumber(ratingData.rating.score, {
-                        maximumFractionDigits: 1,
-                      })}
-                    </span>
-                  </a>
-                </Tooltip>
-              )}
+              <MediaQualitySelect
+                value={selectedQuality}
+                options={[
+                  {
+                    label: 'MP3',
+                    value: 'mp3',
+                    disabled: !qualityAvailability[0].available,
+                  },
+                  {
+                    label: 'FLAC',
+                    value: 'flac',
+                    disabled: !qualityAvailability[1].available,
+                  },
+                ]}
+                onChange={setSelectedQuality}
+                label={intl.formatMessage(messages.quality)}
+              />
+              <MusicRatings
+                ratings={
+                  ratingData?.ratings ??
+                  (ratingData?.rating ? [ratingData.rating] : [])
+                }
+              />
             </div>
           )}
 
           <div className="media-primary-action-row">
+            {playbackActions?.(
+              effectivePlaybackItemIds,
+              selectedQuality === 'flac'
+            )}
+            {playbackActions && (
+              <PlayOnDeviceButton
+                mediaId={data.mediaInfo?.id}
+                itemIds={effectivePlaybackItemIds}
+                is4k={selectedQuality === 'flac'}
+              />
+            )}
             {primaryActions}
             {secondaryActions}
+            <div className="media-primary-report-action">
+              {reportIssueAction}
+            </div>
           </div>
 
-          <div className="mt-[5px] flex flex-wrap items-center gap-2">
+          <div className="media-request-action-row">
+            <div className="media-request-search-action">
+              {indexerSearchAction}
+              {indexerCompanionActions}
+            </div>
+            <div className="media-request-submit-action">{requestAction}</div>
+          </div>
+
+          <div className="media-detail-disclosure-row">
+            <CollectionNavigation
+              kind="music"
+              id={data.artist.id}
+              artistName={data.artist.name}
+            />
             <DetailDisclosureButton
               label={intl.formatMessage(messages.viewArtists)}
               open={showArtists}
               onClick={() => setShowArtists((open) => !open)}
+              pinned={pins.artists}
+              onPinClick={() => void togglePinned('artists')}
             />
             <DetailDisclosureButton
               label={intl.formatMessage(messages.subjectTags)}
               open={showTags}
               onClick={() => setShowTags((open) => !open)}
+              pinned={pins.subjectTags}
+              onPinClick={() => void togglePinned('subjectTags')}
             />
+            <DetailDisclosureButton
+              label={intl.formatMessage(messages.albumDetails)}
+              open={showDetails}
+              onClick={() => setShowDetails((open) => !open)}
+              pinned={pins.details}
+              onPinClick={() => void togglePinned('details')}
+              controls="music-additional-details"
+            />
+            {catalogActions}
           </div>
 
           {showArtists && (
-            <section className="refreshed-inset-surface mt-[5px] rounded-lg border border-gray-700 p-3">
-              <h2 className="mb-2 text-xs font-semibold text-gray-200">
+            <section className="app-card-inset refreshed-inset-surface card-spacing-before rounded-lg border border-gray-700 p-3">
+              <h2 className="media-inset-heading mb-2">
                 {intl.formatMessage(messages.fullArtistList)}
               </h2>
               {artists.length === 0 ? (
@@ -481,7 +472,7 @@ const MusicDetailsLayout = ({
                   {intl.formatMessage(messages.noArtists)}
                 </p>
               ) : (
-                <div className="grid max-h-[252px] grid-cols-3 gap-1.5 overflow-y-auto pr-1">
+                <div className="scrollable-card -mr-3 grid max-h-[252px] grid-cols-3 gap-1.5 overflow-y-auto pr-3">
                   {artists.map((artist) => (
                     <Link
                       key={artist.id}
@@ -522,8 +513,8 @@ const MusicDetailsLayout = ({
           )}
 
           {showTags && (
-            <section className="refreshed-inset-surface mt-[5px] rounded-lg border border-gray-700 p-3">
-              <h2 className="mb-2 text-xs font-semibold text-gray-200">
+            <section className="app-card-inset refreshed-inset-surface card-spacing-before rounded-lg border border-gray-700 p-3">
+              <h2 className="media-inset-heading mb-2">
                 {intl.formatMessage(messages.subjectTags)}
               </h2>
               {tags.length === 0 ? (
@@ -536,9 +527,7 @@ const MusicDetailsLayout = ({
                     <Link
                       key={tag.name}
                       href={`/discover/music?genre=${encodeURIComponent(tag.name)}`}
-                      className={`inline-flex h-[22px] items-center rounded-full border px-2 text-[11px] font-medium transition focus:ring-2 focus:ring-indigo-400 focus:outline-none ${
-                        subjectTagTones[index % subjectTagTones.length]
-                      }`}
+                      className={subjectTagClassName(index)}
                     >
                       {tag.name}
                     </Link>
@@ -548,102 +537,62 @@ const MusicDetailsLayout = ({
             </section>
           )}
 
-          <section className="refreshed-inset-surface mt-[5px] rounded-lg border border-gray-700 p-3">
-            <h2 className="mb-3 text-xs font-semibold text-gray-200">
-              {intl.formatMessage(messages.albumDetails)}
-            </h2>
-            <div className="card:grid-cols-3 grid grid-cols-1">
-              <dl className="grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-1 text-xs leading-4">
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.status)}:
-                </dt>
-                <dd className="m-0">
-                  <AvailabilityValue status={data.mediaInfo?.status}>
-                    {getAvailabilityText(data.mediaInfo?.status, unavailable)}
-                  </AvailabilityValue>
-                </dd>
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.releaseDate)}:
-                </dt>
-                <dd className="m-0 truncate">{formattedReleaseDate}</dd>
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.musicBrainz)}:
-                </dt>
-                <dd className="m-0 truncate">
-                  <a
-                    href={`https://musicbrainz.org/release-group/${albumId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
-                  >
-                    {data.mbId}
-                  </a>
-                </dd>
-              </dl>
-
-              <dl className="card:relative card:mt-0 card:border-t-0 card:px-3 card:pt-0 card:before:absolute card:before:bottom-0 card:before:left-0 card:before:top-0 card:before:w-px card:before:bg-gray-600 mt-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-1 border-t border-gray-600 pt-2 text-xs leading-4">
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.albumType)}:
-                </dt>
-                <dd className="m-0 truncate">{data.type || unavailable}</dd>
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.runtime)}:
-                </dt>
-                <dd className="m-0 truncate">
-                  {runtimeMinutes > 0
-                    ? intl.formatMessage(messages.minutes, {
-                        minutes: runtimeMinutes,
-                      })
-                    : unavailable}
-                </dd>
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.trackCount)}:
-                </dt>
-                <dd className="m-0 truncate">
-                  {intl.formatNumber(data.tracks.length)}
-                </dd>
-              </dl>
-
-              <dl className="card:relative card:mt-0 card:border-t-0 card:pl-3 card:pt-0 card:before:absolute card:before:bottom-0 card:before:left-0 card:before:top-0 card:before:w-px card:before:bg-gray-600 mt-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-1 border-t border-gray-600 pt-2 text-xs leading-4">
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.artist)}:
-                </dt>
-                <dd className="m-0 truncate">
-                  <Link
-                    href={`/artist/${artistId}`}
-                    className="text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
-                  >
-                    {data.artist.name || unavailable}
-                  </Link>
-                </dd>
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.artistType)}:
-                </dt>
-                <dd className="m-0 truncate">
-                  {data.artist.type || unavailable}
-                </dd>
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.origin)}:
-                </dt>
-                <dd className="m-0 truncate">
-                  {data.artist.area ? (
+          {showDetails && (
+            <section
+              id="music-additional-details"
+              className="app-card-inset refreshed-inset-surface card-spacing-before rounded-lg border border-gray-700 p-3"
+            >
+              <h2 className="media-inset-heading detail-card-heading-after">
+                {intl.formatMessage(messages.albumDetails)}
+              </h2>
+              <div className="detail-three-column-grid grid">
+                <dl className="media-detail-rows grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 text-xs">
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.musicBrainz)}:
+                  </dt>
+                  <dd className="m-0 truncate">
                     <a
-                      href={`https://musicbrainz.org/search?query=${encodeURIComponent(
-                        data.artist.area
-                      )}&type=area&method=indexed`}
+                      href={`https://musicbrainz.org/release-group/${albumId}`}
                       target="_blank"
                       rel="noreferrer"
                       className="text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
                     >
-                      {data.artist.area}
+                      {data.mbId}
                     </a>
-                  ) : (
-                    unavailable
-                  )}
-                </dd>
-              </dl>
-            </div>
-          </section>
+                  </dd>
+                </dl>
+                <dl className="media-detail-rows media-detail-column-divider grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 text-xs">
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.artistType)}:
+                  </dt>
+                  <dd className="m-0 truncate">
+                    {data.artist.type || unavailable}
+                  </dd>
+                </dl>
+                <dl className="media-detail-rows media-detail-column-divider grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 text-xs">
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.origin)}:
+                  </dt>
+                  <dd className="m-0 truncate">
+                    {data.artist.area ? (
+                      <a
+                        href={`https://musicbrainz.org/search?query=${encodeURIComponent(
+                          data.artist.area
+                        )}&type=area&method=indexed`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
+                      >
+                        {data.artist.area}
+                      </a>
+                    ) : (
+                      unavailable
+                    )}
+                  </dd>
+                </dl>
+              </div>
+            </section>
+          )}
           {additionalContent}
         </div>
       </article>

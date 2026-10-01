@@ -10,6 +10,12 @@ import useSearchActivity from '@app/hooks/useSearchActivity';
 import useSettings from '@app/hooks/useSettings';
 import { Permission, useUser } from '@app/hooks/useUser';
 import defineMessages from '@app/utils/defineMessages';
+import {
+  DISCOVER_MEDIA_TYPES,
+  isConfiguredMediaCategoryEnabled,
+  isDiscoverMediaTypeEnabled,
+  isOptionalCatalogPathEnabled,
+} from '@app/utils/serviceAvailability';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
 import { ArrowLeftIcon, Bars3BottomLeftIcon } from '@heroicons/react/24/solid';
 import type { AvailableLocale } from '@server/types/languages';
@@ -63,6 +69,92 @@ const Layout = ({ children }: LayoutProps) => {
       );
     }
   }, [setLocale, currentSettings.locale, user]);
+
+  useEffect(() => {
+    if (!currentSettings.initialized) return;
+
+    if (router.pathname === '/discover/trending') {
+      const requestedType =
+        typeof router.query.mediaType === 'string'
+          ? router.query.mediaType
+          : 'movie';
+      if (
+        (DISCOVER_MEDIA_TYPES as readonly string[]).includes(requestedType) &&
+        !isDiscoverMediaTypeEnabled(
+          requestedType as (typeof DISCOVER_MEDIA_TYPES)[number],
+          currentSettings
+        )
+      ) {
+        const fallbackType = DISCOVER_MEDIA_TYPES.find((type) =>
+          isDiscoverMediaTypeEnabled(type, currentSettings)
+        );
+        if (fallbackType) {
+          void router.replace(
+            {
+              pathname: '/discover/trending',
+              query: { ...router.query, mediaType: fallbackType },
+            },
+            undefined,
+            { scroll: false }
+          );
+        } else {
+          void router.replace('/');
+        }
+        return;
+      }
+    }
+
+    if (router.pathname.startsWith('/book/')) {
+      const format = router.query.format;
+      const disabledFormat =
+        (format === 'ebook' &&
+          !isConfiguredMediaCategoryEnabled('ebook', currentSettings)) ||
+        (format === 'audiobook' &&
+          !isConfiguredMediaCategoryEnabled('audiobook', currentSettings));
+      if (disabledFormat) {
+        const availableFormat = isConfiguredMediaCategoryEnabled(
+          format === 'ebook' ? 'audiobook' : 'ebook',
+          currentSettings
+        )
+          ? format === 'ebook'
+            ? 'audiobook'
+            : 'ebook'
+          : undefined;
+        if (availableFormat) {
+          const target = new URL(router.asPath, window.location.origin);
+          target.searchParams.set('format', availableFormat);
+          void router.replace(
+            `${target.pathname}${target.search}${target.hash}`
+          );
+          return;
+        }
+      }
+    }
+
+    if (
+      router.pathname === '/discover/audiobooks' &&
+      !isConfiguredMediaCategoryEnabled('audiobook', currentSettings) &&
+      isConfiguredMediaCategoryEnabled('ebook', currentSettings)
+    ) {
+      const target = new URL(router.asPath, window.location.origin);
+      target.pathname = '/discover/books';
+      target.searchParams.set('format', 'ebook');
+      void router.replace(`${target.pathname}${target.search}${target.hash}`);
+      return;
+    }
+
+    const audiobookOnlyBookAlias =
+      router.pathname === '/discover/books' &&
+      !isDiscoverMediaTypeEnabled('book', currentSettings) &&
+      isDiscoverMediaTypeEnabled('audiobook', currentSettings);
+
+    if (
+      !isOptionalCatalogPathEnabled(router.pathname, currentSettings) &&
+      !audiobookOnlyBookAlias
+    ) {
+      void router.replace('/');
+    }
+  }, [currentSettings, router]);
 
   useEffect(() => {
     if ('requestIdleCallback' in window) {
@@ -166,10 +258,6 @@ const Layout = ({ children }: LayoutProps) => {
           className={`searchbar fixed top-0 right-0 left-0 z-10 flex flex-shrink-0 transition duration-300 ${
             isScrolled ? 'app-searchbar-scrolled' : 'bg-transparent'
           } lg:left-64`}
-          style={{
-            backdropFilter: isScrolled ? 'blur(5px)' : undefined,
-            WebkitBackdropFilter: isScrolled ? 'blur(5px)' : undefined,
-          }}
         >
           <div className="flex flex-1 items-center justify-between px-4 md:pr-4 md:pl-4">
             <button
@@ -187,6 +275,7 @@ const Layout = ({ children }: LayoutProps) => {
                 isScrolled ? 'opacity-90' : 'opacity-70'
               } pwa-only transition duration-300 hover:text-white focus:text-white focus:outline-none`}
               onClick={() => router.back()}
+              aria-label="Go back to the previous page"
             >
               <ArrowLeftIcon className="w-7" />
             </button>
@@ -204,9 +293,9 @@ const Layout = ({ children }: LayoutProps) => {
           <div className="mb-6">
             <div className="max-w-8xl mx-auto px-4">
               <UserWarnings />
-              <div className="relative">
+              <div className="global-search-progress-region">
                 <div
-                  className="pointer-events-none absolute top-1 left-0 flex h-6 items-center gap-2 text-sm text-gray-200"
+                  className="global-search-progress-indicator"
                   role="status"
                   aria-live="polite"
                 >

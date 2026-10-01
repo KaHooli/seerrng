@@ -5,11 +5,14 @@ import MediaServerIcon, {
 import PlayButton, {
   type PlayButtonLink,
 } from '@app/components/Common/PlayButton';
+import { useNativeRuntime } from '@app/context/NativeRuntimeContext';
 import useDeepLinks from '@app/hooks/useDeepLinks';
 import useSettings from '@app/hooks/useSettings';
 import useToasts from '@app/hooks/useToasts';
+import { createBrowserActionId } from '@app/utils/browserActionId';
 import defineMessages from '@app/utils/defineMessages';
 import { getSafeHref } from '@app/utils/safeUrl';
+import { MediaServerType } from '@server/constants/server';
 import type { PlaybackPlaylistResponse } from '@server/models/Playback';
 import axios from 'axios';
 import { useRef, useState } from 'react';
@@ -17,6 +20,10 @@ import { useIntl } from 'react-intl';
 
 const messages = defineMessages('components.Common.MediaServerPlayButton', {
   playOnServer: 'Play on {mediaServerName}',
+  playHelp: 'Open this media in your media server to play it.',
+  movieHelp: 'Open this movie in your media server to play it.',
+  playlistHelp:
+    'Create a playback playlist from the selected items and open it in your media server.',
   playOnServer4k: 'Play on {mediaServerName} (4K)',
   unavailable: 'No playable media is currently available on {mediaServerName}.',
   failed: 'The selected items could not be opened on {mediaServerName}.',
@@ -35,6 +42,7 @@ interface MediaServerPlayButtonProps {
   buttonSize?: 'default' | 'sm';
   disabled?: boolean;
   disabledReason?: string;
+  context?: 'movie' | 'selection';
 }
 
 const MediaServerPlayButton = ({
@@ -50,9 +58,11 @@ const MediaServerPlayButton = ({
   buttonSize = 'sm',
   disabled = false,
   disabledReason,
+  context = 'selection',
 }: MediaServerPlayButtonProps) => {
   const intl = useIntl();
   const settings = useSettings();
+  const nativeRuntime = useNativeRuntime();
   const { addToast } = useToasts();
   const [isOpening, setIsOpening] = useState(false);
   const isOpeningRef = useRef(false);
@@ -66,6 +76,14 @@ const MediaServerPlayButton = ({
   );
   const hasPlaylistRequest =
     (!!mediaId && selectedItemIds.length > 0) || selectedMediaIds.length > 0;
+  const nativeJellyfinItemId =
+    mediaServerType === MediaServerType.JELLYFIN &&
+    !defaultIs4k &&
+    !!mediaId &&
+    selectedMediaIds.length === 0 &&
+    selectedItemIds.length === 1
+      ? selectedItemIds[0]
+      : undefined;
 
   if (!mediaServerName) {
     return null;
@@ -87,7 +105,7 @@ const MediaServerPlayButton = ({
     isOpeningRef.current = true;
     // Keep a synchronous popup handle so the eventual playlist navigation is
     // not blocked after the API request, while avoiding a reusable target.
-    const popup = window.open('', `seerr-playback-${crypto.randomUUID()}`);
+    const popup = window.open('', `seerr-playback-${createBrowserActionId()}`);
     if (popup) {
       popup.opener = null;
     }
@@ -96,7 +114,7 @@ const MediaServerPlayButton = ({
       const response = selectedMediaIds.length
         ? await axios.post<PlaybackPlaylistResponse>(
             '/api/v1/playback/collection/playlist',
-            { mediaIds: selectedMediaIds }
+            { mediaIds: selectedMediaIds, is4k }
           )
         : await axios.post<PlaybackPlaylistResponse>(
             `/api/v1/playback/media/${mediaId}/playlist`,
@@ -125,8 +143,21 @@ const MediaServerPlayButton = ({
 
   if (hasPlaylistRequest || disabled) {
     const effectiveDisabled = disabled || isOpening || !hasPlaylistRequest;
+    const handlePlayback = (is4k: boolean) => {
+      if (
+        !is4k &&
+        nativeJellyfinItemId &&
+        nativeRuntime.playItem(nativeJellyfinItemId)
+      ) {
+        return;
+      }
+      void replacePlaylistAndOpen(is4k);
+    };
     return (
       <ButtonWithDropdown
+        title={intl.formatMessage(
+          context === 'movie' ? messages.movieHelp : messages.playlistHelp
+        )}
         buttonType="playback"
         buttonSize={buttonSize}
         text={
@@ -140,7 +171,7 @@ const MediaServerPlayButton = ({
           disabledReason ??
           intl.formatMessage(messages.unavailable, { mediaServerName })
         }
-        onClick={() => void replacePlaylistAndOpen(defaultIs4k)}
+        onClick={() => handlePlayback(defaultIs4k)}
       />
     );
   }
@@ -159,6 +190,9 @@ const MediaServerPlayButton = ({
 
   return (
     <PlayButton
+      tooltip={intl.formatMessage(
+        context === 'movie' ? messages.movieHelp : messages.playHelp
+      )}
       links={links}
       buttonSize={buttonSize}
       unavailableLink={{ text: label, svg: icon }}

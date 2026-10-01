@@ -164,8 +164,20 @@ function initOpenLibraryCoversImageProxy() {
   return _openLibraryCoversImageProxy;
 }
 
+let fanartImageProxy: ImageProxy;
+let comicVineImageProxy: ImageProxy;
+let comicVineStaticImageProxy: ImageProxy;
+let comicVineStatic1ImageProxy: ImageProxy;
+let igdbImageProxy: ImageProxy;
+let anilistImageProxy: ImageProxy;
 const getImageProxy = (type: string): ImageProxy | null => {
   switch (type) {
+    case 'anilist':
+      return (anilistImageProxy ??= new ImageProxy(
+        'anilist',
+        'https://s4.anilist.co',
+        { rateLimitOptions: { maxRequests: 5, maxRPS: 5 } }
+      ));
     case 'tmdb':
       return initTmdbImageProxy();
     case 'tvdb':
@@ -176,8 +188,38 @@ const getImageProxy = (type: string): ImageProxy | null => {
       return initArchiveOrgImageProxy();
     case 'theaudiodb':
       return initTheAudioDbImageProxy();
+    case 'fanart':
+      return (fanartImageProxy ??= new ImageProxy(
+        'fanart',
+        'https://assets.fanart.tv',
+        { rateLimitOptions: { maxRequests: 4, maxRPS: 4 } }
+      ));
     case 'openlibrarycovers':
       return initOpenLibraryCoversImageProxy();
+    case 'comicvine':
+      return (comicVineImageProxy ??= new ImageProxy(
+        'comicvine',
+        'https://comicvine.gamespot.com',
+        { rateLimitOptions: { maxRequests: 5, maxRPS: 5 } }
+      ));
+    case 'comicvinestatic':
+      return (comicVineStaticImageProxy ??= new ImageProxy(
+        'comicvinestatic',
+        'https://comicvine.cbsistatic.com',
+        { rateLimitOptions: { maxRequests: 5, maxRPS: 5 } }
+      ));
+    case 'comicvinestatic1':
+      return (comicVineStatic1ImageProxy ??= new ImageProxy(
+        'comicvinestatic1',
+        'https://comicvine1.cbsistatic.com',
+        { rateLimitOptions: { maxRequests: 5, maxRPS: 5 } }
+      ));
+    case 'igdb':
+      return (igdbImageProxy ??= new ImageProxy(
+        'igdb',
+        'https://images.igdb.com',
+        { rateLimitOptions: { maxRequests: 10, maxRPS: 10 } }
+      ));
     default:
       return null;
   }
@@ -279,7 +321,10 @@ const serveCachedImage = async (
       imagePath: imageLogPath,
       errorMessage: e.message,
     });
-    res.status(500).send();
+    if (!res.headersSent) {
+      return next({ status: 500, message: 'Failed to proxy image.' });
+    }
+    next(e);
   }
 };
 

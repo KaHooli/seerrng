@@ -1,3 +1,5 @@
+import BackIssueAPI from '@server/api/comics/backissue';
+import KapowarrAPI from '@server/api/comics/kapowarr';
 import LidarrAPI from '@server/api/servarr/lidarr';
 import RadarrAPI from '@server/api/servarr/radarr';
 import ReadarrAPI, { type ReadarrMediaType } from '@server/api/servarr/readarr';
@@ -17,6 +19,7 @@ type CleanupQueueItem = {
   albumId?: number;
   bookId?: number;
   book?: { id?: number };
+  volumeId?: number;
 };
 
 type CleanupQueueApi = {
@@ -57,7 +60,9 @@ class RequestWorkCleanupManager {
     operation: BookRequestSearch,
     mediaId: number
   ): Promise<void> {
-    const server = getExternalRuntimeConfig().readarr.find(
+    const runtimeConfig = getExternalRuntimeConfig();
+    const readarrServices = runtimeConfig.readarr;
+    const server = readarrServices.find(
       (candidate) => candidate.id === operation.serviceId
     );
     if (!server?.syncEnabled) {
@@ -70,16 +75,91 @@ class RequestWorkCleanupManager {
       url: ReadarrAPI.buildUrl(server, '/api/v1'),
       mediaType: operation.format,
     });
-    const command = await api.getCommand(operation.commandId);
-    if (
-      !['completed', 'failed', 'aborted', 'cancelled', 'orphaned'].includes(
-        String(command.status ?? '')
-          .trim()
-          .toLowerCase()
-      )
+    const clearServiceLink = async () =>
+      getRepository(Media).update(mediaId, {
+        ...(operation.format === 'audiobook'
+          ? {
+              audiobookServiceId: null,
+              audiobookExternalServiceId: null,
+              audiobookExternalServiceSlug: null,
+            }
+          : {
+              serviceId: null,
+              externalServiceId: null,
+              externalServiceSlug: null,
+            }),
+      });
+
+    if (operation.pendingId != null) {
+      const instanceUrl = new URL(ReadarrAPI.buildUrl(server, '/api/v1')).href;
+      const pendingReferences = await getRepository(BookRequestSearch).find({
+        where: { pendingId: operation.pendingId },
+        select: { id: true, requestId: true, serviceId: true, state: true },
+      });
+      const activeReferences = pendingReferences.filter((reference) => {
+        if (['available', 'unavailable', 'failed'].includes(reference.state)) {
+          return false;
+        }
+
+        if (reference.serviceId === operation.serviceId) {
+          return true;
+        }
+
+        const referenceService = readarrServices.find(
+          (candidate) => candidate.id === reference.serviceId
+        );
+        if (!referenceService) {
+          return true;
+        }
+
+        try {
+          return (
+            new URL(ReadarrAPI.buildUrl(referenceService, '/api/v1')).href ===
+            instanceUrl
+          );
+        } catch {
+          // If a stored reference cannot be mapped to an instance, preserve
+          // the pending import rather than risking cancellation of shared work.
+          return true;
+        }
+      });
+      const referencedByAnotherRequest = activeReferences.some(
+        (reference) => reference.requestId !== operation.requestId
+      );
+      const earlierReferenceInRequest = activeReferences.some(
+        (reference) =>
+          reference.requestId === operation.requestId &&
+          reference.id < operation.id
+      );
+      if (!referencedByAnotherRequest && !earlierReferenceInRequest) {
+        await api.cancelPendingAuthorImport(operation.pendingId);
+      }
+      await clearServiceLink();
+      return;
+    }
+    if (operation.bookId == null) {
+      await clearServiceLink();
+      return;
+    }
+    if (operation.commandId != null) {
+      const command = await api.getCommand(operation.commandId);
+      if (
+        !['completed', 'failed', 'aborted', 'cancelled', 'orphaned'].includes(
+          String(command.status ?? '')
+            .trim()
+            .toLowerCase()
+        )
+      ) {
+        throw new RequestWorkCleanupError(
+          'Bookshelf has not finished its search command and cannot confirm cancellation yet.'
+        );
+      }
+    } else if (
+      operation.state !== 'pending' &&
+      operation.state !== 'monitoring'
     ) {
       throw new RequestWorkCleanupError(
-        'Bookshelf has not finished its search command and cannot confirm cancellation yet.'
+        'Bookshelf request tracking is incomplete, so Seerr cannot confirm cancellation yet.'
       );
     }
     await removeMatchingQueueItems(
@@ -184,6 +264,21 @@ class RequestWorkCleanupManager {
     await requestDispatchManager.cancel(request.id);
     if (!active) return;
 
+    if (request.type === MediaType.MAGAZINE) {
+      throw new RequestWorkCleanupError(
+        'LazyLibrarian does not support cancelling an individual magazine search through its API.'
+      );
+    }
+
+    if (
+      request.type === MediaType.COMIC &&
+      request.media.comicServiceType === 'mylar'
+    ) {
+      throw new RequestWorkCleanupError(
+        'Mylar3 does not support cancelling an individual comic download through its API.'
+      );
+    }
+
     if (request.type === MediaType.BOOK) {
       const operations = await getRepository(BookRequestSearch).find({
         where: { requestId: request.id },
@@ -238,6 +333,47 @@ class RequestWorkCleanupManager {
           url: LidarrAPI.buildUrl(server, '/api/v1'),
         });
         matches = (item) => item.albumId === externalId;
+      }
+    } else if (
+      request.type === MediaType.COMIC &&
+      media.comicServiceType === 'kapowarr'
+    ) {
+      const server = settings.kapowarr.find((item) => item.id === serviceId);
+      if (server) {
+        const kapowarr = new KapowarrAPI({
+          apiKey: server.apiKey,
+          url: KapowarrAPI.buildUrl(server),
+        });
+        api = {
+          getQueue: async () =>
+            (await kapowarr.getQueue()).map((item) => ({
+              id: item.id,
+              volumeId: item.volumeId,
+            })),
+          deleteQueueItem: (queueId, options) =>
+            kapowarr.removeQueueItem(queueId, options.blocklist),
+        };
+        matches = (item) => item.volumeId === externalId;
+      }
+    } else if (
+      request.type === MediaType.COMIC &&
+      media.comicServiceType === 'backissue'
+    ) {
+      const server = settings.backissue.find((item) => item.id === serviceId);
+      if (server) {
+        const backissue = new BackIssueAPI({
+          url: BackIssueAPI.buildUrl(server),
+          apiKey: server.apiKey,
+        });
+        api = {
+          getQueue: async () =>
+            (await backissue.getQueue()).map((item) => ({
+              id: item.id,
+              volumeId: item.seriesId,
+            })),
+          deleteQueueItem: (queueId) => backissue.cancelQueueItem(queueId),
+        };
+        matches = (item) => item.volumeId === externalId;
       }
     }
     if (!api || !matches) {

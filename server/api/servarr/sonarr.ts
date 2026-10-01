@@ -1,11 +1,17 @@
 import type { SeasonEpisodeSelection } from '@server/interfaces/api/seasonInterfaces';
 import logger from '@server/logger';
+import {
+  fetchSafeRemoteImage,
+  MAX_SAFE_REMOTE_IMAGE_BYTES,
+  normalizeSafeRasterImage,
+} from '@server/utils/safeRemoteImage';
 import { redactSecrets } from '@server/utils/security';
-import axios from 'axios';
 import ServarrBase, {
+  isServarrServiceUrl,
   MAX_SERVARR_CONFIGURATION_RESULTS,
   MAX_SERVARR_LIBRARY_RESULTS,
   MAX_SERVARR_LOOKUP_RESULTS,
+  sanitizeServarrImages,
   sanitizeServarrRecordArray,
 } from './base';
 
@@ -74,13 +80,7 @@ export const sanitizeSonarrSeries = (
     overview: text(value.overview),
     network: text(value.network),
     airTime: text(value.airTime),
-    images: (Array.isArray(value.images) ? value.images : [])
-      .slice(0, MAX_SONARR_NESTED_RESULTS)
-      .flatMap((image) =>
-        isRecord(image)
-          ? [{ coverType: text(image.coverType), url: text(image.url) }]
-          : []
-      ),
+    images: sanitizeServarrImages(value.images),
     remotePoster: text(value.remotePoster),
     seasons: (Array.isArray(value.seasons) ? value.seasons : [])
       .slice(0, MAX_SONARR_NESTED_RESULTS)
@@ -176,6 +176,33 @@ const sanitizeSonarrEpisode = (value: unknown): EpisodeResult | undefined => {
   };
 };
 
+export interface SonarrEpisodeFile {
+  id: number;
+  seriesId: number;
+  seasonNumber: number;
+  relativePath?: string;
+  path?: string;
+  size: number;
+}
+
+const sanitizeSonarrEpisodeFile = (
+  value: unknown
+): SonarrEpisodeFile | undefined => {
+  if (!isRecord(value)) return undefined;
+  const id = integer(value.id);
+  const seriesId = integer(value.seriesId);
+  const seasonNumber = integer(value.seasonNumber);
+  if (id <= 0 || seriesId <= 0 || seasonNumber < 0) return undefined;
+  return {
+    id,
+    seriesId,
+    seasonNumber,
+    relativePath: text(value.relativePath) || undefined,
+    path: text(value.path) || undefined,
+    size: finiteNumber(value.size),
+  };
+};
+
 const isConflictError = (error: unknown): boolean =>
   (typeof error === 'object' &&
     error !== null &&
@@ -219,8 +246,8 @@ export interface SonarrSeries {
   network: string;
   airTime: string;
   images: {
-    coverType: string;
-    url: string;
+    coverType?: string;
+    url?: string;
     remoteUrl?: string;
   }[];
   remotePoster: string;
@@ -294,7 +321,29 @@ export interface AddSeriesOptions {
 export interface LanguageProfile {
   id: number;
   name: string;
+  languages?: string[];
 }
+
+const sanitizeLanguageNames = (value: unknown): string[] =>
+  (Array.isArray(value) ? value.slice(0, 100) : []).flatMap((entry) => {
+    if (typeof entry === 'string') return [entry.slice(0, 100)];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return [];
+    }
+
+    const languageEntry = entry as Record<string, unknown>;
+    if (languageEntry.allowed === false) return [];
+    const language =
+      languageEntry.language &&
+      typeof languageEntry.language === 'object' &&
+      !Array.isArray(languageEntry.language)
+        ? (languageEntry.language as Record<string, unknown>)
+        : languageEntry;
+
+    return typeof language.name === 'string' && language.name
+      ? [language.name.slice(0, 100)]
+      : [];
+  });
 
 export const sanitizeSonarrLanguageProfiles = (
   value: unknown
@@ -302,13 +351,24 @@ export const sanitizeSonarrLanguageProfiles = (
   sanitizeServarrRecordArray<Record<string, unknown>>(
     value,
     MAX_SERVARR_CONFIGURATION_RESULTS
-  ).flatMap((profile) =>
-    Number.isSafeInteger(profile.id) &&
-    typeof profile.name === 'string' &&
-    profile.name.length > 0
-      ? [{ id: profile.id as number, name: profile.name.slice(0, 10_000) }]
-      : []
-  );
+  ).flatMap((profile) => {
+    if (
+      !Number.isSafeInteger(profile.id) ||
+      typeof profile.name !== 'string' ||
+      profile.name.length === 0
+    ) {
+      return [];
+    }
+
+    const languages = sanitizeLanguageNames(profile.languages);
+    return [
+      {
+        id: profile.id as number,
+        name: profile.name.slice(0, 10_000),
+        ...(languages.length > 0 ? { languages } : {}),
+      },
+    ];
+  });
 
 class SonarrAPI extends ServarrBase<{
   seriesId: number;
@@ -340,6 +400,10 @@ class SonarrAPI extends ServarrBase<{
   }
 
   private buildRemoteCoverUrl(url: string): string | undefined {
+    if (url.length > 2_048) {
+      return undefined;
+    }
+
     try {
       const parsedUrl = new URL(url);
 
@@ -353,21 +417,73 @@ class SonarrAPI extends ServarrBase<{
     }
   }
 
-  public async getSeries(): Promise<SonarrSeries[]> {
+  public async getSeries({
+    strict = false,
+    tvdbId,
+  }: { strict?: boolean; tvdbId?: number } = {}): Promise<SonarrSeries[]> {
     try {
-      const response = await this.request<SonarrSeries[]>('GET', '/series');
+      const response = await this.request<SonarrSeries[]>(
+        'GET',
+        '/series',
+        undefined,
+        tvdbId ? { params: { tvdbId } } : undefined
+      );
 
-      return sanitizeServarrRecordArray<Record<string, unknown>>(
+      const series = sanitizeServarrRecordArray<Record<string, unknown>>(
         response.data,
         MAX_SERVARR_LIBRARY_RESULTS
       ).flatMap((series) => {
         const normalized = sanitizeSonarrSeries(series);
         return normalized ? [normalized] : [];
       });
+      if (
+        strict &&
+        (!Array.isArray(response.data) ||
+          series.length !== response.data.length ||
+          series.some(
+            (item) =>
+              !Number.isSafeInteger(item.tvdbId) ||
+              item.tvdbId <= 0 ||
+              typeof item.id !== 'number' ||
+              !Number.isSafeInteger(item.id) ||
+              item.id <= 0
+          ))
+      ) {
+        throw new Error(
+          'Incomplete or invalid Sonarr inventory; deletion reconciliation is not safe.'
+        );
+      }
+      return series;
     } catch (e) {
       throw new Error(`[Sonarr] Failed to retrieve series: ${e.message}`, {
         cause: e,
       });
+    }
+  }
+
+  public async getLibrarySeriesByTvdbId(
+    tvdbId: number
+  ): Promise<SonarrSeries[]> {
+    try {
+      const response = await this.request<unknown[]>(
+        'GET',
+        '/series',
+        undefined,
+        { params: { tvdbId } }
+      );
+
+      return sanitizeServarrRecordArray<Record<string, unknown>>(
+        response.data,
+        MAX_SERVARR_LOOKUP_RESULTS
+      ).flatMap((series) => {
+        const normalized = sanitizeSonarrSeries(series);
+        return normalized ? [normalized] : [];
+      });
+    } catch (e) {
+      throw new Error(
+        `[Sonarr] Failed to retrieve series by TVDB ID: ${e.message}`,
+        { cause: e }
+      );
     }
   }
 
@@ -416,23 +532,23 @@ class SonarrAPI extends ServarrBase<{
 
     for (const coverUrl of uniqueCandidateUrls) {
       try {
-        const isLocalCoverUrl = coverUrl.startsWith(this.coverBaseUrl);
-        const response = await (
-          isLocalCoverUrl ? this.axios : axios
-        ).get<ArrayBuffer>(coverUrl, {
-          responseType: 'arraybuffer',
-          headers: { Accept: 'image/*' },
-        });
-        const contentType = String(response.headers['content-type'] ?? '');
-
-        if (!contentType.toLowerCase().startsWith('image/')) {
-          throw new Error('Upstream response is not an image');
+        const isLocalCoverUrl = isServarrServiceUrl(
+          coverUrl,
+          this.coverBaseUrl
+        );
+        if (!isLocalCoverUrl) {
+          return await fetchSafeRemoteImage(coverUrl);
         }
 
-        return {
-          imageBuffer: Buffer.from(response.data),
-          contentType,
-        };
+        const response = await this.axios.get<ArrayBuffer>(coverUrl, {
+          responseType: 'arraybuffer',
+          maxContentLength: MAX_SAFE_REMOTE_IMAGE_BYTES,
+          headers: { Accept: 'image/*' },
+        });
+        return normalizeSafeRasterImage(
+          response.data,
+          response.headers['content-type']
+        );
       } catch (e) {
         lastError = e;
       }
@@ -777,6 +893,18 @@ class SonarrAPI extends ServarrBase<{
   }
 
   public async searchSeries(seriesId: number): Promise<void> {
+    return this.executeSeriesSearch(seriesId, false);
+  }
+
+  /** Run a series search and let callers handle a provider command failure. */
+  public async searchSeriesOrThrow(seriesId: number): Promise<void> {
+    return this.executeSeriesSearch(seriesId, true);
+  }
+
+  private async executeSeriesSearch(
+    seriesId: number,
+    throwOnError: boolean
+  ): Promise<void> {
     logger.info('Executing series search command.', {
       label: 'Sonarr API',
       seriesId,
@@ -793,6 +921,11 @@ class SonarrAPI extends ServarrBase<{
           seriesId,
         }
       );
+      if (throwOnError) {
+        throw new Error('Failed to execute Sonarr series search.', {
+          cause: e,
+        });
+      }
     }
   }
 
@@ -818,6 +951,31 @@ class SonarrAPI extends ServarrBase<{
         seriesId,
       });
       throw new Error('Failed to get episodes', { cause: e });
+    }
+  }
+
+  public async getEpisodeFiles(seriesId: number): Promise<SonarrEpisodeFile[]> {
+    try {
+      const response = await this.request<unknown[]>(
+        'GET',
+        '/episodefile',
+        undefined,
+        { params: { seriesId } }
+      );
+      return sanitizeServarrRecordArray<Record<string, unknown>>(
+        response.data,
+        MAX_SERVARR_LIBRARY_RESULTS
+      ).flatMap((file) => {
+        const normalized = sanitizeSonarrEpisodeFile(file);
+        return normalized ? [normalized] : [];
+      });
+    } catch (error) {
+      throw new Error(
+        `[Sonarr] Failed to retrieve episode files: ${error.message}`,
+        {
+          cause: error,
+        }
+      );
     }
   }
 
@@ -948,6 +1106,14 @@ class SonarrAPI extends ServarrBase<{
       throw e;
     }
   };
+
+  public async removeSeriesById(id: number): Promise<void> {
+    if (!Number.isSafeInteger(id) || id <= 0)
+      throw new Error('Invalid series ID.');
+    await this.request('DELETE', `/series/${id}`, undefined, {
+      params: { deleteFiles: true, addImportExclusion: false },
+    });
+  }
 
   public clearCache = ({
     tvdbId,

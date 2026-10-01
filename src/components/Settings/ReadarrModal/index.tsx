@@ -1,14 +1,18 @@
 import Button from '@app/components/Common/Button';
 import Modal from '@app/components/Common/Modal';
 import SensitiveInput from '@app/components/Common/SensitiveInput';
+import Field, {
+  default as SettingsField,
+} from '@app/components/Settings/SettingsField';
 import useToasts from '@app/hooks/useToasts';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import { isValidURL } from '@app/utils/urlValidationHelper';
 import { Transition } from '@headlessui/react';
 import type { ReadarrSettings } from '@server/lib/settings';
+import type { BookshelfProvider } from '@server/utils/bookshelfProvider';
 import axios from 'axios';
-import { Field, Formik } from 'formik';
+import { Formik } from 'formik';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useIntl } from 'react-intl';
 import * as Yup from 'yup';
@@ -56,10 +60,12 @@ const messages = defineMessages('components.Settings.ReadarrModal', {
   serviceType: 'Book Format',
   ebook: 'Book',
   audiobook: 'Audiobook',
+  serviceTypeHelp:
+    'To handle both books and audiobooks with one Bookshelf instance, add this same server twice: choose Books here and Audiobooks on the second connection.',
   compatibilityNote:
     'Bookshelf is the recommended book backend. Readarr-compatible servers, including Chaptarr, can also be used. For Chaptarr, set Book Format to match the configured root folder; Seerr sends that format explicitly on every request.',
   migrationNote:
-    'Existing Readarr or softcover libraries should be migrated before switching to Hardcover. The migration tool can preserve native Hardcover matches, recover metadata through softcover, and optionally create local Bookshelf records for books Hardcover cannot import.',
+    'Hardcover is used by default for new installs. Existing Goodreads/softcover libraries remain supported. Migration to Hardcover is optional; use the migration guide if you choose to move provider-specific metadata IDs.',
   migrationGuide: 'Bookshelf Hardcover migration guide',
   apiKeyHelp:
     'Find it in Bookshelf or Readarr: Settings > General > Security > API Key.',
@@ -95,7 +101,8 @@ interface TestResponse {
     label: string;
   }[];
   urlBase?: string;
-  provider?: 'hardcover' | 'softcover' | 'unknown';
+  provider?: BookshelfProvider;
+  providerNotice?: string;
   legacyWarning?: string;
   metadataSource?: string;
 }
@@ -107,12 +114,16 @@ interface DiagnosticResponse {
     | 'backend_unreachable'
     | 'lookup_empty'
     | 'lookup_incomplete'
+    | 'provider_failed'
+    | 'backend_add_pending'
     | 'backend_add_rejected';
   message: string;
-  provider?: 'hardcover' | 'softcover' | 'unknown';
+  provider?: BookshelfProvider;
+  providerNotice?: string;
   legacyWarning?: string;
   metadataSource?: string;
   lookupCount?: number;
+  pendingId?: number;
   sample?: {
     title?: string;
     foreignBookId?: string;
@@ -123,11 +134,19 @@ interface DiagnosticResponse {
 
 interface ReadarrModalProps {
   readarr: ReadarrSettings | null;
+  copyFrom?: ReadarrSettings | null;
+  copyFormat?: 'ebook' | 'audiobook';
   onClose: () => void;
   onSave: () => void;
 }
 
-const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
+const ReadarrModal = ({
+  onClose,
+  readarr,
+  copyFrom,
+  copyFormat,
+  onSave,
+}: ReadarrModalProps) => {
   const intl = useIntl();
   const initialLoad = useRef(false);
   const { addToast } = useToasts();
@@ -227,12 +246,15 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
         setDiagnosticResponse(
           response.data.provider
             ? {
-                ok: response.data.provider !== 'softcover',
+                ok: true,
                 category: 'ok',
                 message:
+                  response.data.providerNotice ??
                   response.data.legacyWarning ??
                   'Bookshelf connection established successfully.',
                 provider: response.data.provider,
+                providerNotice:
+                  response.data.providerNotice ?? response.data.legacyWarning,
                 legacyWarning: response.data.legacyWarning,
                 metadataSource: response.data.metadataSource,
               }
@@ -264,18 +286,19 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
   );
 
   useEffect(() => {
-    if (readarr) {
+    const connection = readarr ?? copyFrom;
+    if (connection) {
       testConnection({
-        id: readarr.id,
-        apiKey: readarr.apiKey,
-        hostname: readarr.hostname,
-        port: readarr.port,
-        baseUrl: readarr.baseUrl,
-        useSsl: readarr.useSsl,
-        serviceType: readarr.serviceType ?? 'ebook',
+        id: readarr?.id,
+        apiKey: connection.apiKey,
+        hostname: connection.hostname,
+        port: connection.port,
+        baseUrl: connection.baseUrl,
+        useSsl: connection.useSsl,
+        serviceType: copyFormat ?? connection.serviceType ?? 'ebook',
       });
     }
-  }, [readarr, testConnection]);
+  }, [copyFormat, copyFrom, readarr, testConnection]);
 
   return (
     <Transition
@@ -292,19 +315,19 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
       <Formik
         initialValues={{
           name: readarr?.name ?? '',
-          hostname: readarr?.hostname ?? '',
-          port: readarr?.port ?? 8787,
-          ssl: readarr?.useSsl ?? false,
-          apiKey: readarr?.apiKey ?? '',
-          baseUrl: readarr?.baseUrl ?? '',
+          hostname: readarr?.hostname ?? copyFrom?.hostname ?? '',
+          port: readarr?.port ?? copyFrom?.port ?? 8787,
+          ssl: readarr?.useSsl ?? copyFrom?.useSsl ?? false,
+          apiKey: readarr?.apiKey ?? copyFrom?.apiKey ?? '',
+          baseUrl: readarr?.baseUrl ?? copyFrom?.baseUrl ?? '',
           activeProfileId: readarr?.activeProfileId ?? '',
           rootFolder: readarr?.activeDirectory ?? '',
-          isDefault: readarr?.isDefault ?? false,
-          externalUrl: readarr?.externalUrl ?? '',
-          syncEnabled: readarr?.syncEnabled ?? false,
-          enableSearch: !readarr?.preventSearch,
+          isDefault: readarr?.isDefault ?? Boolean(copyFrom),
+          externalUrl: readarr?.externalUrl ?? copyFrom?.externalUrl ?? '',
+          syncEnabled: readarr?.syncEnabled ?? copyFrom?.syncEnabled ?? false,
+          enableSearch: !(readarr?.preventSearch ?? copyFrom?.preventSearch),
           activeMetadataProfileId: readarr?.activeMetadataProfileId ?? '',
-          serviceType: readarr?.serviceType ?? 'ebook',
+          serviceType: readarr?.serviceType ?? copyFormat ?? 'ebook',
         }}
         validationSchema={ReadarrSettingsSchema}
         onSubmit={async (values) => {
@@ -420,7 +443,7 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
               <p className="description mt-2">
                 {intl.formatMessage(messages.migrationNote)}{' '}
                 <a
-                  href="https://docs.seerr.dev/using-seerr/bookshelf-hardcover-migration"
+                  href="https://github.com/YunoHost-Apps/seerrng/blob/main/docs/using-seerr/bookshelf-hardcover-migration.md"
                   target="_blank"
                   rel="noreferrer"
                   className="text-indigo-500 transition duration-300 hover:text-indigo-400"
@@ -513,8 +536,12 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
                       {diagnosticResponse.metadataSource
                         ? ` Metadata: ${diagnosticResponse.metadataSource}.`
                         : ''}
-                      {diagnosticResponse.legacyWarning
-                        ? ` ${diagnosticResponse.legacyWarning}`
+                      {diagnosticResponse.pendingId
+                        ? ` Pending import ID: ${diagnosticResponse.pendingId}.`
+                        : ''}
+                      {(diagnosticResponse.providerNotice ??
+                      diagnosticResponse.legacyWarning)
+                        ? ` ${diagnosticResponse.providerNotice ?? diagnosticResponse.legacyWarning}`
                         : ''}
                     </p>
                   )}
@@ -525,7 +552,11 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
                   {intl.formatMessage(messages.defaultserver)}
                 </label>
                 <div className="form-input-area">
-                  <Field type="checkbox" id="isDefault" name="isDefault" />
+                  <SettingsField
+                    type="checkbox"
+                    id="isDefault"
+                    name="isDefault"
+                  />
                 </div>
               </div>
               <div className="form-row">
@@ -543,6 +574,9 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
                       </option>
                     </Field>
                   </div>
+                  <p className="mt-2 text-sm text-gray-400">
+                    {intl.formatMessage(messages.serviceTypeHelp)}
+                  </p>
                 </div>
               </div>
               <div className="form-row">
@@ -603,7 +637,7 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
                   <span className="label-required">*</span>
                 </label>
                 <div className="form-input-area">
-                  <Field
+                  <SettingsField
                     id="port"
                     name="port"
                     type="text"
@@ -641,9 +675,6 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
                 <label htmlFor="apiKey" className="text-label">
                   {intl.formatMessage(messages.apiKey)}
                   <span className="label-required">*</span>
-                  <span className="label-tip">
-                    {intl.formatMessage(messages.apiKeyHelp)}
-                  </span>
                 </label>
                 <div className="form-input-area">
                   <div className="form-input-field">
@@ -664,13 +695,13 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
                       <div className="error">{errors.apiKey}</div>
                     )}
                 </div>
+                <span className="settings-form-row-description">
+                  {intl.formatMessage(messages.apiKeyHelp)}
+                </span>
               </div>
               <div className="form-row">
                 <label htmlFor="baseUrl" className="text-label">
                   {intl.formatMessage(messages.baseUrl)}
-                  <span className="label-tip">
-                    {intl.formatMessage(messages.baseUrlHelp)}
-                  </span>
                 </label>
                 <div className="form-input-area">
                   <div className="form-input-field">
@@ -691,6 +722,9 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
                       <div className="error">{errors.baseUrl}</div>
                     )}
                 </div>
+                <span className="settings-form-row-description">
+                  {intl.formatMessage(messages.baseUrlHelp)}
+                </span>
               </div>
               <div className="form-row">
                 <label htmlFor="activeProfileId" className="text-label">
@@ -814,9 +848,6 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
               <div className="form-row">
                 <label htmlFor="externalUrl" className="text-label">
                   {intl.formatMessage(messages.externalUrl)}
-                  <span className="label-tip">
-                    {intl.formatMessage(messages.externalUrlHelp)}
-                  </span>
                 </label>
                 <div className="form-input-area">
                   <div className="form-input-field">
@@ -828,32 +859,39 @@ const ReadarrModal = ({ onClose, readarr, onSave }: ReadarrModalProps) => {
                       <div className="error">{errors.externalUrl}</div>
                     )}
                 </div>
+                <span className="settings-form-row-description">
+                  {intl.formatMessage(messages.externalUrlHelp)}
+                </span>
               </div>
               <div className="form-row">
                 <label htmlFor="syncEnabled" className="checkbox-label">
                   {intl.formatMessage(messages.syncEnabled)}
-                  <span className="label-tip">
-                    {intl.formatMessage(messages.syncEnabledHelp)}
-                  </span>
                 </label>
                 <div className="form-input-area">
-                  <Field type="checkbox" id="syncEnabled" name="syncEnabled" />
+                  <SettingsField
+                    type="checkbox"
+                    id="syncEnabled"
+                    name="syncEnabled"
+                  />
                 </div>
+                <span className="settings-form-row-description">
+                  {intl.formatMessage(messages.syncEnabledHelp)}
+                </span>
               </div>
               <div className="form-row">
                 <label htmlFor="enableSearch" className="checkbox-label">
                   {intl.formatMessage(messages.enableSearch)}
-                  <span className="label-tip">
-                    {intl.formatMessage(messages.enableSearchHelp)}
-                  </span>
                 </label>
                 <div className="form-input-area">
-                  <Field
+                  <SettingsField
                     type="checkbox"
                     id="enableSearch"
                     name="enableSearch"
                   />
                 </div>
+                <span className="settings-form-row-description">
+                  {intl.formatMessage(messages.enableSearchHelp)}
+                </span>
               </div>
             </div>
           </Modal>

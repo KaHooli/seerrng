@@ -12,6 +12,17 @@ import {
 } from './imageCache';
 
 describe('poster artwork identity', () => {
+  it('caches original artist portraits through the bounded Fanart proxy', () => {
+    const src = 'https://assets.fanart.tv/fanart/madonna.jpg';
+    assert.equal(
+      getImageCacheUrl({ cacheImages: true, src, type: 'music' }),
+      '/imageproxy/fanart/fanart/madonna.jpg'
+    );
+    assert.equal(
+      getImageCacheUrl({ cacheImages: false, src, type: 'music' }),
+      src
+    );
+  });
   it('uses the same base URL for cards and compatible detail variants', () => {
     const path = '/poster.jpg?version=2';
     assert.equal(
@@ -114,6 +125,33 @@ describe('getImageCacheUrl', () => {
   });
 
   it('rewrites supported image providers by URL even when the type is generic', () => {
+    for (const [src, expected] of [
+      [
+        'https://comicvine.gamespot.com/a/uploads/scale_large/1/cover.jpg',
+        '/imageproxy/comicvine/a/uploads/scale_large/1/cover.jpg',
+      ],
+      [
+        'https://comicvine.cbsistatic.com/a/uploads/scale_large/1/cover.jpg',
+        '/imageproxy/comicvinestatic/a/uploads/scale_large/1/cover.jpg',
+      ],
+      [
+        'https://comicvine1.cbsistatic.com/a/uploads/scale_large/1/cover.jpg',
+        '/imageproxy/comicvinestatic1/a/uploads/scale_large/1/cover.jpg',
+      ],
+      [
+        'https://images.igdb.com/igdb/image/upload/t_cover_big/abc.jpg',
+        '/imageproxy/igdb/igdb/image/upload/t_cover_big/abc.jpg',
+      ],
+    ]) {
+      assert.equal(
+        getImageCacheUrl({ cacheImages: true, src, type: 'tmdb' }),
+        expected
+      );
+      assert.equal(
+        getImageCacheUrl({ cacheImages: false, src, type: 'tmdb' }),
+        src
+      );
+    }
     assert.equal(
       getImageCacheUrl({
         cacheImages: true,

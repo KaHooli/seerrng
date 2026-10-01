@@ -1,8 +1,15 @@
-import type { ReadarrBookLookupResult } from '@server/api/servarr/readarr';
+import type {
+  ReadarrBookLookupResult,
+  ReadarrMediaMoveAuthor,
+  ReadarrMediaType,
+} from '@server/api/servarr/readarr';
 import ReadarrAPI from '@server/api/servarr/readarr';
 import { getExternalRuntimeConfig } from '@server/lib/externalRuntimeConfig';
 import { Permission } from '@server/lib/permissions';
-import { runWithServarrServiceCollectionMutationAdmission } from '@server/lib/serviceAdmission';
+import {
+  runWithCurrentServarrService,
+  runWithServarrServiceCollectionMutationAdmission,
+} from '@server/lib/serviceAdmission';
 import {
   allocateServarrServiceId,
   assertServarrServiceCanBeRemoved,
@@ -14,8 +21,12 @@ import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { authorizedMutation } from '@server/middleware/authorizedMutation';
 import {
+  hydrateBookshelfLookupResult,
+  isAddableBookshelfLookupResult,
+} from '@server/utils/bookshelfLookup';
+import {
   classifyBookshelfProvider,
-  getBookshelfProviderWarning,
+  getBookshelfProviderNotice,
 } from '@server/utils/bookshelfProvider';
 import { mapWithConcurrency } from '@server/utils/concurrency';
 import { parseNonNegativeRouteId } from '@server/utils/routeId';
@@ -41,7 +52,118 @@ const MAX_DIAGNOSTIC_PATH_LENGTH = 4096;
 const MAX_DIAGNOSTIC_PROFILE_ID = 1_000_000;
 export const MAX_DIAGNOSTIC_LOOKUP_RESULTS = 50;
 export const DIAGNOSTIC_LOOKUP_HYDRATION_CONCURRENCY = 5;
+export const MAX_BOOKSHELF_MEDIA_MOVE_AUTHORS = 1_000;
+const MAX_BOOKSHELF_MEDIA_MOVE_DIRECTORY_RESULTS = 10_000;
+const MAX_BOOKSHELF_MEDIA_MOVE_PATH_LENGTH = 4096;
+const hasControlCharacters = (value: string): boolean =>
+  Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 0x20 || code === 0x7f;
+  });
 type DiagnosticAuthor = NonNullable<ReadarrBookLookupResult['author']>;
+
+type BookshelfMediaMoveRequest = {
+  authorIds: number[];
+  format: ReadarrMediaType;
+  destinationRootPath: string;
+  sourceRootPath?: string;
+  previewToken?: string;
+};
+
+const normalizeProviderPath = (value: string): string => {
+  const normalized = value.replaceAll('\\', '/').replace(/\/+$/, '') || '/';
+  return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+};
+
+const parseBookshelfMediaMoveRequest = (
+  value: unknown,
+  requirePreviewToken: boolean
+): { value: BookshelfMediaMoveRequest } | { error: string } => {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    return { error: 'Move details must be an object.' };
+  const record = value as Record<string, unknown>;
+  const { authorIds, format } = record;
+  const destinationRootPath = record.destinationRootPath;
+  const sourceRootPath = record.sourceRootPath;
+  const previewToken = record.previewToken;
+  if (format !== 'ebook' && format !== 'audiobook')
+    return { error: 'Choose ebook or audiobook media.' };
+  if (
+    !Array.isArray(authorIds) ||
+    authorIds.length < 1 ||
+    authorIds.length > MAX_BOOKSHELF_MEDIA_MOVE_AUTHORS ||
+    authorIds.some((id) => !Number.isSafeInteger(id) || Number(id) < 1) ||
+    new Set(authorIds).size !== authorIds.length
+  )
+    return {
+      error: `Select between 1 and ${MAX_BOOKSHELF_MEDIA_MOVE_AUTHORS} unique authors.`,
+    };
+  if (
+    typeof destinationRootPath !== 'string' ||
+    !destinationRootPath.trim() ||
+    destinationRootPath.length > MAX_BOOKSHELF_MEDIA_MOVE_PATH_LENGTH ||
+    hasControlCharacters(destinationRootPath)
+  )
+    return { error: 'Choose a valid destination root folder.' };
+  if (
+    sourceRootPath !== undefined &&
+    (typeof sourceRootPath !== 'string' ||
+      !sourceRootPath.trim() ||
+      sourceRootPath.length > MAX_BOOKSHELF_MEDIA_MOVE_PATH_LENGTH ||
+      hasControlCharacters(sourceRootPath))
+  )
+    return { error: 'Choose a valid source folder.' };
+  if (
+    requirePreviewToken &&
+    (typeof previewToken !== 'string' ||
+      !previewToken.trim() ||
+      previewToken.length > 512)
+  )
+    return { error: 'Preview the move again before starting it.' };
+  return {
+    value: {
+      authorIds: authorIds as number[],
+      format,
+      destinationRootPath: destinationRootPath.trim(),
+      ...(typeof sourceRootPath === 'string'
+        ? { sourceRootPath: sourceRootPath.trim() }
+        : {}),
+      ...(typeof previewToken === 'string'
+        ? { previewToken: previewToken.trim() }
+        : {}),
+    },
+  };
+};
+
+const createReadarrApi = (settings: ReadarrSettings): ReadarrAPI =>
+  new ReadarrAPI({
+    apiKey: settings.apiKey,
+    url: ReadarrAPI.buildUrl(settings, '/api/v1'),
+    mediaType: settings.serviceType ?? 'ebook',
+  });
+
+const selectMoveAuthors = (
+  authors: ReadarrMediaMoveAuthor[],
+  format: ReadarrMediaType,
+  authorIds: number[],
+  sourceRootPath?: string
+): ReadarrMediaMoveAuthor[] | undefined => {
+  const requested = new Set(authorIds);
+  const selected = authors.filter((author) => requested.has(author.id));
+  if (selected.length !== authorIds.length) return;
+  if (!sourceRootPath) return selected;
+  return selected.every((author) => {
+    const currentPath =
+      (format === 'ebook' ? author.ebookPath : author.audiobookPath) ||
+      author.path;
+    return (
+      normalizeProviderPath(currentPath) ===
+      normalizeProviderPath(sourceRootPath)
+    );
+  })
+    ? selected
+    : undefined;
+};
 
 const parseOptionalDiagnosticId = (
   value: unknown,
@@ -65,44 +187,7 @@ const parseOptionalDiagnosticId = (
     : { value: parsed };
 };
 
-const isAddableBookLookupResult = (result: ReadarrBookLookupResult): boolean =>
-  !!(
-    result.foreignBookId &&
-    result.title &&
-    result.author?.foreignAuthorId &&
-    Array.isArray(result.editions) &&
-    result.editions.length > 0
-  );
-
-const parseAuthorName = (
-  result: ReadarrBookLookupResult
-): string | undefined => {
-  const authorTitle = result.authorTitle?.trim();
-
-  if (!authorTitle) {
-    return undefined;
-  }
-
-  const titleIndex = authorTitle
-    .toLocaleLowerCase()
-    .lastIndexOf(result.title.toLocaleLowerCase());
-  const rawAuthorName =
-    titleIndex > 0 ? authorTitle.slice(0, titleIndex).trim() : authorTitle;
-  const [lastName, ...firstNameParts] = rawAuthorName
-    .split(',')
-    .map((part) => part.trim())
-    .filter(Boolean);
-
-  if (!lastName) {
-    return undefined;
-  }
-
-  return firstNameParts.length
-    ? `${firstNameParts.join(' ')} ${lastName}`
-    : lastName;
-};
-
-const hydrateSoftcoverResult = async (
+const hydrateBookshelfResult = async (
   readarr: ReadarrAPI,
   result: ReadarrBookLookupResult,
   loadAuthor: (
@@ -118,39 +203,7 @@ const hydrateSoftcoverResult = async (
       : undefined;
   }
 ): Promise<ReadarrBookLookupResult> => {
-  if (isAddableBookLookupResult(result)) {
-    return result;
-  }
-
-  if (result.author || !result.foreignEditionId) {
-    return result;
-  }
-
-  const authorName = parseAuthorName(result);
-
-  if (!authorName) {
-    return result;
-  }
-
-  const author = await loadAuthor(authorName);
-  if (!author) {
-    return result;
-  }
-
-  return {
-    ...result,
-    author: {
-      foreignAuthorId: author.foreignAuthorId,
-      authorName: author.authorName,
-    },
-    editions: [
-      {
-        foreignEditionId: result.foreignEditionId,
-        title: result.title,
-        monitored: true,
-      },
-    ],
-  };
+  return hydrateBookshelfLookupResult(readarr, result, undefined, loadAuthor);
 };
 
 readarrRoutes.get('/', (_req, res) => {
@@ -158,6 +211,259 @@ readarrRoutes.get('/', (_req, res) => {
 
   res.status(200).json(redactSecrets(settings.readarr));
 });
+
+readarrRoutes.get(
+  '/:id/media-move/configuration',
+  authorizedMutation(Permission.ADMIN, async (req, res, next) => {
+    const readarrId = parseNonNegativeRouteId(req.params.id);
+    const format = req.query.format;
+    if (readarrId === undefined)
+      return next({ status: 404, message: 'Bookshelf service not found.' });
+    if (format !== 'ebook' && format !== 'audiobook')
+      return res.status(400).json({ message: 'Choose ebook or audiobook.' });
+
+    try {
+      const result = await runWithCurrentServarrService(
+        'readarr',
+        readarrId,
+        async (service) => {
+          const api = createReadarrApi(service);
+          const [authors, rootFolders] = await Promise.all([
+            api.getMediaMoveAuthors(),
+            api.getRootFolders(),
+          ]);
+          return res.status(200).json({
+            serviceId: service.id,
+            serviceName: service.name,
+            configuredFormat: service.serviceType ?? 'ebook',
+            format,
+            truncated:
+              authors.length > MAX_BOOKSHELF_MEDIA_MOVE_DIRECTORY_RESULTS,
+            authors: authors
+              .slice(0, MAX_BOOKSHELF_MEDIA_MOVE_DIRECTORY_RESULTS)
+              .map((author) => ({
+                id: author.id,
+                name: author.name,
+                path: author.path,
+                currentFormatPath:
+                  (format === 'ebook'
+                    ? author.ebookPath
+                    : author.audiobookPath) || author.path,
+                bookFileCount: author.bookFileCount,
+              })),
+            rootFolders: rootFolders.map(({ id, path, accessible }) => ({
+              id,
+              path,
+              accessible: accessible !== false,
+            })),
+          });
+        }
+      );
+      if (result === undefined)
+        return next({ status: 404, message: 'Bookshelf service not found.' });
+      return result;
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })?.response
+        ?.status;
+      logger.warn('Failed to load Bookshelf media-move configuration.', {
+        label: 'Readarr',
+        serviceId: readarrId,
+        providerStatus: status,
+      });
+      return res.status(status === 404 ? 409 : 502).json({
+        message:
+          status === 404
+            ? 'This BookshelfNG instance does not expose the media-move API. Update BookshelfNG, then retry.'
+            : 'Bookshelf library details could not be loaded.',
+      });
+    }
+  })
+);
+
+readarrRoutes.post(
+  '/:id/media-move/preview',
+  authorizedMutation(Permission.ADMIN, async (req, res, next) => {
+    const readarrId = parseNonNegativeRouteId(req.params.id);
+    const parsed = parseBookshelfMediaMoveRequest(req.body, false);
+    if (readarrId === undefined)
+      return next({ status: 404, message: 'Bookshelf service not found.' });
+    if ('error' in parsed)
+      return res.status(400).json({ message: parsed.error });
+
+    try {
+      const result = await runWithCurrentServarrService(
+        'readarr',
+        readarrId,
+        async (service) => {
+          const api = createReadarrApi(service);
+          const [authors, rootFolders] = await Promise.all([
+            api.getMediaMoveAuthors(),
+            api.getRootFolders(),
+          ]);
+          const selectedAuthors = selectMoveAuthors(
+            authors,
+            parsed.value.format,
+            parsed.value.authorIds,
+            parsed.value.sourceRootPath
+          );
+          if (!selectedAuthors)
+            return res.status(400).json({
+              message:
+                'The selected authors no longer match this source folder. Reload the library and preview again.',
+            });
+          const destination = rootFolders.find(
+            (folder) =>
+              folder.accessible !== false &&
+              normalizeProviderPath(folder.path) ===
+                normalizeProviderPath(parsed.value.destinationRootPath)
+          );
+          if (!destination)
+            return res.status(400).json({
+              message:
+                'Choose an accessible destination root folder from this BookshelfNG instance.',
+            });
+          const preview = await api.previewMediaMoveBatch({
+            authorIds: parsed.value.authorIds,
+            format: parsed.value.format,
+            destinationRootPath: destination.path,
+          });
+          return res.status(200).json(preview);
+        }
+      );
+      if (result === undefined)
+        return next({ status: 404, message: 'Bookshelf service not found.' });
+      return result;
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })?.response
+        ?.status;
+      logger.warn('Bookshelf media-move preview failed.', {
+        label: 'Readarr',
+        serviceId: readarrId,
+        providerStatus: status,
+      });
+      return res.status(status === 404 ? 409 : 502).json({
+        message:
+          status === 404
+            ? 'This BookshelfNG instance does not support media moves. Update BookshelfNG, then retry.'
+            : 'BookshelfNG could not preview this move. Reload the library and try again.',
+      });
+    }
+  })
+);
+
+readarrRoutes.post(
+  '/:id/media-move/start',
+  authorizedMutation(Permission.ADMIN, async (req, res, next) => {
+    const readarrId = parseNonNegativeRouteId(req.params.id);
+    const parsed = parseBookshelfMediaMoveRequest(req.body, true);
+    if (readarrId === undefined)
+      return next({ status: 404, message: 'Bookshelf service not found.' });
+    if ('error' in parsed)
+      return res.status(400).json({ message: parsed.error });
+
+    try {
+      const result = await runWithCurrentServarrService(
+        'readarr',
+        readarrId,
+        async (service) => {
+          const api = createReadarrApi(service);
+          const [authors, rootFolders] = await Promise.all([
+            api.getMediaMoveAuthors(),
+            api.getRootFolders(),
+          ]);
+          if (
+            !selectMoveAuthors(
+              authors,
+              parsed.value.format,
+              parsed.value.authorIds,
+              parsed.value.sourceRootPath
+            )
+          )
+            return res.status(409).json({
+              message:
+                'The selected authors or source folder changed after preview. Preview the move again.',
+            });
+          const destination = rootFolders.find(
+            (folder) =>
+              folder.accessible !== false &&
+              normalizeProviderPath(folder.path) ===
+                normalizeProviderPath(parsed.value.destinationRootPath)
+          );
+          if (!destination)
+            return res.status(409).json({
+              message:
+                'The destination root folder is no longer available. Preview the move again.',
+            });
+          const command = await api.startMediaMoveBatch({
+            authorIds: parsed.value.authorIds,
+            format: parsed.value.format,
+            destinationRootPath: destination.path,
+            previewToken: parsed.value.previewToken!,
+          });
+          return res.status(202).json({ command });
+        }
+      );
+      if (result === undefined)
+        return next({ status: 404, message: 'Bookshelf service not found.' });
+      return result;
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })?.response
+        ?.status;
+      logger.warn('Bookshelf media-move could not be queued.', {
+        label: 'Readarr',
+        serviceId: readarrId,
+        providerStatus: status,
+      });
+      return res.status(status === 404 ? 409 : 502).json({
+        message:
+          status === 404
+            ? 'This BookshelfNG instance does not support media moves. Update BookshelfNG, then retry.'
+            : status === 409
+              ? 'The library changed after preview. Preview the move again.'
+              : 'BookshelfNG could not queue this move.',
+      });
+    }
+  })
+);
+
+readarrRoutes.get(
+  '/:id/media-move/commands/:commandId',
+  authorizedMutation(Permission.ADMIN, async (req, res, next) => {
+    const readarrId = parseNonNegativeRouteId(req.params.id);
+    const commandId = parseNonNegativeRouteId(req.params.commandId);
+    if (readarrId === undefined || commandId === undefined)
+      return next({ status: 404, message: 'Media-move command not found.' });
+    try {
+      const result = await runWithCurrentServarrService(
+        'readarr',
+        readarrId,
+        async (service) => {
+          const command =
+            await createReadarrApi(service).getMediaMoveCommand(commandId);
+          return res.status(200).json({ command });
+        }
+      );
+      if (result === undefined)
+        return next({ status: 404, message: 'Bookshelf service not found.' });
+      return result;
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })?.response
+        ?.status;
+      logger.warn('Bookshelf media-move command lookup failed.', {
+        label: 'Readarr',
+        serviceId: readarrId,
+        commandId,
+        providerStatus: status,
+      });
+      return res.status(status === 404 ? 404 : 502).json({
+        message:
+          status === 404
+            ? 'Media-move command not found.'
+            : 'BookshelfNG command status could not be loaded.',
+      });
+    }
+  })
+);
 
 readarrRoutes.post(
   '/',
@@ -255,7 +561,8 @@ readarrRoutes.post<
         tags: [],
         urlBase,
         provider,
-        legacyWarning: getBookshelfProviderWarning(provider),
+        providerNotice: getBookshelfProviderNotice(provider),
+        legacyWarning: getBookshelfProviderNotice(provider),
         metadataSource: development?.metadataSource,
       });
     } catch (e) {
@@ -355,8 +662,35 @@ readarrRoutes.post<
           readarr.getRootFolders(),
         ]);
       const provider = classifyBookshelfProvider(development?.metadataSource);
-      const legacyWarning = getBookshelfProviderWarning(provider);
-      const lookup = await readarr.lookupBook(lookupTerm);
+      const providerNotice = getBookshelfProviderNotice(provider);
+      let lookup: ReadarrBookLookupResult[];
+      try {
+        lookup = await readarr.lookupBook(lookupTerm);
+      } catch (error) {
+        logger.warn(
+          'Bookshelf metadata provider lookup failed during diagnosis.',
+          {
+            label: 'Readarr',
+            provider,
+            metadataSource: development?.metadataSource,
+            term: lookupTerm,
+            errorMessage:
+              error instanceof Error ? error.message : String(error),
+          }
+        );
+        return res.status(200).json({
+          ok: false,
+          category: 'provider_failed',
+          message:
+            'The configured metadata provider failed this lookup. Check the Bookshelf provider logs and try again.',
+          term: lookupTerm,
+          provider,
+          providerNotice,
+          legacyWarning: providerNotice,
+          metadataSource: development?.metadataSource,
+          lookupCount: 0,
+        });
+      }
 
       if (!lookup.length) {
         return res.status(200).json({
@@ -370,7 +704,8 @@ readarrRoutes.post<
             urlBase: status.urlBase,
           },
           provider,
-          legacyWarning,
+          providerNotice,
+          legacyWarning: providerNotice,
           metadataSource: development?.metadataSource,
           profiles: profiles.map((profile) => ({
             id: profile.id,
@@ -393,18 +728,43 @@ readarrRoutes.post<
         string,
         Promise<DiagnosticAuthor | undefined>
       >();
+      let authorLookupFailed = false;
       const loadAuthor = (authorName: string) => {
         let pending = authorCache.get(authorName);
         if (!pending) {
-          pending = readarr.lookupAuthor(authorName).then(([author]) =>
-            author?.foreignAuthorId && author.authorName
-              ? {
-                  foreignAuthorId: author.foreignAuthorId,
-                  authorName: author.authorName,
-                  id: author.id,
-                }
-              : undefined
-          );
+          pending = readarr
+            .lookupAuthor(authorName)
+            .then((authors) => {
+              const normalizeName = (value: string) =>
+                value
+                  .toLocaleLowerCase()
+                  .normalize('NFKD')
+                  .replace(/[\u0300-\u036f]/g, '')
+                  .replace(/[^\p{L}\p{N}]+/gu, ' ')
+                  .trim();
+              const complete = authors.filter(
+                (author) =>
+                  !!author.foreignAuthorId?.trim() &&
+                  !!author.authorName?.trim()
+              );
+              const author =
+                complete.find(
+                  (candidate) =>
+                    normalizeName(candidate.authorName) ===
+                    normalizeName(authorName)
+                ) ?? complete[0];
+              return author
+                ? {
+                    foreignAuthorId: author.foreignAuthorId,
+                    authorName: author.authorName,
+                    id: author.id,
+                  }
+                : undefined;
+            })
+            .catch((error) => {
+              authorLookupFailed = true;
+              throw error;
+            });
           authorCache.set(authorName, pending);
         }
         return pending;
@@ -412,19 +772,21 @@ readarrRoutes.post<
       const hydratedLookup = await mapWithConcurrency(
         lookup.slice(0, MAX_DIAGNOSTIC_LOOKUP_RESULTS),
         DIAGNOSTIC_LOOKUP_HYDRATION_CONCURRENCY,
-        (result) => hydrateSoftcoverResult(readarr, result, loadAuthor)
+        (result) => hydrateBookshelfResult(readarr, result, loadAuthor)
       );
-      const addableResult = hydratedLookup.find(isAddableBookLookupResult);
+      const addableResult = hydratedLookup.find(isAddableBookshelfLookupResult);
 
       if (!addableResult) {
         return res.status(200).json({
           ok: false,
           category: 'lookup_incomplete',
-          message:
-            'Bookshelf lookup returned results, but none had usable author and edition metadata.',
+          message: authorLookupFailed
+            ? 'Bookshelf found book results, but the metadata provider failed to resolve an author. Check provider logs and retry.'
+            : 'Bookshelf lookup returned results, but none had usable author and edition metadata.',
           term: lookupTerm,
           provider,
-          legacyWarning,
+          providerNotice,
+          legacyWarning: providerNotice,
           metadataSource: development?.metadataSource,
           lookupCount: lookup.length,
           sample: lookup.slice(0, 3).map((result) => ({
@@ -491,6 +853,24 @@ readarrRoutes.post<
             },
           });
 
+          if (added.pending) {
+            return res.status(200).json({
+              ok: false,
+              category: 'backend_add_pending',
+              message: [
+                added.message ??
+                  'Chaptarr accepted the diagnostic add while preparing author metadata.',
+                'The import remains queued because Chaptarr may share it with an active SeerrNG request. Check its status in Chaptarr and cancel it only when no request needs it.',
+              ].join(' '),
+              term: lookupTerm,
+              provider,
+              providerNotice,
+              legacyWarning: providerNotice,
+              lookupCount: lookup.length,
+              pendingId: added.pendingId,
+            });
+          }
+
           if (added.id !== undefined && added.id !== null) {
             try {
               await readarr.removeBook(added.id, {
@@ -507,7 +887,8 @@ readarrRoutes.post<
                     : String(cleanupError),
                 term: lookupTerm,
                 provider,
-                legacyWarning,
+                providerNotice,
+                legacyWarning: providerNotice,
                 lookupCount: lookup.length,
                 addedBookId: added.id,
               });
@@ -520,7 +901,8 @@ readarrRoutes.post<
             message: e instanceof Error ? e.message : String(e),
             term: lookupTerm,
             provider,
-            legacyWarning,
+            providerNotice,
+            legacyWarning: providerNotice,
             lookupCount: lookup.length,
           });
         }
@@ -532,7 +914,8 @@ readarrRoutes.post<
         message: 'Bookshelf lookup returned usable metadata.',
         term: lookupTerm,
         provider,
-        legacyWarning,
+        providerNotice,
+        legacyWarning: providerNotice,
         metadataSource: development?.metadataSource,
         lookupCount: lookup.length,
         sample: {

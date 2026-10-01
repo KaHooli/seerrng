@@ -77,16 +77,38 @@ Enable this setting to have Radarr/Sonarr to automatically search for media upon
 ### Bookshelf Settings
 
 SeerrNG uses Bookshelf for book requests through the Readarr-compatible API.
-For ebook and audiobook requests, run separate Bookshelf instances and mark one
-service as the default for each book format.
+One BookshelfNG instance can manage ebooks and audiobooks in the same library.
+SeerrNG keeps ebook and audiobook routing separate, so add a service entry for
+each format you enable and mark one as the default for that format. Both
+entries can use the same BookshelfNG URL and API key; this does not require two
+BookshelfNG instances.
+
+Each BookshelfNG author can optionally set separate ebook and audiobook
+folders for future imports, upgrades, and renames. Existing files are not moved
+when an override changes. Quality and metadata profiles remain shared. Use separate
+BookshelfNG instances only when you need isolated databases or different
+settings for the same author.
 
 Use the [Bookshelf Backend](/using-seerr/bookshelf-backend) guide for the
-recommended Docker Compose deployment. Existing Readarr or softcover libraries
-should use the
-[Bookshelf Hardcover Migration](/using-seerr/bookshelf-hardcover-migration)
-runbook before switching a service to Hardcover metadata.
+recommended Docker Compose deployment. Hardcover is the default for new
+deployments, while existing Goodreads/softcover and other compatible metadata
+sources remain supported. Migration is optional.
 
-The migration path can preserve native Hardcover matches, use softcover metadata
-as a recovery source, and optionally create deterministic local Bookshelf
-records for books Hardcover cannot import. Local records are visible through the
-Bookshelf API, but they are not native Hardcover metadata records.
+Administrators can [preview and move ebook or audiobook paths](/using-seerr/bookshelf-media-path-migration)
+inside one BookshelfNG database. This tool does not merge split Bookshelf
+databases.
+
+If you choose to switch providers, use the
+[Bookshelf Hardcover Migration](/using-seerr/bookshelf-hardcover-migration)
+runbook. Provider IDs are not portable; the runbook rebuilds records and can
+preserve strict matches, recover metadata, and create local records for books
+the target provider cannot import.
+
+## Override Rules
+
+Override rules can assign a root folder, quality profile, or tags when a movie
+or series request matches selected requester and media conditions. Matching
+rules are also applied in **Advanced Options** for movie and series requests,
+where you can review the resulting values before submission. See the
+[Override Rules guide](/using-seerr/override-rules) for setup and matching
+behavior.

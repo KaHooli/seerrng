@@ -12,27 +12,36 @@ system. This page is the validation checklist for alpha builds.
 - Lidarr for music requests.
 - Bookshelf for book requests. SeerrNG currently talks to Bookshelf through the
   Readarr-compatible API surface. See the
-  [Bookshelf Backend](/using-seerr/bookshelf-backend) guide for the recommended
-  two-instance ebook/audiobook deployment.
+  [Bookshelf Backend](/using-seerr/bookshelf-backend) guide. One BookshelfNG
+  instance can manage both formats; use separate SeerrNG service entries that
+  point to the same URL when both ebook and audiobook routing are enabled.
 - Jellyfin, Plex, or Emby for the inherited media-server integration. Jellyfin
-  music libraries are supported when albums expose MusicBrainz metadata; Lidarr
-  remains the automation and fallback availability source.
+  and Plex music libraries can provide music availability when albums expose
+  MusicBrainz metadata; Plex artist libraries can also be classified as
+  Audiobooks. Lidarr remains the music automation and fallback availability
+  source. See [media-server library setup](/using-seerr/settings/mediaserver)
+  for Plex library classification and scanning.
 
 ## Configuration Checklist
 
 1. Add a Lidarr server in **Settings > Services**.
-2. Add one Bookshelf server for ebooks in **Settings > Services**.
-3. Optional: add a second Bookshelf server for audiobooks and set its format to
-   **Audiobook**.
+2. Add a Bookshelf service entry for ebooks in **Settings > Services**.
+3. If testing audiobooks or both-format requests, add an audiobook service
+   entry. Point it to the same BookshelfNG URL and API key, and set its format
+   to **Audiobook**.
 4. Mark one Lidarr server as default.
 5. Mark one Bookshelf ebook server as default.
-6. If testing audiobooks or both-format requests, mark one Bookshelf audiobook
-   server as default.
+6. If testing audiobooks or both-format requests, mark the audiobook service
+   entry as default for that format.
 7. Enable sync on the Lidarr and Bookshelf services being tested.
 8. Confirm the root folder, quality profile, metadata profile, and tags returned
    by each test connection are the values expected by the backend.
-9. If testing Jellyfin music availability, sync the Jellyfin libraries and
-   confirm the albums expose a MusicBrainz release-group or album ID.
+9. If testing Jellyfin or Plex music availability, sync the media-server
+   libraries and confirm the albums expose a MusicBrainz release-group or
+   album ID.
+10. If testing Plex audiobook availability, sync the Plex libraries, select
+    **Reclassify as an Audiobooks library** for the artist library, enable it,
+    and start a manual scan.
 
 ## Music Validation
 
@@ -69,6 +78,11 @@ identity. If Jellyfin exposes only a MusicBrainz album/release ID, SeerrNG
 resolves it through MusicBrainz. Albums without either ID are skipped; run a
 Lidarr scan when Lidarr is the authoritative availability source.
 
+Plex music scans use the same MusicBrainz identity rules. Plex reports music
+and audiobook libraries with the same artist-library type, so SeerrNG initially
+classifies them as Music. Reclassifying an artist library as Audiobooks in
+**Settings > Media Server** persists across library syncs and renames.
+
 ## Book Validation
 
 Run these against a real Bookshelf instance:
@@ -78,8 +92,9 @@ Run these against a real Bookshelf instance:
 3. Confirm the ISBN candidate list matches the expected editions.
 4. Request an ebook with automatic edition matching.
 5. Request an ebook with a specific ISBN/edition selected.
-6. Request an audiobook if an audiobook Bookshelf server is configured.
-7. Request **Both** if ebook and audiobook Bookshelf servers are configured.
+6. Request an audiobook if an audiobook Bookshelf service entry is configured.
+7. Request **Both** if ebook and audiobook service entries are configured;
+   they can point to the same BookshelfNG instance.
 8. Approve pending book requests.
 9. Confirm Bookshelf receives the expected root folder, quality profile,
    metadata profile, tags, and monitored state.
@@ -92,7 +107,7 @@ Run these against a real Bookshelf instance:
 
 When testing **Request Bibliography**, include an environment where one Bookshelf
 service ID is `0`. Book, audiobook, and both-format bulk requests must accept
-that service override and dispatch to the correct Bookshelf instance.
+that service override and dispatch each format to its configured service entry.
 
 ## Identity Checks
 

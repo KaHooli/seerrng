@@ -137,6 +137,7 @@ export interface TmdbProductionCompany {
 
 export interface TmdbMovieDetails {
   id: number;
+  origin_country?: string[];
   imdb_id?: string;
   adult: boolean;
   backdrop_path?: string;
@@ -301,6 +302,22 @@ export interface TmdbTvDetails {
     results?: { [iso_3166_1: string]: TmdbWatchProviders };
   };
 }
+
+export type TmdbTvScanDetails = Pick<
+  TmdbTvDetails,
+  | 'id'
+  | 'name'
+  | 'seasons'
+  | 'external_ids'
+  | 'keywords'
+  | 'original_name'
+  | 'first_air_date'
+  | 'genres'
+  | 'episode_run_time'
+  | 'created_by'
+  | 'production_companies'
+  | 'networks'
+>;
 
 export interface TmdbVideoResult {
   results: TmdbVideo[];

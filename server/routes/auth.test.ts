@@ -19,6 +19,7 @@ import { LinkedAccount } from '@server/entity/LinkedAccount';
 import { User } from '@server/entity/User';
 import { UserSettings } from '@server/entity/UserSettings';
 import PreparedEmail from '@server/lib/email';
+import ImageProxy from '@server/lib/imageproxy';
 import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import { runUserSecurityMutation } from '@server/lib/userSecurityMutation';
@@ -156,12 +157,42 @@ const authenticateQCMock = mock.method(
   'authenticateQuickConnect',
   async () => ({ ...defaultAuthenticateResponse })
 );
+const fakeAvatarBuffer = Buffer.from('fake-quickconnect-avatar-bytes');
+
+const axiosHeadMock = mock.method(axios, 'head', async () => ({
+  status: 200,
+  headers: { 'last-modified': 'Wed, 01 Jan 2025 00:00:00 GMT' },
+}));
+
+const clearCachedImageMock = mock.method(
+  ImageProxy.prototype,
+  'clearCachedImage',
+  async () => undefined
+);
+
+const getImageMock = mock.method(
+  ImageProxy.prototype,
+  'getImage',
+  async () => ({
+    imageBuffer: fakeAvatarBuffer,
+    meta: {
+      revalidateAfter: 3600,
+      curRevalidate: 3600,
+      isStale: false,
+      etag: 'mock-meta-etag',
+      extension: 'jpg',
+      cacheKey: 'mock-cache-key',
+      cacheMiss: true,
+    },
+  })
+);
 
 let app: Express;
 
 function createApp() {
   const app = express();
   app.use(express.json());
+  app.use(express.urlencoded({ extended: false }));
   app.use(cookieParser('SECRET'));
   app.use(
     session({
@@ -244,6 +275,15 @@ describe('POST /auth/jellyfin/quickconnect/initiate', () => {
     assert.strictEqual(res.body.code, '123456');
     assert.strictEqual(res.body.secret, 'abc123def456abc123def456');
     assert.strictEqual(initiateQCMock.mock.callCount(), 1);
+  });
+
+  it('returns 403 when the media server is Emby', async () => {
+    getSettings().main.mediaServerType = MediaServerType.EMBY;
+
+    const res = await request(app).post('/auth/jellyfin/quickconnect/initiate');
+
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(initiateQCMock.mock.callCount(), 0);
   });
 
   it('returns 500 when Jellyfin API fails', async () => {
@@ -338,6 +378,17 @@ describe('GET /auth/jellyfin/quickconnect/check', () => {
     assert.strictEqual(checkQCMock.mock.callCount(), 0);
   });
 
+  it('returns 403 when the media server is Emby', async () => {
+    getSettings().main.mediaServerType = MediaServerType.EMBY;
+
+    const res = await request(app)
+      .get('/auth/jellyfin/quickconnect/check')
+      .query({ secret: 'abc123def456abc123def456' });
+
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(checkQCMock.mock.callCount(), 0);
+  });
+
   it('returns error when Jellyfin API fails', async () => {
     checkQCMock.mock.mockImplementation(async () => {
       throw new ApiError(500, ApiErrorCode.Unknown);
@@ -357,6 +408,9 @@ describe('POST /auth/jellyfin/quickconnect/authenticate', () => {
     authenticateQCMock.mock.mockImplementation(async () => ({
       ...defaultAuthenticateResponse,
     }));
+    axiosHeadMock.mock.resetCalls();
+    clearCachedImageMock.mock.resetCalls();
+    getImageMock.mock.resetCalls();
     configureJellyfin();
   });
 
@@ -460,6 +514,39 @@ describe('POST /auth/jellyfin/quickconnect/authenticate', () => {
     assert.notStrictEqual(updatedUser.jellyfinDeviceId, 'old-device-id');
   });
 
+  it('refreshes avatarVersion/avatarETag when the remote avatar has changed', async () => {
+    const userRepo = getRepository(User);
+    const existingUser = new User({
+      email: 'qc-avatar-change@seerr.dev',
+      jellyfinUsername: 'quickconnectuser',
+      jellyfinUserId: 'jf-qc-user-001',
+      jellyfinDeviceId: 'old-device-id',
+      permissions: 0,
+      avatar: '/avatarproxy/jf-qc-user-001?v=old',
+      avatarVersion: 'old-version',
+      avatarETag: 'old-etag',
+      userType: UserType.JELLYFIN,
+    });
+    await userRepo.save(existingUser);
+
+    const agent = request.agent(app);
+    const res = await agent
+      .post('/auth/jellyfin/quickconnect/authenticate')
+      .send({ secret: 'abc123def456abc123def456' });
+
+    assert.strictEqual(res.status, 200);
+
+    const updatedUser = await userRepo.findOneOrFail({
+      where: { jellyfinUserId: 'jf-qc-user-001' },
+    });
+    assert.notStrictEqual(updatedUser.avatarVersion, 'old-version');
+    assert.notStrictEqual(updatedUser.avatarETag, 'old-etag');
+    assert.notStrictEqual(
+      updatedUser.avatar,
+      '/avatarproxy/jf-qc-user-001?v=old'
+    );
+  });
+
   it('creates a new user when newPlexLogin is enabled and user does not exist', async () => {
     const settings = getSettings();
     settings.main.newPlexLogin = true;
@@ -495,38 +582,15 @@ describe('POST /auth/jellyfin/quickconnect/authenticate', () => {
     assert.strictEqual(meRes.status, 200);
   });
 
-  it('sets userType to EMBY when media server is Emby', async () => {
-    const settings = getSettings();
-    settings.main.mediaServerType = MediaServerType.EMBY;
-    settings.main.newPlexLogin = true;
+  it('returns 403 when the media server is Emby', async () => {
+    getSettings().main.mediaServerType = MediaServerType.EMBY;
 
-    authenticateQCMock.mock.mockImplementation(async () => ({
-      User: {
-        Id: 'emby-new-user',
-        Name: 'embyuser',
-        ServerId: 'server-1',
-        Policy: { IsAdministrator: false },
-      },
-      AccessToken: 'emby-token',
-    }));
-
-    const agent = request.agent(app);
-    const res = await agent
+    const res = await request(app)
       .post('/auth/jellyfin/quickconnect/authenticate')
       .send({ secret: 'abc123def456abc123def456' });
 
-    assert.strictEqual(res.status, 200);
-
-    const meRes = await agent.get('/auth/me');
-    assert.strictEqual(meRes.status, 200);
-    assert.strictEqual(meRes.body.jellyfinUsername, 'embyuser');
-
-    const userRepo = getRepository(User);
-    const user = await userRepo.findOne({
-      where: { jellyfinUserId: 'emby-new-user' },
-    });
-    assert.ok(user);
-    assert.strictEqual(user.userType, UserType.EMBY);
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(authenticateQCMock.mock.callCount(), 0);
   });
 
   it('applies default permissions to newly created users', async () => {
@@ -967,6 +1031,223 @@ describe('POST /auth/plex', () => {
 
     assert.strictEqual(res.status, 400);
     assert.strictEqual(res.body.message, 'Request body must be an object.');
+  });
+});
+
+describe('POST /auth/jellyfin/bridge', () => {
+  const jellyfinUserId = '0123456789abcdef0123456789abcdef';
+
+  const configureBridge = async () => {
+    const settings = getSettings();
+    const userRepository = getRepository(User);
+    const existingUser = await userRepository.findOneByOrFail({ id: 1 });
+    settings.main.mediaServerType = MediaServerType.JELLYFIN;
+    settings.main.mediaServerLogin = true;
+    settings.jellyfin.ip = 'jellyfin.local';
+    settings.jellyfin.port = 8096;
+    settings.jellyfin.serverId = 'test-jellyfin-server';
+    settings.jellyfin.externalHostname = 'http://jellyfin.local';
+    settings.jellyfin.bridgeLoginEnabled = true;
+    settings.network.tls.allowHttpAuth = true;
+    await userRepository.update(1, { jellyfinUserId });
+    return {
+      settings,
+      restoreUser: () => userRepository.save(existingUser),
+    };
+  };
+
+  it('validates a linked Jellyfin account and creates a revocable SeerrNG session', async () => {
+    const { settings, restoreUser } = await configureBridge();
+    const getUser = mock.method(
+      JellyfinAPI.prototype,
+      'getUser',
+      async () =>
+        ({
+          Id: jellyfinUserId,
+          Name: 'linked-user',
+          ServerId: 'test-jellyfin-server',
+        }) as never
+    );
+    const agent = request.agent(app);
+
+    try {
+      const response = await agent
+        .post('/auth/jellyfin/bridge')
+        .set('Origin', 'http://jellyfin.local')
+        .type('form')
+        .send({ token: 'current-jellyfin-session-token' });
+
+      assert.strictEqual(response.status, 303);
+      assert.strictEqual(response.headers.location, '/');
+      assert.strictEqual(
+        response.headers['cache-control'],
+        'no-store, private'
+      );
+      assert.strictEqual(response.headers['referrer-policy'], 'no-referrer');
+      assert.strictEqual(getUser.mock.callCount(), 1);
+      assert.strictEqual((await agent.get('/auth/me')).status, 200);
+
+      settings.jellyfin.bridgeLoginEnabled = false;
+      assert.strictEqual((await agent.get('/auth/me')).status, 403);
+      assert.strictEqual((await agent.get('/auth/me')).status, 403);
+    } finally {
+      getUser.mock.restore();
+      await restoreUser();
+    }
+  });
+
+  it('does not allow a Jellyfin token from a different server', async () => {
+    const { restoreUser } = await configureBridge();
+    const getUser = mock.method(
+      JellyfinAPI.prototype,
+      'getUser',
+      async () =>
+        ({
+          Id: jellyfinUserId,
+          Name: 'linked-user',
+          ServerId: 'different-server',
+        }) as never
+    );
+
+    try {
+      const response = await request(app)
+        .post('/auth/jellyfin/bridge')
+        .set('Origin', 'http://jellyfin.local')
+        .type('form')
+        .send({ token: 'current-jellyfin-session-token' });
+
+      assert.strictEqual(response.status, 403);
+      assert.strictEqual(getUser.mock.callCount(), 1);
+    } finally {
+      getUser.mock.restore();
+      await restoreUser();
+    }
+  });
+
+  it('respects the Jellyfin sign-in and HTTP-auth settings before contacting Jellyfin', async () => {
+    const { settings, restoreUser } = await configureBridge();
+    const getUser = mock.method(JellyfinAPI.prototype, 'getUser');
+
+    try {
+      settings.main.mediaServerType = MediaServerType.PLEX;
+      const wrongMediaServer = await request(app)
+        .post('/auth/jellyfin/bridge')
+        .set('Origin', 'http://jellyfin.local')
+        .type('form')
+        .send({ token: 'current-jellyfin-session-token' });
+      assert.strictEqual(wrongMediaServer.status, 403);
+
+      settings.main.mediaServerType = MediaServerType.JELLYFIN;
+      settings.main.mediaServerLogin = false;
+      const signInDisabled = await request(app)
+        .post('/auth/jellyfin/bridge')
+        .set('Origin', 'http://jellyfin.local')
+        .type('form')
+        .send({ token: 'current-jellyfin-session-token' });
+      assert.strictEqual(signInDisabled.status, 403);
+
+      settings.main.mediaServerLogin = true;
+      settings.network.tls.allowHttpAuth = false;
+      const insecureTransport = await request(app)
+        .post('/auth/jellyfin/bridge')
+        .set('Origin', 'http://jellyfin.local')
+        .type('form')
+        .send({ token: 'current-jellyfin-session-token' });
+      assert.strictEqual(insecureTransport.status, 403);
+      assert.strictEqual(getUser.mock.callCount(), 0);
+    } finally {
+      getUser.mock.restore();
+      await restoreUser();
+    }
+  });
+
+  it('revokes a bridge-created session when the user unlinks Jellyfin', async () => {
+    const { settings, restoreUser } = await configureBridge();
+    const getUser = mock.method(
+      JellyfinAPI.prototype,
+      'getUser',
+      async () =>
+        ({
+          Id: jellyfinUserId,
+          Name: 'linked-user',
+          ServerId: 'test-jellyfin-server',
+        }) as never
+    );
+    const agent = request.agent(app);
+
+    try {
+      const response = await agent
+        .post('/auth/jellyfin/bridge')
+        .set('Origin', 'http://jellyfin.local')
+        .type('form')
+        .send({ token: 'current-jellyfin-session-token' });
+      assert.strictEqual(response.status, 303);
+      assert.strictEqual((await agent.get('/auth/me')).status, 200);
+
+      await getRepository(User).update(1, { jellyfinUserId: null });
+      assert.strictEqual((await agent.get('/auth/me')).status, 403);
+
+      // A bridge session that was idle during the toggle must not regain
+      // authority when an administrator re-enables bridge sign-in.
+      await getRepository(User).update(1, { jellyfinUserId });
+      const secondAgent = request.agent(app);
+      const secondLogin = await secondAgent
+        .post('/auth/jellyfin/bridge')
+        .set('Origin', 'http://jellyfin.local')
+        .type('form')
+        .send({ token: 'current-jellyfin-session-token' });
+      assert.strictEqual(secondLogin.status, 303);
+
+      settings.jellyfin.bridgeLoginEnabled = false;
+      settings.jellyfin.bridgeLoginGeneration =
+        (settings.jellyfin.bridgeLoginGeneration ?? 0) + 1;
+      settings.jellyfin.bridgeLoginEnabled = true;
+      settings.jellyfin.bridgeLoginGeneration += 1;
+      assert.strictEqual((await secondAgent.get('/auth/me')).status, 403);
+    } finally {
+      getUser.mock.restore();
+      await restoreUser();
+    }
+  });
+
+  it('rejects bridge login when disabled without contacting Jellyfin', async () => {
+    const getUser = mock.method(JellyfinAPI.prototype, 'getUser');
+
+    try {
+      const response = await request(app)
+        .post('/auth/jellyfin/bridge')
+        .type('form')
+        .send({ token: 'current-jellyfin-session-token' });
+
+      assert.strictEqual(response.status, 403);
+      assert.strictEqual(getUser.mock.callCount(), 0);
+    } finally {
+      getUser.mock.restore();
+    }
+  });
+
+  it('rejects missing and untrusted Jellyfin bridge origins', async () => {
+    const { restoreUser } = await configureBridge();
+    const getUser = mock.method(JellyfinAPI.prototype, 'getUser');
+
+    try {
+      const missingOrigin = await request(app)
+        .post('/auth/jellyfin/bridge')
+        .type('form')
+        .send({ token: 'current-jellyfin-session-token' });
+      const response = await request(app)
+        .post('/auth/jellyfin/bridge')
+        .set('Origin', 'https://attacker.example')
+        .type('form')
+        .send({ token: 'current-jellyfin-session-token' });
+
+      assert.strictEqual(missingOrigin.status, 403);
+      assert.strictEqual(response.status, 403);
+      assert.strictEqual(getUser.mock.callCount(), 0);
+    } finally {
+      getUser.mock.restore();
+      await restoreUser();
+    }
   });
 });
 
@@ -1598,7 +1879,7 @@ describe('POST /auth/local', () => {
   it('allows the non-admin user to log in', async () => {
     const res = await request(app)
       .post('/auth/local')
-      .send({ email: 'friend@seerr.dev', password: 'test1234' });
+      .send({ email: 'demo@seerr.dev', password: 'test1234' });
 
     assert.strictEqual(res.status, 200);
     assert.ok('id' in res.body);

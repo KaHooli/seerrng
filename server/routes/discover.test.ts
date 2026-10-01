@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import { afterEach, before, describe, it, mock } from 'node:test';
 
+import ComicVineAPI from '@server/api/comicvine';
 import CoverArtArchive from '@server/api/coverartarchive';
 import ExternalAPI from '@server/api/externalapi';
+import GoogleBooksAPI from '@server/api/googlebooks';
+import LazyLibrarianAPI from '@server/api/lazylibrarian';
 import ListenBrainzAPI from '@server/api/listenbrainz';
 import MusicBrainz from '@server/api/musicbrainz';
 import OpenLibraryAPI from '@server/api/openlibrary';
 import PlexTvAPI from '@server/api/plextv';
+import RadarrAPI from '@server/api/servarr/radarr';
+import ReadarrAPI from '@server/api/servarr/readarr';
 import TheMovieDb from '@server/api/themoviedb';
 import {
   MediaRequestStatus,
@@ -15,6 +20,8 @@ import {
 } from '@server/constants/media';
 import { UserType } from '@server/constants/user';
 import { getRepository } from '@server/datasource';
+import { ComicCatalogScan } from '@server/entity/ComicCatalogScan';
+import { ComicCatalogVolume } from '@server/entity/ComicCatalogVolume';
 import Media from '@server/entity/Media';
 import MediaIdentifier, {
   MediaIdentifierProvider,
@@ -23,7 +30,12 @@ import { MediaRequest } from '@server/entity/MediaRequest';
 import { MediaSearchMetadata } from '@server/entity/MediaSearchMetadata';
 import { User } from '@server/entity/User';
 import { Watchlist } from '@server/entity/Watchlist';
-import { getSettings } from '@server/lib/settings';
+import {
+  getSettings,
+  type LazyLibrarianSettings,
+  type RadarrSettings,
+  type ReadarrSettings,
+} from '@server/lib/settings';
 import logger from '@server/logger';
 import { checkUser } from '@server/middleware/auth';
 import { setupTestDb } from '@server/test/db';
@@ -81,6 +93,28 @@ afterEach(() => {
 });
 
 setupTestDb();
+
+const createRadarrSettings = (id: number, is4k: boolean): RadarrSettings => ({
+  id,
+  name: is4k ? 'Radarr-4K' : 'Radarr-HD',
+  hostname: 'radarr.test',
+  port: is4k ? 7879 : 7878,
+  apiKey: 'radarr-key',
+  useSsl: false,
+  baseUrl: '',
+  activeProfileId: 1,
+  activeProfileName: is4k ? 'Ultra-HD 4K' : 'HD-1080p',
+  activeDirectory: is4k ? '/movies/4k' : '/movies/hd',
+  tags: [],
+  is4k,
+  isDefault: true,
+  externalUrl: '',
+  syncEnabled: true,
+  preventSearch: false,
+  tagRequests: false,
+  overrideRule: [],
+  minimumAvailability: 'released',
+});
 
 describe('genre slider provider bounds', () => {
   it('bounds external music and book discovery fan-out', () => {
@@ -152,6 +186,46 @@ async function login(email = 'admin@seerr.dev') {
   }
 }
 
+describe('media category availability guards', () => {
+  it('hides disabled movie discovery at the API boundary', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      movie: false,
+    };
+
+    try {
+      const agent = await login();
+      const response = await agent.get('/discover/movies');
+
+      assert.strictEqual(response.status, 404);
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+    }
+  });
+
+  it('hides a disabled book format at the API boundary', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      ebook: false,
+    };
+
+    try {
+      const agent = await login();
+      const ebook = await agent.get('/discover/books?format=ebook');
+      const audiobook = await agent.get('/discover/books?format=audiobook');
+
+      assert.strictEqual(ebook.status, 404);
+      assert.notStrictEqual(audiobook.status, 404);
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+    }
+  });
+});
+
 describe('GET /discover/movies', () => {
   it('discovers locally available movies without contacting TMDB', async () => {
     const media = await getRepository(Media).save(
@@ -191,6 +265,159 @@ describe('GET /discover/movies', () => {
       (tmdbGet as { mock: { callCount: () => number } }).mock.callCount(),
       0
     );
+  });
+
+  it('uses current Radarr file state and metadata for quality availability', async (t) => {
+    const settings = getSettings();
+    const priorRadarr = settings.radarr;
+    settings.radarr = [createRadarrSettings(41, true)];
+    await getRepository(Media).save([
+      new Media({
+        tmdbId: 710001,
+        mediaType: MediaType.MOVIE,
+        status4k: MediaStatus.AVAILABLE,
+      }),
+      new Media({
+        tmdbId: 710002,
+        mediaType: MediaType.MOVIE,
+        status4k: MediaStatus.UNKNOWN,
+      }),
+    ]);
+    const liveMovies = [
+      {
+        id: 81,
+        title: 'Monitored Without File',
+        originalTitle: 'Monitored Without File',
+        year: 2025,
+        overview: '',
+        studio: '',
+        runtime: 90,
+        certification: '',
+        genres: [],
+        ratings: { votes: 0, value: 0 },
+        isAvailable: false,
+        monitored: true,
+        tmdbId: 710001,
+        imdbId: '',
+        titleSlug: 'monitored-without-file',
+        folderName: 'Monitored Without File',
+        path: '/movies/4k/Monitored Without File',
+        profileId: 1,
+        qualityProfileId: 1,
+        added: '2026-01-01',
+        hasFile: false,
+        tags: [],
+      },
+      {
+        id: 82,
+        title: 'Current 4K File',
+        originalTitle: 'Current 4K File',
+        year: 2026,
+        overview: 'Available from Radarr.',
+        studio: 'Test Studio',
+        runtime: 101,
+        certification: '',
+        genres: ['Adventure'],
+        ratings: { votes: 12, value: 7.5 },
+        isAvailable: true,
+        monitored: true,
+        tmdbId: 710002,
+        imdbId: 'tt710002',
+        titleSlug: 'current-4k-file',
+        folderName: 'Current 4K File',
+        path: '/movies/4k/Current 4K File',
+        profileId: 1,
+        qualityProfileId: 1,
+        added: '2026-01-02',
+        hasFile: true,
+        tags: [],
+      },
+    ];
+    Object.defineProperty(RadarrAPI.prototype, 'getMovies', {
+      configurable: true,
+      get: () => async () => liveMovies,
+      set: () => undefined,
+    });
+    t.after(() => {
+      delete (RadarrAPI.prototype as Partial<RadarrAPI>).getMovies;
+    });
+    const tmdbGet = mockPrivate(ExternalAPI.prototype, 'get', async () => {
+      throw new Error('TMDB must not be called for Radarr availability');
+    });
+
+    try {
+      const agent = await login();
+      const res = await agent.get('/discover/movies?availability=4k');
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.totalResults, 1);
+      assert.strictEqual(res.body.results[0].id, 710002);
+      assert.strictEqual(res.body.results[0].title, 'Current 4K File');
+      assert.match(
+        res.body.results[0].posterPath,
+        /serviceId=41&externalServiceId=82&is4k=true/
+      );
+      assert.strictEqual(
+        res.body.results[0].mediaInfo.status4k,
+        MediaStatus.AVAILABLE
+      );
+      assert.strictEqual(
+        (tmdbGet as { mock: { callCount: () => number } }).mock.callCount(),
+        0
+      );
+    } finally {
+      settings.radarr = priorRadarr;
+    }
+  });
+
+  it('falls back to indexed movie availability when Radarr is unavailable', async (t) => {
+    const settings = getSettings();
+    const priorRadarr = settings.radarr;
+    settings.radarr = [createRadarrSettings(42, false)];
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 710003,
+        mediaType: MediaType.MOVIE,
+        status: MediaStatus.AVAILABLE,
+        status4k: MediaStatus.UNKNOWN,
+      })
+    );
+    const metadataRepository = getRepository(MediaSearchMetadata);
+    await metadataRepository.save(
+      metadataRepository.create({
+        mediaId: media.id,
+        title: 'Indexed HD Movie',
+        releaseDate: '2026',
+        genres: 'Adventure',
+        runtime: '99 minutes',
+        searchText: 'indexed hd movie adventure',
+      })
+    );
+    Object.defineProperty(RadarrAPI.prototype, 'getMovies', {
+      configurable: true,
+      get: () => async () => {
+        throw new Error('Radarr is unavailable');
+      },
+      set: () => undefined,
+    });
+    t.after(() => {
+      delete (RadarrAPI.prototype as Partial<RadarrAPI>).getMovies;
+    });
+
+    try {
+      const agent = await login();
+      const res = await agent.get('/discover/movies?availability=hd');
+
+      assert.strictEqual(res.status, 200);
+      assert.ok(
+        res.body.results.some(
+          (result: { id: number; title: string }) =>
+            result.id === 710003 && result.title === 'Indexed HD Movie'
+        )
+      );
+    } finally {
+      settings.radarr = priorRadarr;
+    }
   });
 
   it('rejects malformed movie genre IDs before provider lookup', async () => {
@@ -335,6 +562,93 @@ describe('GET /discover/movies', () => {
     assert.deepStrictEqual(
       res.body.results.map((result: { title: string }) => result.title),
       ['Star Trek']
+    );
+  });
+
+  it('searches movie and series keywords on their main discovery pages', async () => {
+    mockPrivate(ExternalAPI.prototype, 'get', async (endpoint: unknown) => {
+      if (endpoint === '/search/keyword') {
+        return {
+          page: 1,
+          total_pages: 1,
+          total_results: 1,
+          results: [{ id: 987, name: 'time travel' }],
+        };
+      }
+
+      if (endpoint === '/search/movie' || endpoint === '/search/tv') {
+        return { page: 1, total_pages: 1, total_results: 0, results: [] };
+      }
+
+      if (endpoint === '/discover/movie') {
+        return {
+          page: 1,
+          total_pages: 1,
+          total_results: 1,
+          results: [
+            {
+              id: 91,
+              media_type: 'movie',
+              title: 'A Different Title',
+              original_title: 'A Different Title',
+              release_date: '2026-01-01',
+              adult: false,
+              video: false,
+              popularity: 20,
+              poster_path: undefined,
+              backdrop_path: undefined,
+              vote_count: 100,
+              vote_average: 7,
+              genre_ids: [],
+              overview: '',
+              original_language: 'en',
+            },
+          ],
+        };
+      }
+
+      if (endpoint === '/discover/tv') {
+        return {
+          page: 1,
+          total_pages: 1,
+          total_results: 1,
+          results: [
+            {
+              id: 92,
+              media_type: 'tv',
+              name: 'Another Different Title',
+              original_name: 'Another Different Title',
+              origin_country: ['US'],
+              first_air_date: '2026-01-01',
+              popularity: 20,
+              poster_path: undefined,
+              backdrop_path: undefined,
+              vote_count: 100,
+              vote_average: 7,
+              genre_ids: [],
+              overview: '',
+              original_language: 'en',
+            },
+          ],
+        };
+      }
+
+      throw new Error('Unexpected TMDB endpoint: ' + String(endpoint));
+    });
+
+    const agent = await login();
+    const movie = await agent.get('/discover/movies?search=time%20travel');
+    const series = await agent.get('/discover/tv?search=time%20travel');
+
+    assert.strictEqual(movie.status, 200);
+    assert.strictEqual(series.status, 200);
+    assert.deepStrictEqual(
+      movie.body.results.map((result: { title: string }) => result.title),
+      ['A Different Title']
+    );
+    assert.deepStrictEqual(
+      series.body.results.map((result: { name: string }) => result.name),
+      ['Another Different Title']
     );
   });
 
@@ -1482,7 +1796,7 @@ describe('GET /discover/music', () => {
     );
     const searchAlbumMock = mock.method(
       MusicBrainz.prototype,
-      'searchAlbum',
+      'searchAlbumWithTotal',
       async ({
         query,
         limit,
@@ -1492,9 +1806,9 @@ describe('GET /discover/music', () => {
         limit?: number;
         offset?: number;
       }) => {
-        assert.strictEqual(query, 'kind AND of AND blue');
-        assert.strictEqual(limit, 100);
-        assert.strictEqual(offset, 0);
+        assert.match(query, /releasegroup:kind/);
+        assert.strictEqual(limit, 20);
+        assert.strictEqual(offset, 20);
 
         const fillerAlbum = {
           id: 'musicbrainz-release-group-filler',
@@ -1521,36 +1835,39 @@ describe('GET /discover/music', () => {
           releasedate: '1958',
         };
 
-        return [
-          ...Array.from({ length: 20 }, (_, index) => ({
-            ...fillerAlbum,
-            id: `${fillerAlbum.id}-${index}`,
-          })),
-          {
-            id: 'musicbrainz-release-group-id',
-            score: 100,
-            media_type: 'album',
-            title: 'Kind of Blue',
-            'primary-type': 'Album',
-            'primary-type-id': '',
-            'type-id': '',
-            'first-release-date': '1959',
-            'artist-credit': [
-              {
-                name: 'Miles Davis',
-                artist: {
-                  id: 'artist-id',
+        return {
+          totalResults: 21,
+          results: [
+            ...Array.from({ length: 20 }, (_, index) => ({
+              ...fillerAlbum,
+              id: `${fillerAlbum.id}-${index}`,
+            })),
+            {
+              id: 'musicbrainz-release-group-id',
+              score: 100,
+              media_type: 'album',
+              title: 'Kind of Blue',
+              'primary-type': 'Album',
+              'primary-type-id': '',
+              'type-id': '',
+              'first-release-date': '1959',
+              'artist-credit': [
+                {
                   name: 'Miles Davis',
-                  'sort-name': 'Davis, Miles',
+                  artist: {
+                    id: 'artist-id',
+                    name: 'Miles Davis',
+                    'sort-name': 'Davis, Miles',
+                  },
                 },
-              },
-            ],
-            posterPath: undefined,
-            count: 1,
-            releases: [],
-            releasedate: '1959',
-          },
-        ];
+              ],
+              posterPath: undefined,
+              count: 1,
+              releases: [],
+              releasedate: '1959',
+            },
+          ].slice(offset, offset! + limit!),
+        };
       }
     );
 
@@ -1566,12 +1883,64 @@ describe('GET /discover/music', () => {
     assert.strictEqual(res.body.results[0].title, 'Kind of Blue');
   });
 
+  it('finds music by an album tag when title and artist differ', async () => {
+    mock.method(
+      MusicBrainz.prototype,
+      'searchAlbumWithTotal',
+      async ({ query }: { query: string }) => {
+        assert.strictEqual(
+          query,
+          '(releasegroup:ambient OR artist:ambient OR tag:ambient)'
+        );
+        return {
+          totalResults: 1,
+          results: [
+            {
+              id: 'ambient-tagged-album',
+              score: 100,
+              media_type: 'album',
+              title: 'A Different Album',
+              'primary-type': 'Album',
+              'primary-type-id': '',
+              'type-id': '',
+              'first-release-date': '2024',
+              'artist-credit': [
+                {
+                  name: 'Different Artist',
+                  artist: {
+                    id: 'different-artist',
+                    name: 'Different Artist',
+                    'sort-name': 'Different Artist',
+                  },
+                },
+              ],
+              tags: [{ name: 'ambient', count: 1 }],
+              posterPath: undefined,
+              count: 1,
+              releases: [],
+              releasedate: '2024',
+            },
+          ],
+        };
+      }
+    );
+
+    const agent = await login();
+    const res = await agent.get('/discover/music?query=ambient');
+
+    assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual(
+      res.body.results.map((result: { title: string }) => result.title),
+      ['A Different Album']
+    );
+  });
+
   it('drops broad music results that do not contain every keyword', async () => {
     mock.method(
       MusicBrainz.prototype,
-      'searchAlbum',
+      'searchAlbumWithTotal',
       async ({ query }: { query: string }) => {
-        assert.strictEqual(query, 'microsoft AND windows');
+        assert.match(query, /releasegroup:microsoft/);
 
         const album = {
           score: 100,
@@ -1587,38 +1956,41 @@ describe('GET /discover/music', () => {
           tags: [],
         };
 
-        return [
-          {
-            ...album,
-            id: 'relevant-album',
-            title: 'Microsoft Windows Sounds',
-            'artist-credit': [
-              {
-                name: 'System Artist',
-                artist: {
-                  id: 'system-artist',
+        return {
+          totalResults: 2,
+          results: [
+            {
+              ...album,
+              id: 'relevant-album',
+              title: 'Microsoft Windows Sounds',
+              'artist-credit': [
+                {
                   name: 'System Artist',
-                  'sort-name': 'System Artist',
+                  artist: {
+                    id: 'system-artist',
+                    name: 'System Artist',
+                    'sort-name': 'System Artist',
+                  },
                 },
-              },
-            ],
-          },
-          {
-            ...album,
-            id: 'broad-album',
-            title: 'Windows at Night',
-            'artist-credit': [
-              {
-                name: 'Novel Band',
-                artist: {
-                  id: 'novel-band',
+              ],
+            },
+            {
+              ...album,
+              id: 'broad-album',
+              title: 'Windows at Night',
+              'artist-credit': [
+                {
                   name: 'Novel Band',
-                  'sort-name': 'Novel Band',
+                  artist: {
+                    id: 'novel-band',
+                    name: 'Novel Band',
+                    'sort-name': 'Novel Band',
+                  },
                 },
-              },
-            ],
-          },
-        ];
+              ],
+            },
+          ],
+        };
       }
     );
 
@@ -1659,33 +2031,36 @@ describe('GET /discover/music', () => {
           availableMusicServiceIds: [0, 2],
         })
       );
-      mock.method(MusicBrainz.prototype, 'searchAlbum', async () => [
-        {
-          id: 'quality-available-album',
-          title: 'Quality Available Album',
-          score: 100,
-          media_type: 'album',
-          'primary-type': 'Album',
-          'primary-type-id': '',
-          'type-id': '',
-          'first-release-date': '2026',
-          posterPath: undefined,
-          count: 1,
-          releases: [],
-          releasedate: '2026',
-          tags: [],
-          'artist-credit': [
-            {
-              name: 'Quality Artist',
-              artist: {
-                id: 'quality-artist',
+      mock.method(MusicBrainz.prototype, 'searchAlbumWithTotal', async () => ({
+        totalResults: 1,
+        results: [
+          {
+            id: 'quality-available-album',
+            title: 'Quality Available Album',
+            score: 100,
+            media_type: 'album',
+            'primary-type': 'Album',
+            'primary-type-id': '',
+            'type-id': '',
+            'first-release-date': '2026',
+            posterPath: undefined,
+            count: 1,
+            releases: [],
+            releasedate: '2026',
+            tags: [],
+            'artist-credit': [
+              {
                 name: 'Quality Artist',
-                'sort-name': 'Quality Artist',
+                artist: {
+                  id: 'quality-artist',
+                  name: 'Quality Artist',
+                  'sort-name': 'Quality Artist',
+                },
               },
-            },
-          ],
-        },
-      ]);
+            ],
+          },
+        ],
+      }));
 
       const agent = await login();
       const res = await agent.get('/discover/music?query=quality%20available');
@@ -1779,43 +2154,39 @@ describe('GET /discover/music', () => {
   });
 
   it('applies release type, genre, and year filters to music searches', async () => {
-    mock.method(MusicBrainz.prototype, 'searchAlbum', async () => [
-      {
-        id: 'matching-album',
-        score: 100,
-        media_type: 'album',
-        title: 'Matching Album',
-        'primary-type': 'Album',
-        'primary-type-id': '',
-        'type-id': '',
-        'first-release-date': '2024-06-01',
-        'artist-credit': [],
-        posterPath: undefined,
-        count: 1,
-        releases: [],
-        releasedate: '2024-06-01',
-        tags: [
-          { count: 5, name: 'jazz' },
-          { count: 4, name: 'blue' },
-        ],
-      },
-      {
-        id: 'wrong-year-album',
-        score: 90,
-        media_type: 'album',
-        title: 'Wrong Year Album',
-        'primary-type': 'Album',
-        'primary-type-id': '',
-        'type-id': '',
-        'first-release-date': '2023-06-01',
-        'artist-credit': [],
-        posterPath: undefined,
-        count: 1,
-        releases: [],
-        releasedate: '2023-06-01',
-        tags: [{ count: 5, name: 'jazz' }],
-      },
-    ]);
+    mock.method(
+      MusicBrainz.prototype,
+      'searchAlbumWithTotal',
+      async ({ query }: { query: string }) => {
+        assert.match(query, /primarytype:"Album"/);
+        assert.match(query, /tag:"jazz"/);
+        assert.match(query, /firstreleasedate:\[2024-01-01 TO 2024-12-31\]/);
+        return {
+          totalResults: 1,
+          results: [
+            {
+              id: 'matching-album',
+              score: 100,
+              media_type: 'album',
+              title: 'Matching Album',
+              'primary-type': 'Album',
+              'primary-type-id': '',
+              'type-id': '',
+              'first-release-date': '2024-06-01',
+              'artist-credit': [],
+              posterPath: undefined,
+              count: 1,
+              releases: [],
+              releasedate: '2024-06-01',
+              tags: [
+                { count: 5, name: 'jazz' },
+                { count: 4, name: 'blue' },
+              ],
+            },
+          ],
+        };
+      }
+    );
 
     const agent = await login();
     const res = await agent.get('/discover/music').query({
@@ -1830,6 +2201,57 @@ describe('GET /discover/music', () => {
     assert.deepStrictEqual(
       res.body.results.map((result: { title: string }) => result.title),
       ['Matching Album']
+    );
+  });
+
+  it('returns all-time ListenBrainz top albums for most-listened music discovery', async () => {
+    const topAlbumsMock = mock.method(
+      ListenBrainzAPI.prototype,
+      'getTopAlbums',
+      async ({ range }: { range: string }) => {
+        assert.strictEqual(range, 'all_time');
+
+        return {
+          payload: {
+            count: 2,
+            from_ts: 0,
+            last_updated: 0,
+            offset: 0,
+            range,
+            to_ts: 0,
+            release_groups: [
+              {
+                artist_mbids: ['artist-most-listened'],
+                artist_name: 'Most Listened Artist',
+                caa_id: 1,
+                caa_release_mbid: 'release-most-listened',
+                listen_count: 900,
+                release_group_mbid: 'album-most-listened',
+                release_group_name: 'Most Listened Album',
+              },
+              {
+                artist_mbids: ['artist-second'],
+                artist_name: 'Second Artist',
+                caa_id: 2,
+                caa_release_mbid: 'release-second',
+                listen_count: 800,
+                release_group_mbid: 'album-second',
+                release_group_name: 'Second Album',
+              },
+            ],
+          },
+        };
+      }
+    );
+
+    const agent = await login();
+    const res = await agent.get('/discover/music?sortBy=listen_count.desc');
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(topAlbumsMock.mock.callCount(), 1);
+    assert.deepStrictEqual(
+      res.body.results.map((result: { title: string }) => result.title),
+      ['Most Listened Album', 'Second Album']
     );
   });
 
@@ -2156,9 +2578,7 @@ describe('GET /discover/music', () => {
     }));
 
     const agent = await login();
-    const res = await agent.get(
-      '/discover/music?sortBy=ranked&releaseType=Album'
-    );
+    const res = await agent.get('/discover/music?sortBy=ranked&days=14');
 
     assert.strictEqual(res.status, 200);
     assert.deepStrictEqual(
@@ -2232,9 +2652,7 @@ describe('GET /discover/music', () => {
     }));
 
     const agent = await login();
-    const res = await agent.get(
-      '/discover/music?sortBy=ranked&releaseType=Album'
-    );
+    const res = await agent.get('/discover/music?sortBy=ranked&days=14');
 
     assert.strictEqual(res.status, 200);
     const titles = res.body.results
@@ -2714,9 +3132,7 @@ describe('GET /discover/music', () => {
     }));
 
     const agent = await login();
-    const res = await agent.get(
-      '/discover/music?sortBy=unsupported&releaseType=Album'
-    );
+    const res = await agent.get('/discover/music?sortBy=unsupported&days=14');
 
     assert.strictEqual(res.status, 200);
     assert.strictEqual(topAlbumsMock.mock.callCount(), 0);
@@ -2787,18 +3203,16 @@ describe('GET /discover/music', () => {
     assert.deepStrictEqual(res.body.results, []);
   });
 
-  it('returns an empty result set when MusicBrainz search is unavailable', async () => {
-    mock.method(MusicBrainz.prototype, 'searchAlbum', async () => {
+  it('returns a retryable error when MusicBrainz search is unavailable', async () => {
+    mock.method(MusicBrainz.prototype, 'searchAlbumWithTotal', async () => {
       throw new Error('provider unavailable');
     });
 
     const agent = await login();
     const res = await agent.get('/discover/music?query=kind%20of%20blue');
 
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.page, 1);
-    assert.strictEqual(res.body.totalResults, 0);
-    assert.deepStrictEqual(res.body.results, []);
+    assert.strictEqual(res.status, 503);
+    assert.match(res.body.message, /temporarily unavailable/);
   });
 
   it('only exposes the current user watchlist state on music results', async () => {
@@ -2869,7 +3283,7 @@ describe('GET /discover/music', () => {
     ]);
 
     const agent = await login('friend@seerr.dev');
-    const res = await agent.get('/discover/music?releaseType=Album');
+    const res = await agent.get('/discover/music?days=14');
 
     assert.strictEqual(res.status, 200);
     assert.strictEqual(res.body.results[0].mediaInfo.watchlists.length, 0);
@@ -2892,6 +3306,442 @@ describe('GET /discover/music', () => {
 });
 
 describe('GET /discover/books', () => {
+  it('sends the author constraint to the provider together with the genre and keyword', async () => {
+    const searchBooks = mock.method(
+      OpenLibraryAPI.prototype,
+      'searchBooks',
+      async ({ query }: { query: string }) => {
+        assert.match(query, /author:"stephen"/);
+        assert.match(query, /author:"king"/);
+        assert.match(query, /subject:horror/);
+        assert.match(query, /title:"shining"/);
+        return { numFound: 0, start: 0, docs: [] };
+      }
+    );
+    const agent = await login();
+    const response = await agent
+      .get('/discover/books')
+      .query({ author: 'Stephen King', query: 'Shining', subject: 'horror' });
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(searchBooks.mock.callCount(), 1);
+  });
+
+  it('rejects oversized author searches before provider lookup', async () => {
+    const searchBooks = mock.method(OpenLibraryAPI.prototype, 'searchBooks');
+    const agent = await login();
+    const response = await agent
+      .get('/discover/books')
+      .query({ author: 'x'.repeat(257) });
+    assert.strictEqual(response.status, 400);
+    assert.strictEqual(searchBooks.mock.callCount(), 0);
+  });
+
+  it('searches populated audiobook narrator metadata while retaining the author filter', async () => {
+    getSettings().readarr = [
+      {
+        id: 0,
+        hostname: 'bookshelf.test',
+        port: 8787,
+        apiKey: 'test-key',
+        useSsl: false,
+        baseUrl: '',
+        serviceType: 'audiobook',
+      } as ReadarrSettings,
+    ];
+    const searchOpenLibrary = mock.method(
+      OpenLibraryAPI.prototype,
+      'searchBooks'
+    );
+    const getBooks = mock.method(ReadarrAPI.prototype, 'getBooks', async () => [
+      {
+        id: 1,
+        title: 'First Story',
+        foreignBookId: 'hardcover:first',
+        author: { authorName: 'Writer One' },
+        narrators: ['Alice Reader'],
+      },
+      {
+        id: 2,
+        title: 'Second Story',
+        foreignBookId: 'hardcover:second',
+        author: { authorName: 'Writer Two' },
+        narrators: ['Alice Reader'],
+      },
+      {
+        id: 3,
+        title: 'Third Story',
+        foreignBookId: 'hardcover:third',
+        author: { authorName: 'Writer One' },
+      },
+    ]);
+
+    try {
+      const agent = await login();
+      const result = await agent.get('/discover/books').query({
+        format: 'audiobook',
+        narrator: 'Alice',
+        author: 'Writer One',
+      });
+      assert.strictEqual(result.status, 200);
+      assert.deepStrictEqual(
+        result.body.results.map((book: { title: string }) => book.title),
+        ['First Story']
+      );
+      assert.deepStrictEqual(result.body.results[0].narrators, [
+        'Alice Reader',
+      ]);
+      assert.strictEqual(getBooks.mock.callCount(), 1);
+      assert.strictEqual(searchOpenLibrary.mock.callCount(), 0);
+    } finally {
+      getSettings().readarr = [];
+    }
+  });
+
+  it('browses existing audiobook catalog titles without querying ebook sources', async () => {
+    getSettings().readarr = [
+      {
+        id: 0,
+        hostname: 'audiobookshelf.test',
+        port: 8787,
+        apiKey: 'audio-key',
+        useSsl: false,
+        baseUrl: '',
+        serviceType: 'audiobook',
+      } as ReadarrSettings,
+      {
+        id: 1,
+        hostname: 'ebookshelf.test',
+        port: 8787,
+        apiKey: 'ebook-key',
+        useSsl: false,
+        baseUrl: '',
+        serviceType: 'ebook',
+      } as ReadarrSettings,
+    ];
+    const searchOpenLibrary = mock.method(
+      OpenLibraryAPI.prototype,
+      'searchBooks'
+    );
+    const getBooks = mock.method(ReadarrAPI.prototype, 'getBooks');
+    const getBooksPage = mock.method(
+      ReadarrAPI.prototype,
+      'getBooksPage',
+      async (offset: number, pageSize: number) => {
+        assert.strictEqual(offset, 50);
+        assert.strictEqual(pageSize, 50);
+        return {
+          books: [
+            {
+              id: 51,
+              title: 'Existing Audio Edition',
+              foreignBookId: 'hardcover:audio-work',
+              author: { authorName: 'Writer One' },
+              narrators: ['Reader One'],
+            },
+            {
+              id: 52,
+              title: 'Unidentified Audio Edition',
+              author: { authorName: 'Writer Two' },
+            },
+          ],
+          totalCount: 300,
+        };
+      }
+    );
+
+    try {
+      const agent = await login();
+      const result = await agent
+        .get('/discover/books')
+        .query({ format: 'audiobook', page: 2 });
+
+      assert.strictEqual(result.status, 200);
+      assert.deepStrictEqual(
+        result.body.results.map((book: { title: string }) => book.title),
+        ['Existing Audio Edition']
+      );
+      assert.strictEqual(result.body.totalResults, 300);
+      assert.strictEqual(result.body.totalPages, 6);
+      assert.strictEqual(getBooksPage.mock.callCount(), 1);
+      assert.strictEqual(getBooks.mock.callCount(), 0);
+      assert.strictEqual(searchOpenLibrary.mock.callCount(), 0);
+    } finally {
+      getSettings().readarr = [];
+    }
+  });
+
+  it('keeps combined audiobook catalog paging global across multiple services', async () => {
+    getSettings().readarr = [
+      {
+        id: 0,
+        hostname: 'audiobookshelf-one.test',
+        port: 8787,
+        apiKey: 'audio-key-one',
+        useSsl: false,
+        baseUrl: '',
+        serviceType: 'audiobook',
+      } as ReadarrSettings,
+      {
+        id: 1,
+        hostname: 'audiobookshelf-two.test',
+        port: 8787,
+        apiKey: 'audio-key-two',
+        useSsl: false,
+        baseUrl: '',
+        serviceType: 'audiobook',
+      } as ReadarrSettings,
+    ];
+    const searchOpenLibrary = mock.method(
+      OpenLibraryAPI.prototype,
+      'searchBooks'
+    );
+    const catalog = Array.from({ length: 70 }, (_, index) => ({
+      id: index + 1,
+      title: `Audiobook ${String(index + 1).padStart(2, '0')}`,
+      foreignBookId: `hardcover:audiobook-${index + 1}`,
+      author: { authorName: 'Fixture Author' },
+    }));
+    const getBooks = mock.method(
+      ReadarrAPI.prototype,
+      'getBooks',
+      async () => catalog
+    );
+    const getBooksPage = mock.method(
+      ReadarrAPI.prototype,
+      'getBooksPage',
+      async () => {
+        throw new Error('combined libraries must use global paging');
+      }
+    );
+
+    try {
+      const agent = await login();
+      const result = await agent
+        .get('/discover/books')
+        .query({ format: 'audiobook', page: 2 });
+
+      assert.strictEqual(result.status, 200);
+      assert.strictEqual(result.body.totalResults, 140);
+      assert.strictEqual(result.body.results.length, 50);
+      assert.strictEqual(result.body.results[0].title, 'Audiobook 26');
+      assert.strictEqual(getBooks.mock.callCount(), 2);
+      assert.strictEqual(getBooksPage.mock.callCount(), 0);
+      assert.strictEqual(searchOpenLibrary.mock.callCount(), 0);
+    } finally {
+      getSettings().readarr = [];
+    }
+  });
+
+  it('searches audiobook keywords only in audiobook Bookshelf services', async () => {
+    getSettings().readarr = [
+      {
+        id: 0,
+        hostname: 'audiobookshelf.test',
+        port: 8787,
+        apiKey: 'audio-key',
+        useSsl: false,
+        baseUrl: '',
+        serviceType: 'audiobook',
+      } as ReadarrSettings,
+      {
+        id: 1,
+        hostname: 'ebookshelf.test',
+        port: 8787,
+        apiKey: 'ebook-key',
+        useSsl: false,
+        baseUrl: '',
+        serviceType: 'ebook',
+      } as ReadarrSettings,
+    ];
+    const searchOpenLibrary = mock.method(
+      OpenLibraryAPI.prototype,
+      'searchBooks'
+    );
+    const searchBookshelf = mock.method(
+      ReadarrAPI.prototype,
+      'lookupBook',
+      async () => [
+        {
+          id: 1,
+          title: 'The Da Vinci Code Audiobook',
+          foreignBookId: 'hardcover:da-vinci-code-audio',
+          author: { authorName: 'Dan Brown' },
+          narrators: ['Paul Michael'],
+        },
+      ]
+    );
+    const getBooks = mock.method(ReadarrAPI.prototype, 'getBooks');
+
+    try {
+      const agent = await login();
+      const result = await agent.get('/discover/books').query({
+        format: 'audiobook',
+        query: 'The Da Vinci Code',
+      });
+
+      assert.strictEqual(result.status, 200);
+      assert.deepStrictEqual(
+        result.body.results.map((book: { title: string }) => book.title),
+        ['The Da Vinci Code Audiobook']
+      );
+      assert.strictEqual(searchBookshelf.mock.callCount(), 1);
+      assert.strictEqual(searchOpenLibrary.mock.callCount(), 0);
+      assert.strictEqual(getBooks.mock.callCount(), 0);
+    } finally {
+      getSettings().readarr = [];
+    }
+  });
+
+  it('returns ebook and audiobook results together for all-format discovery', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    const originalReadarr = settings.readarr;
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      ebook: true,
+      audiobook: true,
+    };
+    settings.readarr = [
+      {
+        id: 31,
+        hostname: 'audiobookshelf.test',
+        port: 8787,
+        apiKey: 'audio-key',
+        useSsl: false,
+        baseUrl: '',
+        serviceType: 'audiobook',
+      } as ReadarrSettings,
+    ];
+    const searchOpenLibrary = mock.method(
+      OpenLibraryAPI.prototype,
+      'searchBooks',
+      async () => ({
+        numFound: 1,
+        start: 0,
+        docs: [
+          {
+            key: '/works/OL-da-vinci-code',
+            title: 'The Da Vinci Code',
+            author_name: ['Dan Brown'],
+          },
+        ],
+      })
+    );
+    const searchBookshelf = mock.method(
+      ReadarrAPI.prototype,
+      'lookupBook',
+      async () => [
+        {
+          title: 'The Da Vinci Code',
+          foreignBookId: 'hardcover:da-vinci-code-audiobook',
+          author: { authorName: 'Dan Brown' },
+          narrators: ['Paul Michael'],
+        },
+      ]
+    );
+
+    try {
+      const agent = await login();
+      const result = await agent
+        .get('/discover/books')
+        .query({ query: 'The Da Vinci Code' });
+
+      assert.strictEqual(result.status, 200);
+      assert.deepStrictEqual(
+        result.body.results.map(
+          (book: { title: string; bookFormat: string }) => [
+            book.title,
+            book.bookFormat,
+          ]
+        ),
+        [
+          ['The Da Vinci Code', 'audiobook'],
+          ['The Da Vinci Code', 'ebook'],
+        ]
+      );
+      assert.strictEqual(searchOpenLibrary.mock.callCount(), 1);
+      assert.strictEqual(searchBookshelf.mock.callCount(), 1);
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+      settings.readarr = originalReadarr;
+    }
+  });
+
+  it('searches only audiobook catalogs when ebook discovery is disabled', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    const originalReadarr = settings.readarr;
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      ebook: false,
+      audiobook: true,
+    };
+    settings.readarr = [
+      {
+        id: 32,
+        hostname: 'audiobookshelf.test',
+        port: 8787,
+        apiKey: 'audio-key',
+        useSsl: false,
+        baseUrl: '',
+        serviceType: 'audiobook',
+      } as ReadarrSettings,
+    ];
+    const searchOpenLibrary = mock.method(
+      OpenLibraryAPI.prototype,
+      'searchBooks'
+    );
+    const searchBookshelf = mock.method(
+      ReadarrAPI.prototype,
+      'lookupBook',
+      async () => [
+        {
+          title: 'The Da Vinci Code Audiobook',
+          foreignBookId: 'hardcover:da-vinci-code-audiobook',
+          author: { authorName: 'Dan Brown' },
+        },
+      ]
+    );
+
+    try {
+      const agent = await login();
+      const result = await agent
+        .get('/discover/books')
+        .query({ query: 'The Da Vinci Code' });
+
+      assert.strictEqual(result.status, 200);
+      assert.deepStrictEqual(
+        result.body.results.map(
+          (book: { title: string; bookFormat: string }) => [
+            book.title,
+            book.bookFormat,
+          ]
+        ),
+        [['The Da Vinci Code Audiobook', 'audiobook']]
+      );
+      assert.strictEqual(searchOpenLibrary.mock.callCount(), 0);
+      assert.strictEqual(searchBookshelf.mock.callCount(), 1);
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+      settings.readarr = originalReadarr;
+    }
+  });
+
+  it('limits narrator search to audiobook format', async () => {
+    const searchOpenLibrary = mock.method(
+      OpenLibraryAPI.prototype,
+      'searchBooks'
+    );
+    const agent = await login();
+    const result = await agent.get('/discover/books').query({
+      format: 'ebook',
+      narrator: 'Alice',
+    });
+    assert.strictEqual(result.status, 400);
+    assert.match(result.body.message, /audiobook format/);
+    assert.strictEqual(searchOpenLibrary.mock.callCount(), 0);
+  });
+
   it('keeps completed book subject results when another subject stalls', async () => {
     const result = await settlePromisesWithin(
       [
@@ -3032,6 +3882,44 @@ describe('GET /discover/books', () => {
     assert.strictEqual(searchBooksMock.mock.callCount(), 1);
   });
 
+  it('requests and returns Open Library trending scores for book discovery', async () => {
+    const searchBooksMock = mock.method(
+      OpenLibraryAPI.prototype,
+      'searchBooks',
+      async ({ query, sort }: { query: string; sort?: string }) => {
+        assert.strictEqual(query, '*:* AND trending_score_hourly_sum:[1 TO *]');
+        assert.strictEqual(sort, 'trending');
+
+        return {
+          numFound: 2,
+          start: 0,
+          docs: [
+            {
+              key: '/works/OL-trending-high',
+              title: 'Trending Book',
+              trending_score_hourly_sum: 42,
+            },
+            {
+              key: '/works/OL-trending-low',
+              title: 'Less Trending Book',
+              trending_score_hourly_sum: 8,
+            },
+          ],
+        };
+      }
+    );
+
+    const agent = await login();
+    const res = await agent.get('/discover/books?sortBy=trending');
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(searchBooksMock.mock.callCount(), 1);
+    assert.deepStrictEqual(
+      res.body.results.map((result: { score: number }) => result.score),
+      [42, 8]
+    );
+  });
+
   it('combines book filters and applies the selected minimum rating', async () => {
     const searchBooksMock = mock.method(
       OpenLibraryAPI.prototype,
@@ -3124,6 +4012,84 @@ describe('GET /discover/books', () => {
     assert.deepStrictEqual(
       res.body.results.map((result: { title: string }) => result.title),
       ['Low Rating', 'High Rating']
+    );
+  });
+
+  it('supports ascending recommended book order', async () => {
+    const searchBooksMock = mock.method(
+      OpenLibraryAPI.prototype,
+      'searchBooks',
+      async ({ sort }: { sort?: string }) => {
+        assert.strictEqual(sort, 'random');
+
+        return {
+          numFound: 2,
+          start: 0,
+          docs: [
+            {
+              key: '/works/OL-high-signal',
+              title: 'High Signal',
+              ratings_average: 4.8,
+              ratings_count: 10000,
+              edition_count: 100,
+            },
+            {
+              key: '/works/OL-low-signal',
+              title: 'Low Signal',
+              ratings_average: 1,
+              ratings_count: 1,
+              edition_count: 1,
+            },
+          ],
+        };
+      }
+    );
+
+    const agent = await login();
+    const res = await agent.get('/discover/books?sortBy=ranked.asc');
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(searchBooksMock.mock.callCount(), 1);
+    assert.deepStrictEqual(
+      res.body.results.map((result: { title: string }) => result.title),
+      ['Low Signal', 'High Signal']
+    );
+  });
+
+  it('supports ascending book edition order within the provider result window', async () => {
+    const searchBooksMock = mock.method(
+      OpenLibraryAPI.prototype,
+      'searchBooks',
+      async ({ sort }: { sort?: string }) => {
+        assert.strictEqual(sort, 'editions');
+
+        return {
+          numFound: 2,
+          start: 0,
+          docs: [
+            {
+              key: '/works/OL-many-editions',
+              title: 'Many Editions',
+              edition_count: 100,
+            },
+            {
+              key: '/works/OL-few-editions',
+              title: 'Few Editions',
+              edition_count: 1,
+            },
+          ],
+        };
+      }
+    );
+
+    const agent = await login();
+    const res = await agent.get('/discover/books?sortBy=editions.asc');
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(searchBooksMock.mock.callCount(), 1);
+    assert.deepStrictEqual(
+      res.body.results.map((result: { title: string }) => result.title),
+      ['Few Editions', 'Many Editions']
     );
   });
 
@@ -3467,7 +4433,7 @@ describe('GET /discover/books', () => {
     const agent = await login();
     const res = await agent.get('/discover/books').query({
       page: 3,
-      format: 'audiobook',
+      format: 'ebook',
       query: 'space opera',
       sortBy: 'rating',
       subject: 'science_fiction',
@@ -3489,7 +4455,7 @@ describe('GET /discover/books', () => {
       label: 'Discover Books',
       errorMessage: 'provider unavailable',
       discoveryContext: {
-        format: 'audiobook',
+        format: 'book',
         keyword: 'space opera',
         page: 3,
         pageSize: 50,
@@ -3597,6 +4563,399 @@ describe('GET /discover/books', () => {
       undefined
     );
     assert.strictEqual(res.body.results[0].mediaInfo.ratingKey, undefined);
+  });
+});
+
+describe('GET /discover/comics', () => {
+  afterEach(() => {
+    getSettings().main.comicVineApiKey = '';
+  });
+
+  it('returns an empty result set when ComicVine is not configured', async () => {
+    getSettings().main.comicVineApiKey = '';
+    const agent = await login();
+    const res = await agent.get('/discover/comics');
+
+    assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual(res.body, {
+      page: 1,
+      totalPages: 0,
+      totalResults: 0,
+      results: [],
+      comicVineConfigured: false,
+    });
+  });
+
+  it('proxies the query and pagination to ComicVine', async () => {
+    getSettings().main.comicVineApiKey = 'test-key';
+    const searchVolumes = mock.method(
+      ComicVineAPI.prototype,
+      'searchVolumes',
+      async ({
+        query,
+        page,
+        limit,
+      }: {
+        query: string;
+        page?: number;
+        limit?: number;
+      }) => {
+        assert.strictEqual(query, 'Batman');
+        assert.strictEqual(page, 2);
+        assert.strictEqual(limit, 20);
+
+        return {
+          error: 'OK',
+          limit: 20,
+          offset: 20,
+          number_of_page_results: 1,
+          number_of_total_results: 21,
+          status_code: 1,
+          results: [
+            {
+              id: 1234,
+              name: 'Batman',
+              resource_type: 'volume' as const,
+            },
+          ],
+        };
+      }
+    );
+
+    const agent = await login();
+    const res = await agent
+      .get('/discover/comics')
+      .query({ query: 'Batman', page: 2 });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(searchVolumes.mock.callCount(), 1);
+    assert.strictEqual(res.body.totalResults, 21);
+    assert.strictEqual(res.body.totalPages, 2);
+    assert.strictEqual(res.body.results[0].id, '1234');
+    assert.strictEqual(res.body.results[0].title, 'Batman');
+  });
+
+  it('merges local availability for comics already tracked by SeerrNG', async () => {
+    getSettings().main.comicVineApiKey = 'test-key';
+    mock.method(ComicVineAPI.prototype, 'searchVolumes', async () => ({
+      error: 'OK',
+      limit: 20,
+      offset: 0,
+      number_of_page_results: 1,
+      number_of_total_results: 1,
+      status_code: 1,
+      results: [{ id: 5678, name: 'Saga', resource_type: 'volume' as const }],
+    }));
+
+    const media = await getRepository(Media).save(
+      new Media({
+        mediaType: MediaType.COMIC,
+        tmdbId: 0,
+        status: MediaStatus.AVAILABLE,
+        status4k: MediaStatus.UNKNOWN,
+      })
+    );
+    await getRepository(MediaIdentifier).save(
+      new MediaIdentifier({
+        media,
+        provider: MediaIdentifierProvider.COMICVINE,
+        value: '5678',
+        canonical: true,
+      })
+    );
+
+    const agent = await login();
+    const res = await agent.get('/discover/comics').query({ query: 'Saga' });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.results[0].mediaInfo.id, media.id);
+    assert.strictEqual(
+      res.body.results[0].mediaInfo.status,
+      MediaStatus.AVAILABLE
+    );
+  });
+
+  it('filters a completed volume index before paginating', async () => {
+    getSettings().main.comicVineApiKey = 'test-key';
+    await getRepository(ComicCatalogScan).save({
+      id: 'global',
+      scanGeneration: 1,
+      completeGeneration: 1,
+      nextPage: 2,
+      totalResults: 22,
+      indexedResults: 22,
+      lastVolumeId: 22,
+      lastAttemptAt: Math.floor(Date.now() / 1000),
+      lastCompletedAt: Math.floor(Date.now() / 1000),
+    });
+    await getRepository(ComicCatalogVolume).save(
+      Array.from({ length: 22 }, (_, index) => {
+        const id = index + 1;
+        const volume = {
+          id,
+          name: `Batman ${String(id).padStart(2, '0')}`,
+          aliases: ['Dark Knight'],
+          publisher: { id: 10, name: index === 21 ? 'Marvel' : 'DC Comics' },
+          start_year: index === 20 ? '1995' : '1994',
+          count_of_issues: index === 19 ? 1 : 12,
+          resource_type: 'volume' as const,
+        };
+        return {
+          generation: 1,
+          id,
+          title: volume.name,
+          searchText: `${volume.name.toLowerCase()} dark knight`,
+          publisherKey: volume.publisher.name.toLowerCase(),
+          startYear: Number(volume.start_year),
+          issueCount: volume.count_of_issues,
+          payload: JSON.stringify(volume),
+        };
+      })
+    );
+
+    const response = await (await login()).get('/discover/comics').query({
+      query: 'Dark Knight',
+      publisher: 'DC',
+      startYear: 1994,
+      minIssues: 10,
+      page: 2,
+    });
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(response.body.indexing, false);
+    assert.strictEqual(response.body.totalResults, 19);
+    assert.strictEqual(response.body.totalPages, 1);
+    assert.deepStrictEqual(response.body.results, []);
+
+    const firstPage = await (await login()).get('/discover/comics').query({
+      query: 'Dark Knight',
+      publisher: 'DC',
+      startYear: 1994,
+      minIssues: 10,
+    });
+    assert.strictEqual(firstPage.body.results.length, 19);
+    assert.strictEqual(firstPage.body.comicVineConfigured, true);
+    assert.strictEqual(firstPage.body.results[0].title, 'Batman 01');
+  });
+
+  it('reports first-scan progress without presenting partial filtered results', async () => {
+    getSettings().main.comicVineApiKey = 'test-key';
+    await getRepository(ComicCatalogScan).save({
+      id: 'global',
+      scanGeneration: 1,
+      completeGeneration: 0,
+      nextPage: 2,
+      totalResults: 1000,
+      indexedResults: 100,
+      lastVolumeId: 100,
+      lastAttemptAt: Math.floor(Date.now() / 1000),
+      lastCompletedAt: 0,
+    });
+    const response = await (
+      await login()
+    )
+      .get('/discover/comics')
+      .query({ publisher: 'DC' });
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(response.body.indexing, true);
+    assert.strictEqual(response.body.indexedResults, 100);
+    assert.strictEqual(response.body.expectedResults, 1000);
+    assert.deepStrictEqual(response.body.results, []);
+  });
+
+  it('rejects invalid comic index filters', async () => {
+    getSettings().main.comicVineApiKey = 'test-key';
+    const response = await (
+      await login()
+    )
+      .get('/discover/comics')
+      .query({ publisher: 'DC', minIssues: 20, maxIssues: 10 });
+    assert.strictEqual(response.status, 400);
+  });
+});
+
+describe('GET /discover/magazines', () => {
+  const magazineService = (id: number): LazyLibrarianSettings => ({
+    id,
+    name: `LazyLibrarian ${id}`,
+    hostname: `lazylibrarian-${id}.test`,
+    port: 5299,
+    apiKey: 'test-key',
+    useSsl: false,
+    isDefault: id === 1,
+    tags: [],
+    syncEnabled: false,
+    preventSearch: false,
+  });
+
+  afterEach(() => {
+    getSettings().main.googleBooksApiKey = '';
+    getSettings().lazylibrarian = [];
+  });
+
+  it('keeps tracked titles from a healthy service when another fails', async () => {
+    getSettings().lazylibrarian = [magazineService(1), magazineService(2)];
+    let calls = 0;
+    const getMagazines = mock.method(
+      LazyLibrarianAPI.prototype,
+      'getMagazines',
+      async () => {
+        if (++calls === 1) {
+          throw new Error('First service is unavailable');
+        }
+        return [{ title: 'Science Monthly' }];
+      }
+    );
+
+    const agent = await login();
+    const res = await agent
+      .get('/discover/magazines')
+      .query({ catalog: 'tracked' });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(getMagazines.mock.callCount(), 2);
+    assert.strictEqual(res.body.results[0].title, 'Science Monthly');
+  });
+
+  it('bounds concurrent requests across tracked catalogs', async () => {
+    getSettings().lazylibrarian = Array.from({ length: 5 }, (_, index) =>
+      magazineService(index + 1)
+    );
+    let activeRequests = 0;
+    let maximumActiveRequests = 0;
+    let calls = 0;
+    mock.method(LazyLibrarianAPI.prototype, 'getMagazines', async () => {
+      const call = ++calls;
+      activeRequests += 1;
+      maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      activeRequests -= 1;
+      return [{ title: 'Science Monthly ' + call }];
+    });
+
+    const agent = await login();
+    const res = await agent
+      .get('/discover/magazines')
+      .query({ catalog: 'tracked' });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(calls, 5);
+    assert.ok(maximumActiveRequests <= 2);
+    assert.strictEqual(res.body.results.length, 5);
+  });
+
+  it('keeps responsive catalog results and stops scheduling after the deadline', async () => {
+    getSettings().lazylibrarian = Array.from({ length: 5 }, (_, index) =>
+      magazineService(index + 1)
+    );
+    const controller = new AbortController();
+    const timeout = mock.method(
+      AbortSignal,
+      'timeout',
+      () => controller.signal
+    );
+    let calls = 0;
+    mock.method(
+      LazyLibrarianAPI.prototype,
+      'getMagazines',
+      async (signal?: AbortSignal) => {
+        assert.strictEqual(signal, controller.signal);
+        const call = ++calls;
+        controller.abort();
+        return [{ title: `Responsive Magazine ${call}` }];
+      }
+    );
+
+    const agent = await login();
+    const res = await agent
+      .get('/discover/magazines')
+      .query({ catalog: 'tracked' });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(timeout.mock.calls[0].arguments[0], 19_000);
+    assert.ok(calls > 0 && calls <= 2);
+    assert.strictEqual(res.body.totalResults, calls);
+  });
+
+  it('reports an unavailable catalog when every service fails', async () => {
+    getSettings().lazylibrarian = [magazineService(1)];
+    mock.method(LazyLibrarianAPI.prototype, 'getMagazines', async () => {
+      throw new Error('Service is unavailable');
+    });
+
+    const agent = await login();
+    const res = await agent.get('/discover/magazines');
+
+    assert.strictEqual(res.status, 503);
+    assert.match(res.body.message, /LazyLibrarian is unavailable/);
+  });
+
+  it('explains how to enable public catalog search when no key is configured', async () => {
+    const agent = await login();
+    const res = await agent
+      .get('/discover/magazines')
+      .query({ catalog: 'public', query: 'Science' });
+
+    assert.strictEqual(res.status, 503);
+    assert.match(res.body.message, /Google Books API key/);
+  });
+
+  it('searches the public magazine catalog and keeps request identity title-based', async () => {
+    getSettings().main.googleBooksApiKey = 'google-books-test-key';
+    const searchMagazines = mock.method(
+      GoogleBooksAPI.prototype,
+      'searchMagazines',
+      async ({
+        query,
+        page,
+        limit,
+      }: {
+        query: string;
+        page?: number;
+        limit?: number;
+      }) => {
+        assert.strictEqual(query, 'The New Yorker');
+        assert.strictEqual(page, 2);
+        assert.strictEqual(limit, 20);
+
+        return {
+          totalItems: 21,
+          results: [
+            {
+              id: 'new-yorker-2026',
+              title: 'The New Yorker',
+              publisher: 'Condé Nast',
+              publishedDate: '2026-09',
+              imageUrl:
+                'https://books.google.com/books/content?id=new-yorker-2026',
+              infoUrl: 'https://books.google.com/books?id=new-yorker-2026',
+            },
+          ],
+        };
+      }
+    );
+
+    const agent = await login();
+    const res = await agent.get('/discover/magazines').query({
+      catalog: 'public',
+      query: 'The New Yorker',
+      page: 2,
+    });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(searchMagazines.mock.callCount(), 1);
+    assert.strictEqual(res.body.totalResults, 21);
+    assert.strictEqual(res.body.totalPages, 2);
+    assert.deepStrictEqual(res.body.results[0], {
+      id: 'The New Yorker',
+      provider: 'googlebooks',
+      mediaType: 'magazine',
+      title: 'The New Yorker',
+      posterPath: 'https://books.google.com/books/content?id=new-yorker-2026',
+      publisher: 'Condé Nast',
+      firstPublishYear: 2026,
+      latestIssue: '2026-09',
+      requestable: false,
+    });
   });
 });
 

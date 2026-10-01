@@ -2,23 +2,32 @@ import { MediaServerType } from '@server/constants/server';
 import blocklistedTagsProcessor from '@server/job/blocklistedTagsProcessor';
 import availabilitySync from '@server/lib/availabilitySync';
 import bookRequestSearchManager from '@server/lib/bookRequestSearch';
+import { syncManagedCollections } from '@server/lib/collectionSync';
 import downloadRecovery from '@server/lib/downloadRecovery';
 import downloadTracker from '@server/lib/downloadtracker';
+import episodeWatchAhead from '@server/lib/episodeWatchAhead';
 import ImageProxy from '@server/lib/imageproxy';
 import importListSync from '@server/lib/importlistsync';
 import refreshToken from '@server/lib/refreshToken';
+import { captureReleaseCalendarHistory } from '@server/lib/releaseCalendar/history';
 import { reconcileActiveRequests } from '@server/lib/requestStatus';
+import { backissueScanner } from '@server/lib/scanners/comics/backissue';
+import { kapowarrScanner } from '@server/lib/scanners/comics/kapowarr';
+import { mylarScanner } from '@server/lib/scanners/comics/mylar';
 import {
   jellyfinFullScanner,
   jellyfinRecentScanner,
 } from '@server/lib/scanners/jellyfin';
 import { lidarrScanner } from '@server/lib/scanners/lidarr';
+import { lazyLibrarianScanner } from '@server/lib/scanners/magazines/lazylibrarian';
 import { plexFullScanner, plexRecentScanner } from '@server/lib/scanners/plex';
 import { radarrScanner } from '@server/lib/scanners/radarr';
 import { readarrScanner } from '@server/lib/scanners/readarr';
 import { sonarrScanner } from '@server/lib/scanners/sonarr';
 import type { JobId } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
+import { refreshTrackedSoftwareRequests } from '@server/lib/softwareRequests';
+import { isWatchAheadMediaServer } from '@server/lib/watchAheadEligibility';
 import watchlistSync from '@server/lib/watchlistsync';
 import logger from '@server/logger';
 import { MediaRequestSubscriber } from '@server/subscriber/MediaRequestSubscriber';
@@ -185,9 +194,10 @@ export const startJobs = (): void => {
           logger.info('Starting scheduled job: Plex Recently Added Scan', {
             label: 'Jobs',
           });
-          return runTrackedJob('Plex Recently Added Scan', () =>
-            plexRecentScanner.run()
-          );
+          return runTrackedJob('Plex Recently Added Scan', async () => {
+            await plexRecentScanner.run();
+            await syncManagedCollections();
+          });
         }
       ),
       running: () => plexRecentScanner.status().running,
@@ -205,9 +215,10 @@ export const startJobs = (): void => {
         logger.info('Starting scheduled job: Plex Full Library Scan', {
           label: 'Jobs',
         });
-        return runTrackedJob('Plex Full Library Scan', () =>
-          plexFullScanner.run()
-        );
+        return runTrackedJob('Plex Full Library Scan', async () => {
+          await plexFullScanner.run();
+          await syncManagedCollections();
+        });
       }),
       running: () => plexFullScanner.status().running,
       cancelFn: () => plexFullScanner.cancel(),
@@ -262,9 +273,10 @@ export const startJobs = (): void => {
           logger.info('Starting scheduled job: Jellyfin Recently Added Scan', {
             label: 'Jobs',
           });
-          return runTrackedJob('Jellyfin Recently Added Scan', () =>
-            jellyfinRecentScanner.run()
-          );
+          return runTrackedJob('Jellyfin Recently Added Scan', async () => {
+            await jellyfinRecentScanner.run();
+            await syncManagedCollections();
+          });
         }
       ),
       running: () => jellyfinRecentScanner.status().running,
@@ -282,12 +294,28 @@ export const startJobs = (): void => {
         logger.info('Starting scheduled job: Jellyfin Full Scan', {
           label: 'Jobs',
         });
-        return runTrackedJob('Jellyfin Full Library Scan', () =>
-          jellyfinFullScanner.run()
-        );
+        return runTrackedJob('Jellyfin Full Library Scan', async () => {
+          await jellyfinFullScanner.run();
+          await syncManagedCollections();
+        });
       }),
       running: () => jellyfinFullScanner.status().running,
       cancelFn: () => jellyfinFullScanner.cancel(),
+    });
+  }
+
+  // The persisted job key retains its original name for configuration
+  // compatibility, but the queue now follows Plex, Jellyfin, or Emby playback.
+  if (isWatchAheadMediaServer(mediaServerType)) {
+    scheduledJobs.push({
+      id: 'jellyfin-watch-ahead',
+      name: 'Requested Episode Queue',
+      type: 'process',
+      interval: 'seconds',
+      cronSchedule: jobs['jellyfin-watch-ahead'].schedule,
+      job: schedule.scheduleJob(jobs['jellyfin-watch-ahead'].schedule, () =>
+        runTrackedJob('Requested Episode Queue', () => episodeWatchAhead.run())
+      ),
     });
   }
 
@@ -367,6 +395,74 @@ export const startJobs = (): void => {
     }),
   });
 
+  scheduledJobs.push({
+    id: 'mylar-scan',
+    name: 'Mylar Comics Scan',
+    type: 'process',
+    interval: 'hours',
+    cronSchedule: jobs['mylar-scan'].schedule,
+    job: schedule.scheduleJob(jobs['mylar-scan'].schedule, () => {
+      logger.info('Starting scheduled job: Mylar Comics Scan', {
+        label: 'Jobs',
+      });
+      return runTrackedJob('Mylar Comics Scan', () => mylarScanner.run());
+    }),
+    running: () => mylarScanner.status().running,
+    cancelFn: () => mylarScanner.cancel(),
+  });
+
+  scheduledJobs.push({
+    id: 'kapowarr-scan',
+    name: 'Kapowarr Comics Scan',
+    type: 'process',
+    interval: 'hours',
+    cronSchedule: jobs['kapowarr-scan'].schedule,
+    job: schedule.scheduleJob(jobs['kapowarr-scan'].schedule, () => {
+      logger.info('Starting scheduled job: Kapowarr Comics Scan', {
+        label: 'Jobs',
+      });
+      return runTrackedJob('Kapowarr Comics Scan', () => kapowarrScanner.run());
+    }),
+    running: () => kapowarrScanner.status().running,
+    cancelFn: () => kapowarrScanner.cancel(),
+  });
+
+  scheduledJobs.push({
+    id: 'backissue-scan',
+    name: 'BackIssue Comics Scan',
+    type: 'process',
+    interval: 'hours',
+    cronSchedule: jobs['backissue-scan'].schedule,
+    job: schedule.scheduleJob(jobs['backissue-scan'].schedule, () => {
+      logger.info('Starting scheduled job: BackIssue Comics Scan', {
+        label: 'Jobs',
+      });
+      return runTrackedJob('BackIssue Comics Scan', () =>
+        backissueScanner.run()
+      );
+    }),
+    running: () => backissueScanner.status().running,
+    cancelFn: () => backissueScanner.cancel(),
+  });
+
+  scheduledJobs.push({
+    id: 'magazine-scan',
+    name: 'LazyLibrarian Magazine Scan',
+    type: 'process',
+    interval: 'hours',
+    cronSchedule: jobs['magazine-scan'].schedule,
+    job: schedule.scheduleJob(jobs['magazine-scan'].schedule, () => {
+      logger.info('Starting scheduled job: LazyLibrarian Magazine Scan', {
+        label: 'Jobs',
+      });
+      return runTrackedJob('LazyLibrarian Magazine Scan', () =>
+        lazyLibrarianScanner.run()
+      );
+    }),
+    running: () => lazyLibrarianScanner.status().running,
+    cancelFn: () => lazyLibrarianScanner.cancel(),
+  });
+
   // Checks if media is still available in plex/sonarr/radarr libs
   scheduledJobs.push({
     id: 'availability-sync',
@@ -429,6 +525,30 @@ export const startJobs = (): void => {
         { scope: 'instance' }
       );
     }),
+  });
+
+  scheduledJobs.push({
+    id: 'software-request-reconciliation',
+    name: 'Software Request Reconciliation',
+    type: 'process',
+    interval: 'minutes',
+    cronSchedule: jobs['software-request-reconciliation'].schedule,
+    job: schedule.scheduleJob(
+      jobs['software-request-reconciliation'].schedule,
+      () => {
+        logger.debug(
+          'Starting scheduled job: Software Request Reconciliation',
+          {
+            label: 'Jobs',
+          }
+        );
+        return runTrackedJob(
+          'Software Request Reconciliation',
+          refreshTrackedSoftwareRequests,
+          { logCompletion: true }
+        );
+      }
+    ),
   });
 
   scheduledJobs.push({
@@ -507,6 +627,24 @@ export const startJobs = (): void => {
   });
 
   scheduledJobs.push({
+    id: 'release-calendar-history',
+    name: 'Release Calendar History',
+    type: 'process',
+    interval: 'fixed',
+    cronSchedule: jobs['release-calendar-history'].schedule,
+    job: schedule.scheduleJob(jobs['release-calendar-history'].schedule, () => {
+      logger.info('Starting scheduled job: Release Calendar History', {
+        label: 'Jobs',
+      });
+      return runTrackedJob(
+        'Release Calendar History',
+        () => captureReleaseCalendarHistory(),
+        { logCompletion: true }
+      );
+    }),
+  });
+
+  scheduledJobs.push({
     id: 'process-blocklisted-tags',
     name: 'Process Blocklisted Tags',
     type: 'process',
@@ -536,6 +674,14 @@ export const startJobs = (): void => {
   void runTrackedJob('Request Status Reconciliation', () =>
     reconcileActiveRequests()
   );
+
+  if (jobs['software-request-reconciliation'].enabled !== false) {
+    void runTrackedJob(
+      'Software Request Reconciliation',
+      refreshTrackedSoftwareRequests,
+      { logCompletion: true }
+    );
+  }
 
   // Discover the existing music catalogue immediately after startup instead
   // of leaving ownership badges stale until the overnight Lidarr scan.

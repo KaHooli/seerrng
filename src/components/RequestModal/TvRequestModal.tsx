@@ -1,8 +1,13 @@
+import Button from '@app/components/Common/Button';
 import CachedImage from '@app/components/Common/CachedImage';
 import Modal from '@app/components/Common/Modal';
 import SeriesSeasonEpisodeSelector from '@app/components/Common/SeriesSeasonEpisodeSelector';
+import MediaQualitySelect from '@app/components/MediaDetails/MediaQualitySelect';
+import AdvancedOptionsDisclosureButton from '@app/components/RequestModal/AdvancedOptionsDisclosureButton';
 import type { RequestOverrides } from '@app/components/RequestModal/AdvancedRequester';
-import AdvancedRequester from '@app/components/RequestModal/AdvancedRequester';
+import AdvancedRequester, {
+  RequestListboxControl,
+} from '@app/components/RequestModal/AdvancedRequester';
 import QuotaDisplay from '@app/components/RequestModal/QuotaDisplay';
 import RequestFooterStatus from '@app/components/RequestModal/RequestFooterStatus';
 import RequestMediaCard from '@app/components/RequestModal/RequestMediaCard';
@@ -12,7 +17,11 @@ import {
   createRequestDestination,
   isRequestDestinationAvailable,
   isRequestDestinationRequested,
+  isRequestForDestination,
+  isVideoQualityAvailable,
 } from '@app/components/RequestModal/requestAvailability';
+import useAdvancedOptionsDisclosure from '@app/hooks/useAdvancedOptionsDisclosure';
+import usePlaybackCatalog from '@app/hooks/usePlaybackCatalog';
 import useSettings from '@app/hooks/useSettings';
 import useToasts from '@app/hooks/useToasts';
 import { useUser } from '@app/hooks/useUser';
@@ -21,11 +30,13 @@ import { sortCrewPriority } from '@app/utils/creditHelpers';
 import defineMessages from '@app/utils/defineMessages';
 import { getTmdbPosterImageUrl } from '@app/utils/imageCache';
 import {
-  AdjustmentsHorizontalIcon,
-  ArrowDownTrayIcon,
-  ChevronDownIcon,
-  XMarkIcon,
-} from '@heroicons/react/24/outline';
+  getAvailableEpisodesBySeason,
+  getDefaultUnavailableSeasonSelections,
+  getRequestableTvSelections,
+  mergeEpisodeNumbersBySeason,
+} from '@app/utils/tvRequestSelection';
+import { hasLinkedWatchAheadAccount } from '@app/utils/watchAhead';
+import { ArrowDownTrayIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { ANIME_KEYWORD_ID } from '@server/api/themoviedb/constants';
 import { MediaRequestStatus, MediaStatus } from '@server/constants/media';
 import type { MediaRequest } from '@server/entity/MediaRequest';
@@ -36,7 +47,7 @@ import type { QuotaResponse } from '@server/interfaces/api/userInterfaces';
 import { Permission, hasAutoApprovePermission } from '@server/lib/permissions';
 import type { TvDetails } from '@server/models/Tv';
 import axios from 'axios';
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useIntl } from 'react-intl';
 import useSWR, { mutate } from 'swr';
 
@@ -50,12 +61,13 @@ const messages = defineMessages('components.RequestModal', {
   pendingrequest: 'Pending Request',
   pending4krequest: 'Pending 4K Request',
   requestfrom: "{username}'s request is pending approval.",
-  requestseasons:
-    'Request {seasonCount} {seasonCount, plural, one {Season} other {Seasons}}',
-  requestseasons4k:
-    'Request {seasonCount} {seasonCount, plural, one {Season} other {Seasons}} in 4K',
-  alreadyrequested: 'Already Requested',
-  selectseason: 'Select Season(s)',
+  selectUnavailableItemsToRequest:
+    'Select unavailable seasons or episodes to request.',
+  alreadyAvailable:
+    'The selected seasons or episodes are already available or requested.',
+  noUnavailableItems: 'No unavailable seasons or episodes remain to request.',
+  requestQuotaExceeded:
+    'Your remaining request quota is not enough for this selection.',
   season: 'Season',
   episodes: 'Episodes',
   seasonnumber: 'Season {number}',
@@ -78,6 +90,13 @@ const messages = defineMessages('components.RequestModal', {
   requested: 'Requested',
   notAvailable: 'Not Available',
   advancedOptions: 'Advanced Options',
+  quality: 'Quality',
+  watchAheadLabel: 'Requested Episode Queue',
+  watchAheadDescription:
+    'After this TV request is approved, SeerrNG follows your linked media server playback and keeps this many upcoming episodes requested in Sonarr. Generated episode requests use the parent approval and do not count against your request quota. Turning this off does not cancel episodes already requested.',
+  watchAheadOff: 'Off',
+  watchAheadEpisodeOption:
+    '{count, plural, one {# episode} other {# episodes}}',
 });
 
 interface RequestModalProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -100,6 +119,9 @@ const TvRequestModal = ({
   allow4kServerSelection = false,
 }: RequestModalProps) => {
   const settings = useSettings();
+  const { user, hasPermission } = useUser();
+  const [selectedIs4k, setSelectedIs4k] = useState(is4k);
+  const [qualityRevision, setQualityRevision] = useState(0);
   const { addToast } = useToasts();
   const editingSeasonSelections: SeasonEpisodeSelection[] = (
     editRequest?.seasons ?? []
@@ -113,18 +135,34 @@ const TvRequestModal = ({
   const [seasonSelections, setSeasonSelections] = useState<
     SeasonEpisodeSelection[]
   >(editRequest ? editingSeasonSelections : []);
+  const [watchAheadEpisodeCount, setWatchAheadEpisodeCount] = useState(
+    editRequest?.watchAheadEpisodeCount ?? 0
+  );
+  const [initializedSelectionKey, setInitializedSelectionKey] = useState('');
   const [activeSeason, setActiveSeason] = useState<number>(
     editingSeasonSelections[0]?.seasonNumber ?? -1
   );
   const selectedSeasons = seasonSelections.map(
     (selection) => selection.seasonNumber
   );
-  const [advancedOptionsOpen, setAdvancedOptionsOpen] = useState(false);
+  const {
+    open: advancedOptionsOpen,
+    pinned: advancedOptionsPinned,
+    toggleOpen: toggleAdvancedOptions,
+    togglePin: toggleAdvancedOptionsPin,
+  } = useAdvancedOptionsDisclosure('tv');
   const [requestedByPortal, setRequestedByPortal] =
     useState<HTMLDivElement | null>(null);
-  const effectiveIs4k = requestOverrides?.is4k ?? is4k;
+  const effectiveIs4k = requestOverrides?.is4k ?? selectedIs4k;
+  const { data: playbackCatalog } = usePlaybackCatalog(
+    data?.mediaInfo?.id,
+    effectiveIs4k
+  );
+  const availableEpisodesBySeason = useMemo(
+    () => getAvailableEpisodesBySeason(playbackCatalog),
+    [playbackCatalog]
+  );
   const intl = useIntl();
-  const { user, hasPermission } = useUser();
   const [searchModal, setSearchModal] = useState<{
     show: boolean;
   }>({
@@ -140,6 +178,9 @@ const TvRequestModal = ({
       ? `/api/v1/user/${requestOverrides?.user?.id ?? user.id}/quota`
       : null
   );
+  const isWatchAheadRequestForCurrentUser = editRequest
+    ? editRequest.requestedBy.id === user?.id
+    : !requestOverrides?.user || requestOverrides.user.id === user?.id;
   const { data: sonarrServers } = useSWR<ServiceCommonServer[]>(
     '/api/v1/service/sonarr',
     {
@@ -154,39 +195,54 @@ const TvRequestModal = ({
   const fallbackService = sonarrServers?.find(
     (server) => server.isDefault && server.is4k === effectiveIs4k
   );
-  const selectedDestination = createRequestDestination(
-    'sonarr',
-    effectiveIs4k ? '4k' : 'standard',
-    selectedService ?? fallbackService,
-    requestOverrides
+  const watchAheadTvdbId = editRequest
+    ? editRequest.media.tvdbId
+    : (tvdbId ?? data?.externalIds.tvdbId);
+  const canConfigureWatchAhead =
+    hasLinkedWatchAheadAccount(
+      user,
+      settings.currentSettings.mediaServerType
+    ) &&
+    Number.isSafeInteger(Number(watchAheadTvdbId)) &&
+    Number(watchAheadTvdbId) > 0 &&
+    hasPermission(
+      effectiveIs4k
+        ? [Permission.REQUEST_4K, Permission.REQUEST_4K_TV]
+        : [Permission.REQUEST, Permission.REQUEST_TV],
+      { type: 'or' }
+    ) &&
+    Boolean(selectedService ?? fallbackService) &&
+    isWatchAheadRequestForCurrentUser &&
+    !editRequest?.watchAheadParentRequestId;
+  const selectedDestination = useMemo(
+    () =>
+      createRequestDestination(
+        'sonarr',
+        effectiveIs4k ? '4k' : 'standard',
+        selectedService ?? fallbackService,
+        requestOverrides
+      ),
+    [effectiveIs4k, fallbackService, requestOverrides, selectedService]
   );
+  const requestSelectionKey = JSON.stringify([
+    tmdbId,
+    effectiveIs4k,
+    selectedDestination?.serverId,
+    selectedDestination?.profileId,
+    selectedDestination?.metadataProfileId,
+    selectedDestination?.languageProfileId,
+    selectedDestination?.rootFolder,
+  ]);
   const selectedDestinationAvailable =
     !editRequest &&
-    isRequestDestinationAvailable(data?.mediaInfo, selectedDestination);
+    (isVideoQualityAvailable(data?.mediaInfo, 'tv', effectiveIs4k) ||
+      isRequestDestinationAvailable(data?.mediaInfo, selectedDestination));
   const selectedDestinationRequested =
     !editRequest &&
     isRequestDestinationRequested(
       data?.mediaInfo?.requests,
       selectedDestination
     );
-  const selectedDestinationPromotable =
-    selectedDestinationRequested &&
-    canPromotePendingDestinationRequests(
-      data?.mediaInfo?.requests,
-      [selectedDestination],
-      {
-        canManageRequests: hasPermission(Permission.MANAGE_REQUESTS),
-        hasAutoApprove: hasAutoApprovePermission(
-          user?.permissions ?? 0,
-          'tv',
-          effectiveIs4k
-        ),
-      }
-    );
-  const selectedDestinationCovered =
-    selectedDestinationAvailable ||
-    (selectedDestinationRequested && !selectedDestinationPromotable);
-
   const currentlyRemaining =
     (quota?.tv.remaining ?? 0) -
     selectedSeasons.length +
@@ -214,6 +270,10 @@ const TvRequestModal = ({
           tags: requestOverrides?.tags,
           seasons: [...selectedSeasons].sort((a, b) => a - b),
           seasonRequests: seasonSelections,
+          ...(canConfigureWatchAhead ||
+          (isWatchAheadRequestForCurrentUser && watchAheadEpisodeCount === 0)
+            ? { watchAheadEpisodeCount }
+            : {}),
         });
 
         if (alsoApproveRequest) {
@@ -263,7 +323,7 @@ const TvRequestModal = ({
   };
 
   const sendRequest = async () => {
-    if (selectedDestinationCovered) {
+    if (requestDisabled) {
       return;
     }
 
@@ -298,13 +358,18 @@ const TvRequestModal = ({
         is4k: effectiveIs4k,
         ignoreQuota: requestOverrides?.ignoreQuota,
         seasons: settings.currentSettings.partialRequestsEnabled
-          ? [...selectedSeasons].sort((a, b) => a - b)
+          ? requestableSelections
+              .map((selection) => selection.seasonNumber)
+              .sort((a, b) => a - b)
           : getAllSeasons().filter(
               (season) => !getAllRequestedSeasons().includes(season)
             ),
         seasonRequests: settings.currentSettings.partialRequestsEnabled
-          ? seasonSelections
+          ? requestableSelections
           : undefined,
+        ...(isWatchAheadRequestForCurrentUser
+          ? { watchAheadEpisodeCount }
+          : {}),
         ...overrideParams,
       });
       mutate('/api/v1/request?filter=all&take=10&sort=modified&skip=0');
@@ -338,7 +403,7 @@ const TvRequestModal = ({
     }
   };
 
-  const getAllSeasons = (): number[] => {
+  const getAllSeasons = useCallback((): number[] => {
     let allSeasons = (data?.seasons ?? []).filter(
       (season) => season.episodeCount !== 0
     );
@@ -346,14 +411,47 @@ const TvRequestModal = ({
       allSeasons = allSeasons.filter((season) => season.seasonNumber > 0);
     }
     return allSeasons.map((season) => season.seasonNumber);
-  };
+  }, [data?.seasons, settings.currentSettings.enableSpecialEpisodes]);
 
-  const getAllRequestedSeasons = (): number[] => {
+  const getAllRequestedEpisodes = useCallback((): Record<number, number[]> => {
+    const requestedEpisodes: Record<number, number[]> = {};
+    (data?.mediaInfo?.requests ?? [])
+      .filter(
+        (request) =>
+          request.id !== editRequest?.id &&
+          (selectedDestination
+            ? isRequestForDestination(request, selectedDestination)
+            : request.is4k === effectiveIs4k) &&
+          request.status !== MediaRequestStatus.DECLINED &&
+          request.status !== MediaRequestStatus.FAILED &&
+          request.status !== MediaRequestStatus.COMPLETED
+      )
+      .flatMap((request) => request.seasons)
+      .filter((season) => season.episodeNumbers != null)
+      .forEach((season) => {
+        requestedEpisodes[season.seasonNumber] = [
+          ...new Set([
+            ...(requestedEpisodes[season.seasonNumber] ?? []),
+            ...(season.episodeNumbers ?? []),
+          ]),
+        ];
+      });
+    return requestedEpisodes;
+  }, [
+    data?.mediaInfo?.requests,
+    editRequest?.id,
+    effectiveIs4k,
+    selectedDestination,
+  ]);
+
+  const getAllRequestedSeasons = useCallback((): number[] => {
     const requestedSeasons = (data?.mediaInfo?.requests ?? [])
       .filter(
         (request) =>
           request.id !== editRequest?.id &&
-          request.is4k === effectiveIs4k &&
+          (selectedDestination
+            ? isRequestForDestination(request, selectedDestination)
+            : request.is4k === effectiveIs4k) &&
           request.status !== MediaRequestStatus.DECLINED &&
           request.status !== MediaRequestStatus.FAILED &&
           request.status !== MediaRequestStatus.COMPLETED
@@ -372,40 +470,148 @@ const TvRequestModal = ({
         (season) =>
           season[effectiveIs4k ? 'status4k' : 'status'] ===
             MediaStatus.AVAILABLE &&
+          (!selectedDestination ||
+            (effectiveIs4k
+              ? data?.mediaInfo?.serviceId4k
+              : data?.mediaInfo?.serviceId) == null ||
+            (effectiveIs4k
+              ? data?.mediaInfo?.serviceId4k
+              : data?.mediaInfo?.serviceId) === selectedDestination.serverId) &&
           !requestedSeasons.includes(season.seasonNumber)
       )
       .map((season) => season.seasonNumber);
 
-    return [...requestedSeasons, ...availableSeasons];
-  };
-
-  const getAllRequestedEpisodes = (): Record<number, number[]> => {
-    const requestedEpisodes: Record<number, number[]> = {};
-    (data?.mediaInfo?.requests ?? [])
+    const fullyAvailableCatalogSeasons = (data?.seasons ?? [])
       .filter(
-        (request) =>
-          request.id !== editRequest?.id &&
-          request.is4k === effectiveIs4k &&
-          request.status !== MediaRequestStatus.DECLINED &&
-          request.status !== MediaRequestStatus.FAILED &&
-          request.status !== MediaRequestStatus.COMPLETED
+        (season) =>
+          season.episodeCount > 0 &&
+          (availableEpisodesBySeason[season.seasonNumber]?.length ?? 0) >=
+            season.episodeCount
       )
-      .flatMap((request) => request.seasons)
-      .filter((season) => season.episodeNumbers != null)
-      .forEach((season) => {
-        requestedEpisodes[season.seasonNumber] = [
-          ...new Set([
-            ...(requestedEpisodes[season.seasonNumber] ?? []),
-            ...(season.episodeNumbers ?? []),
-          ]),
-        ];
-      });
-    return requestedEpisodes;
-  };
+      .map((season) => season.seasonNumber);
+    const blockedEpisodes = mergeEpisodeNumbersBySeason(
+      availableEpisodesBySeason,
+      getAllRequestedEpisodes()
+    );
+    const fullyBlockedSeasons = (data?.seasons ?? [])
+      .filter(
+        (season) =>
+          season.episodeCount > 0 &&
+          (blockedEpisodes[season.seasonNumber]?.length ?? 0) >=
+            season.episodeCount
+      )
+      .map((season) => season.seasonNumber);
+
+    return [
+      ...new Set([
+        ...requestedSeasons,
+        ...availableSeasons,
+        ...fullyAvailableCatalogSeasons,
+        ...fullyBlockedSeasons,
+      ]),
+    ];
+  }, [
+    availableEpisodesBySeason,
+    data?.mediaInfo?.requests,
+    data?.mediaInfo?.seasons,
+    data?.seasons,
+    editRequest?.id,
+    effectiveIs4k,
+    getAllRequestedEpisodes,
+    selectedDestination,
+    data?.mediaInfo?.serviceId,
+    data?.mediaInfo?.serviceId4k,
+  ]);
 
   const unrequestedSeasons = getAllSeasons().filter(
     (season) => !getAllRequestedSeasons().includes(season)
   );
+  const blockedEpisodesBySeason = mergeEpisodeNumbersBySeason(
+    availableEpisodesBySeason,
+    getAllRequestedEpisodes()
+  );
+  const requestSelections = settings.currentSettings.partialRequestsEnabled
+    ? seasonSelections
+    : unrequestedSeasons.map((seasonNumber) => ({ seasonNumber }));
+  const requestableSelections = getRequestableTvSelections(
+    requestSelections,
+    data?.seasons ?? [],
+    getAllRequestedSeasons(),
+    blockedEpisodesBySeason
+  );
+  const partialQuotaExceeded =
+    !!quota?.tv.limit &&
+    !requestOverrides?.ignoreQuota &&
+    requestableSelections.length >
+      (quota.tv.remaining ?? 0) + (editRequest?.seasons.length ?? 0);
+  const fullQuotaExceeded =
+    !!quota?.tv.limit &&
+    !requestOverrides?.ignoreQuota &&
+    unrequestedSeasons.length > (quota.tv.remaining ?? 0);
+  const requestDisabledReason =
+    partialQuotaExceeded ||
+    (!settings.currentSettings.partialRequestsEnabled && fullQuotaExceeded)
+      ? intl.formatMessage(messages.requestQuotaExceeded)
+      : requestableSelections.length === 0
+        ? settings.currentSettings.partialRequestsEnabled &&
+          seasonSelections.length === 0 &&
+          unrequestedSeasons.length > 0
+          ? intl.formatMessage(messages.selectUnavailableItemsToRequest)
+          : intl.formatMessage(
+              unrequestedSeasons.length === 0
+                ? messages.noUnavailableItems
+                : messages.alreadyAvailable
+            )
+        : undefined;
+
+  useEffect(() => {
+    if (
+      editRequest ||
+      !settings.currentSettings.partialRequestsEnabled ||
+      !data ||
+      initializedSelectionKey === requestSelectionKey
+    ) {
+      return;
+    }
+
+    const defaults = getDefaultUnavailableSeasonSelections(
+      data.seasons.filter((season) =>
+        getAllSeasons().includes(season.seasonNumber)
+      ),
+      getAllRequestedSeasons()
+    );
+    setSeasonSelections(defaults);
+    if (
+      defaults.length > 0 &&
+      !defaults.some((selection) => selection.seasonNumber === activeSeason)
+    ) {
+      setActiveSeason(defaults[0].seasonNumber);
+    }
+    setInitializedSelectionKey(requestSelectionKey);
+  }, [
+    activeSeason,
+    data,
+    editRequest,
+    effectiveIs4k,
+    getAllRequestedSeasons,
+    getAllSeasons,
+    initializedSelectionKey,
+    requestSelectionKey,
+    settings.currentSettings.partialRequestsEnabled,
+  ]);
+
+  useEffect(() => {
+    if (editRequest) {
+      return;
+    }
+
+    const coveredSeasons = new Set(getAllRequestedSeasons());
+    setSeasonSelections((currentSelections) =>
+      currentSelections.filter(
+        (selection) => !coveredSeasons.has(selection.seasonNumber)
+      )
+    );
+  }, [editRequest, getAllRequestedSeasons]);
 
   const isOwner = editRequest && editRequest.requestedBy.id === user?.id;
   const canUseAdvancedOptions = hasPermission(
@@ -417,6 +623,19 @@ const TvRequestModal = ({
     'tv',
     effectiveIs4k
   );
+  const selectedDestinationPromotable =
+    selectedDestinationRequested &&
+    canPromotePendingDestinationRequests(
+      data?.mediaInfo?.requests,
+      [selectedDestination],
+      {
+        canManageRequests: hasPermission(Permission.MANAGE_REQUESTS),
+        hasAutoApprove,
+      }
+    );
+  const selectedDestinationCovered =
+    selectedDestinationAvailable ||
+    (selectedDestinationRequested && !selectedDestinationPromotable);
   const isAnime =
     data?.keywords.some((keyword) => keyword.id === ANIME_KEYWORD_ID) ?? false;
   const notAvailable = intl.formatMessage(messages.notAvailable);
@@ -455,30 +674,13 @@ const TvRequestModal = ({
       : hasPermission(Permission.MANAGE_REQUESTS)
         ? intl.formatMessage(messages.approve)
         : intl.formatMessage(messages.edit)
-    : getAllRequestedSeasons().length >= getAllSeasons().length
-      ? intl.formatMessage(messages.alreadyrequested)
-      : !settings.currentSettings.partialRequestsEnabled
-        ? intl.formatMessage(
-            effectiveIs4k ? globalMessages.request4k : globalMessages.request
-          )
-        : selectedSeasons.length === 0
-          ? intl.formatMessage(messages.selectseason)
-          : intl.formatMessage(
-              effectiveIs4k
-                ? messages.requestseasons4k
-                : messages.requestseasons,
-              { seasonCount: selectedSeasons.length }
-            );
+    : intl.formatMessage(globalMessages.request);
   const requestDisabled = editRequest
     ? false
     : selectedDestinationCovered ||
-      (!settings.currentSettings.partialRequestsEnabled &&
-        quota?.tv.limit &&
-        unrequestedSeasons.length > quota.tv.limit &&
-        !requestOverrides?.ignoreQuota) ||
-      getAllRequestedSeasons().length >= getAllSeasons().length ||
-      (settings.currentSettings.partialRequestsEnabled &&
-        selectedSeasons.length === 0);
+      requestableSelections.length === 0 ||
+      partialQuotaExceeded ||
+      (!settings.currentSettings.partialRequestsEnabled && fullQuotaExceeded);
   const closeAction = tvdbId ? () => setSearchModal({ show: true }) : onCancel;
   const submitAction = () =>
     editRequest
@@ -520,6 +722,10 @@ const TvRequestModal = ({
             : messages.requestseriestitle
       )}
       okText={requestButtonLabel}
+      okButtonProps={{
+        buttonIcon:
+          editRequest && selectedSeasons.length === 0 ? 'cancel' : undefined,
+      }}
       okDisabled={requestDisabled}
       okButtonType={
         editRequest
@@ -538,38 +744,10 @@ const TvRequestModal = ({
             ? intl.formatMessage(globalMessages.back)
             : intl.formatMessage(globalMessages.cancel)
       }
-      dialogClass="sm:max-w-5xl"
+      cancelButtonType={editRequest ? 'danger' : 'default'}
+      actionButtonSize={editRequest ? 'standard' : 'sm'}
+      dialogClass="request-modal-site-surface sm:max-w-5xl"
     >
-      {editRequest
-        ? isOwner
-          ? intl.formatMessage(messages.pendingapproval)
-          : intl.formatMessage(messages.requestfrom, {
-              username: editRequest?.requestedBy.displayName,
-            })
-        : null}
-      {(quota?.tv.limit ?? 0) > 0 && (
-        <QuotaDisplay
-          mediaType="tv"
-          quota={quota?.tv}
-          remaining={
-            !settings.currentSettings.partialRequestsEnabled &&
-            unrequestedSeasons.length > (quota?.tv.remaining ?? 0)
-              ? 0
-              : currentlyRemaining
-          }
-          userOverride={
-            requestOverrides?.user && requestOverrides.user.id !== user?.id
-              ? requestOverrides?.user?.id
-              : undefined
-          }
-          overLimit={
-            !settings.currentSettings.partialRequestsEnabled &&
-            unrequestedSeasons.length > (quota?.tv.remaining ?? 0)
-              ? unrequestedSeasons.length
-              : undefined
-          }
-        />
-      )}
       <RequestMediaCard
         artwork={
           data?.backdropPath
@@ -578,113 +756,146 @@ const TvRequestModal = ({
         }
         artworkType="tmdb"
       >
-        <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] gap-3 sm:grid-cols-[80px_minmax(0,1fr)]">
-          <div className="relative h-24 w-16 overflow-hidden rounded-lg ring-1 ring-gray-600 sm:h-[120px] sm:w-20">
-            <CachedImage
-              type="tmdb"
-              src={
-                getTmdbPosterImageUrl(data?.posterPath) ||
-                '/images/seerr_poster_not_found.png'
-              }
-              alt=""
-              fill
-              sizes="(min-width: 640px) 80px, 64px"
-              className="object-cover"
-            />
+        {editRequest && (
+          <div className="app-card-inset refreshed-inset-surface card-spacing-after rounded-lg border border-gray-700 p-3">
+            {isOwner
+              ? intl.formatMessage(messages.pendingapproval)
+              : intl.formatMessage(messages.requestfrom, {
+                  username: editRequest.requestedBy.displayName,
+                })}
           </div>
+        )}
+        {(quota?.tv.limit ?? 0) > 0 && (
+          <QuotaDisplay
+            mediaType="tv"
+            quota={quota?.tv}
+            remaining={
+              !settings.currentSettings.partialRequestsEnabled &&
+              unrequestedSeasons.length > (quota?.tv.remaining ?? 0)
+                ? 0
+                : currentlyRemaining
+            }
+            userOverride={
+              requestOverrides?.user && requestOverrides.user.id !== user?.id
+                ? requestOverrides?.user?.id
+                : undefined
+            }
+            overLimit={
+              !settings.currentSettings.partialRequestsEnabled &&
+              unrequestedSeasons.length > (quota?.tv.remaining ?? 0)
+                ? unrequestedSeasons.length
+                : undefined
+            }
+          />
+        )}
+        <div className="app-card-inset refreshed-inset-surface rounded-lg border border-gray-700 p-3">
+          <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] gap-3 sm:grid-cols-[80px_minmax(0,1fr)]">
+            <div className="detail-card-poster relative overflow-hidden rounded-lg ring-1 ring-gray-600">
+              <CachedImage
+                type="tmdb"
+                src={
+                  getTmdbPosterImageUrl(data?.posterPath) ||
+                  '/images/seerr_poster_not_found.png'
+                }
+                alt=""
+                fill
+                sizes="(min-width: 640px) 80px, 64px"
+                className="object-cover"
+              />
+            </div>
 
-          <div className="flex min-w-0 flex-col">
-            <h3 className="-mt-0.5 truncate text-lg leading-5 font-semibold text-white">
-              {data?.name}
-              {releaseYear ? ` (${releaseYear})` : ''}
-            </h3>
+            <div className="flex min-w-0 flex-col">
+              <h3 className="detail-summary-title truncate text-lg leading-5 font-semibold text-white">
+                {data?.name}
+                {releaseYear ? ` (${releaseYear})` : ''}
+              </h3>
 
-            <div className="card:grid-cols-3 mt-4 grid min-h-0 min-w-0 flex-1 grid-cols-1 items-stretch">
-              <div className="card:col-span-2 card:pr-3 min-w-0">
-                <dl className="card:grid-cols-[max-content_0.75rem_6rem_0.75rem_1px_0.75rem_minmax(0,1fr)] card:gap-x-0 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-0.5 text-xs leading-4 text-gray-400">
-                  <dt className="card:col-start-1 card:row-start-1 font-medium text-gray-100">
-                    {intl.formatMessage(messages.mediaAndFormat)}:
-                  </dt>
-                  <dd className="card:col-start-3 card:row-start-1 m-0 truncate">
-                    Series · {effectiveIs4k ? '4K' : 'HD'}
-                  </dd>
-                  <dt className="card:col-start-1 card:row-start-2 font-medium text-gray-100">
-                    {intl.formatMessage(messages.releaseDate)}:
-                  </dt>
-                  <dd className="card:col-start-3 card:row-start-2 m-0 truncate">
-                    {firstAirDate}
-                  </dd>
-                  <dt className="card:col-start-1 card:row-start-3 font-medium text-gray-100">
-                    {intl.formatMessage(messages.runtime)}:
-                  </dt>
-                  <dd className="card:col-start-3 card:row-start-3 m-0 truncate">
-                    {runtime
-                      ? `${intl.formatNumber(runtime)} minutes`
-                      : notAvailable}
-                  </dd>
-                  <div className="card:col-start-5 card:row-span-3 card:row-start-1 card:block hidden bg-gray-600" />
-                  <div className="card:col-span-1 card:col-start-7 card:row-span-3 card:row-start-1 card:mt-0 card:border-t-0 card:pt-0 col-span-2 mt-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-0.5 border-t border-gray-600 pt-2">
-                    {featuredCrew.map((person) => (
-                      <div
-                        className="contents"
-                        key={`${person.job}-${person.id}`}
-                      >
-                        <dt className="font-medium text-gray-100">
-                          {person.job}:
-                        </dt>
-                        <dd className="m-0 truncate">{person.name}</dd>
-                      </div>
-                    ))}
-                    <dt className="font-medium text-gray-100">
-                      {intl.formatMessage(messages.network)}:
+              <div className="detail-card-heading-spacing detail-three-column-grid grid min-h-0 min-w-0 flex-1 items-stretch">
+                <div className="detail-paired-column-span min-w-0">
+                  <dl className="media-detail-rows refreshed-detail-text-muted detail-paired-columns grid min-w-0 content-start text-xs">
+                    <dt className="card:col-start-1 card:row-start-1 font-medium text-gray-100">
+                      {intl.formatMessage(messages.mediaAndFormat)}:
                     </dt>
-                    <dd className="m-0 truncate">{network}</dd>
-                  </div>
-                  <dt className="card:col-start-1 card:row-start-4 mt-0.5 font-medium text-gray-100">
-                    {intl.formatMessage(messages.genres)}:
+                    <dd className="card:col-start-3 card:row-start-1 m-0 truncate">
+                      Series · {effectiveIs4k ? '4K' : 'HD'}
+                    </dd>
+                    <dt className="card:col-start-1 card:row-start-2 font-medium text-gray-100">
+                      {intl.formatMessage(messages.releaseDate)}:
+                    </dt>
+                    <dd className="card:col-start-3 card:row-start-2 m-0 truncate">
+                      {firstAirDate}
+                    </dd>
+                    <dt className="card:col-start-1 card:row-start-3 font-medium text-gray-100">
+                      {intl.formatMessage(messages.runtime)}:
+                    </dt>
+                    <dd className="card:col-start-3 card:row-start-3 m-0 truncate">
+                      {runtime
+                        ? `${intl.formatNumber(runtime)} minutes`
+                        : notAvailable}
+                    </dd>
+                    <div className="media-detail-rows media-detail-column-divider card:col-span-1 card:col-start-5 card:row-span-3 card:row-start-1 col-span-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3">
+                      {featuredCrew.map((person) => (
+                        <div
+                          className="contents"
+                          key={`${person.job}-${person.id}`}
+                        >
+                          <dt className="font-medium text-gray-100">
+                            {person.job}:
+                          </dt>
+                          <dd className="m-0 truncate">{person.name}</dd>
+                        </div>
+                      ))}
+                      <dt className="font-medium text-gray-100">
+                        {intl.formatMessage(messages.network)}:
+                      </dt>
+                      <dd className="m-0 truncate">{network}</dd>
+                    </div>
+                    <dt className="card:col-start-1 card:row-start-4 font-medium text-gray-100">
+                      {intl.formatMessage(messages.genres)}:
+                    </dt>
+                    <dd className="card:col-span-3 card:col-start-3 card:row-start-4 m-0 line-clamp-2 min-w-0 break-words">
+                      {data?.genres?.length
+                        ? data.genres
+                            .slice(0, 3)
+                            .map((genre) => genre.name)
+                            .join(', ')
+                        : notAvailable}
+                    </dd>
+                  </dl>
+                </div>
+                <dl className="media-detail-rows refreshed-detail-text-muted media-detail-column-divider grid h-full min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 text-xs">
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.status)}:
                   </dt>
-                  <dd className="card:col-span-5 card:col-start-3 card:row-start-4 m-0 mt-0.5 line-clamp-2 min-w-0 break-words">
-                    {data?.genres?.length
-                      ? data.genres
-                          .slice(0, 3)
-                          .map((genre) => genre.name)
-                          .join(', ')
-                      : notAvailable}
+                  <dd className="m-0 truncate">
+                    {intl.formatMessage(
+                      selectedDestinationAvailable
+                        ? globalMessages.available
+                        : selectedDestinationRequested
+                          ? messages.requested
+                          : messages.readyToRequest
+                    )}
+                  </dd>
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.service)}:
+                  </dt>
+                  <dd className="m-0 truncate">
+                    {selectedService?.name ??
+                      fallbackService?.name ??
+                      notAvailable}
+                  </dd>
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.approval)}:
+                  </dt>
+                  <dd className="m-0 min-w-0">
+                    <RequestFooterStatus
+                      available={selectedDestinationAvailable}
+                      requested={selectedDestinationRequested}
+                      hasAutoApprove={hasAutoApprove}
+                    />
                   </dd>
                 </dl>
               </div>
-              <dl className="card:relative card:mt-0 card:border-t-0 card:pl-3 card:pt-0 card:before:absolute card:before:bottom-1 card:before:left-0 card:before:top-0 card:before:w-px card:before:bg-gray-600 mt-2 grid h-full min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-0.5 border-t border-gray-600 pt-2 text-xs leading-4 text-gray-400">
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.status)}:
-                </dt>
-                <dd className="m-0 truncate">
-                  {intl.formatMessage(
-                    selectedDestinationAvailable
-                      ? globalMessages.available
-                      : selectedDestinationRequested
-                        ? messages.requested
-                        : messages.readyToRequest
-                  )}
-                </dd>
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.service)}:
-                </dt>
-                <dd className="m-0 truncate">
-                  {selectedService?.name ??
-                    fallbackService?.name ??
-                    notAvailable}
-                </dd>
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.approval)}:
-                </dt>
-                <dd className="m-0 min-w-0">
-                  <RequestFooterStatus
-                    available={selectedDestinationAvailable}
-                    requested={selectedDestinationRequested}
-                    hasAutoApprove={hasAutoApprove}
-                  />
-                </dd>
-              </dl>
             </div>
           </div>
         </div>
@@ -693,14 +904,15 @@ const TvRequestModal = ({
           <SeriesSeasonEpisodeSelector
             tvId={data.id}
             seasons={visibleSeasons}
-            selections={seasonSelections}
+            selections={requestableSelections}
             activeSeason={
               activeSeason >= 0
                 ? activeSeason
                 : (visibleSeasons[0]?.seasonNumber ?? -1)
             }
             disabledSeasons={getAllRequestedSeasons()}
-            disabledEpisodes={getAllRequestedEpisodes()}
+            disabledEpisodes={blockedEpisodesBySeason}
+            availableEpisodesBySeason={availableEpisodesBySeason}
             onActiveSeasonChange={setActiveSeason}
             onSelectionsChange={(nextSelections) => {
               const allowedSelections =
@@ -708,6 +920,7 @@ const TvRequestModal = ({
               if (
                 !quota?.tv.limit ||
                 requestOverrides?.ignoreQuota ||
+                nextSelections.length <= seasonSelections.length ||
                 nextSelections.length <= allowedSelections
               ) {
                 setSeasonSelections(nextSelections);
@@ -716,14 +929,63 @@ const TvRequestModal = ({
           />
         )}
 
+        {canConfigureWatchAhead && (
+          <div className="app-card-inset refreshed-inset-surface card-spacing-before rounded-lg border border-gray-700 p-3">
+            <RequestListboxControl
+              id="tv-watch-ahead-count"
+              label={intl.formatMessage(messages.watchAheadLabel)}
+              value={watchAheadEpisodeCount}
+              options={[
+                {
+                  value: 0,
+                  label: intl.formatMessage(messages.watchAheadOff),
+                },
+                ...[1, 2, 3, 4, 5].map((count) => ({
+                  value: count,
+                  label: intl.formatMessage(messages.watchAheadEpisodeOption, {
+                    count,
+                  }),
+                })),
+              ]}
+              onChange={setWatchAheadEpisodeCount}
+              loadingLabel={intl.formatMessage(messages.watchAheadOff)}
+            />
+            <p className="mt-2 text-xs text-gray-300">
+              {intl.formatMessage(messages.watchAheadDescription)}
+            </p>
+          </div>
+        )}
+
+        {!editRequest && (
+          <div className="mt-2 flex items-center">
+            <MediaQualitySelect
+              value={effectiveIs4k ? '4k' : 'hd'}
+              options={[
+                { label: 'HD', value: 'hd' },
+                { label: '4K', value: '4k' },
+              ]}
+              onChange={(quality) => {
+                setSelectedIs4k(quality === '4k');
+                setRequestOverrides(null);
+                setQualityRevision((current) => current + 1);
+              }}
+              label={intl.formatMessage(messages.quality)}
+              autoSelectAvailable={false}
+              purpose="request"
+            />
+          </div>
+        )}
         {canUseAdvancedOptions && (
           <AdvancedRequester
+            key={(selectedIs4k ? '4k' : 'hd') + '-' + qualityRevision}
             type="tv"
-            is4k={is4k}
+            tmdbId={tmdbId}
+            is4k={selectedIs4k}
             allow4kServerSelection={allow4kServerSelection && !editRequest}
             isAnime={isAnime}
             quota={quota}
             requestUser={editRequest?.requestedBy}
+            requestId={editRequest?.id}
             defaultOverrides={
               editRequest
                 ? {
@@ -746,49 +1008,47 @@ const TvRequestModal = ({
         <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
           <div className="mr-auto flex items-center gap-2">
             {canUseAdvancedOptions && (
-              <button
-                type="button"
-                className="detail-disclosure-button"
-                aria-expanded={advancedOptionsOpen}
-                onClick={() => setAdvancedOptionsOpen((open) => !open)}
-              >
-                <AdjustmentsHorizontalIcon
-                  className="h-3.5 w-3.5"
-                  aria-hidden="true"
-                />
-                {intl.formatMessage(messages.advancedOptions)}
-                <ChevronDownIcon
-                  className={`h-3.5 w-3.5 transition-transform ${advancedOptionsOpen ? 'rotate-180' : ''}`}
-                  aria-hidden="true"
-                />
-              </button>
+              <AdvancedOptionsDisclosureButton
+                label={intl.formatMessage(messages.advancedOptions)}
+                open={advancedOptionsOpen}
+                pinned={advancedOptionsPinned}
+                onToggle={toggleAdvancedOptions}
+                onPin={toggleAdvancedOptionsPin}
+              />
             )}
           </div>
           <div
-            className="flex h-[22px] items-center"
+            className="compact-control flex items-center"
             ref={setRequestedByPortal}
           />
-          <button
+          <Button
             type="button"
             onClick={closeAction}
             data-testid="modal-cancel-button"
-            className="inline-flex h-[22px] items-center gap-1 rounded-md border border-red-600/80 bg-red-800/25 px-2 text-[11px] leading-none font-semibold text-red-200 transition hover:border-red-500 hover:text-white focus:ring-2 focus:ring-red-500 focus:outline-none"
+            buttonType="danger"
+            buttonSize="standard"
           >
-            <XMarkIcon className="h-3.5 w-3.5" aria-hidden="true" />
+            <XMarkIcon aria-hidden="true" />
             {editRequest
               ? intl.formatMessage(globalMessages.close)
               : intl.formatMessage(globalMessages.cancel)}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             disabled={requestDisabled}
+            disabledReason={requestDisabledReason}
             onClick={() => void submitAction()}
             data-testid="modal-ok-button"
-            className="inline-flex h-[22px] items-center gap-1 rounded-md border border-emerald-600/80 bg-emerald-800/25 px-2 text-[11px] leading-none font-semibold text-emerald-200 transition hover:border-emerald-500 hover:text-white focus:ring-2 focus:ring-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+            buttonType="success"
+            buttonSize="standard"
           >
-            <ArrowDownTrayIcon className="h-3.5 w-3.5" aria-hidden="true" />
+            {editRequest && selectedSeasons.length === 0 ? (
+              <XMarkIcon aria-hidden="true" />
+            ) : (
+              <ArrowDownTrayIcon aria-hidden="true" />
+            )}
             {requestButtonLabel}
-          </button>
+          </Button>
         </div>
       </RequestMediaCard>
     </Modal>

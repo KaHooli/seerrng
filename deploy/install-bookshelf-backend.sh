@@ -17,6 +17,8 @@ SKIP_PULL=false
 NO_STOP_READARR=false
 MIGRATE_TO_HARDCOVER=false
 RESTORE_BACKUP=false
+SINGLE_INSTANCE=false
+SPLIT_INSTANCES=false
 ALLOW_INCOMPLETE_HARDCOVER_CUTOVER="${ALLOW_INCOMPLETE_HARDCOVER_CUTOVER:-false}"
 APPLY_HARDCOVER_REBUILD="${APPLY_HARDCOVER_REBUILD:-false}"
 HARDCOVER_LOCAL_DB_IMPORT="${HARDCOVER_LOCAL_DB_IMPORT:-false}"
@@ -40,6 +42,7 @@ BOOKSHELF_EBOOKS_PORT="${BOOKSHELF_EBOOKS_PORT:-8787}"
 BOOKSHELF_AUDIOBOOKS_PORT="${BOOKSHELF_AUDIOBOOKS_PORT:-8788}"
 RREADING_GLASSES_PORT="${RREADING_GLASSES_PORT:-8790}"
 RREADING_GLASSES_POSTGRES_PORT="${RREADING_GLASSES_POSTGRES_PORT:-15433}"
+BOOKSHELF_BACKEND_EXPLICIT="${BOOKSHELF_BACKEND+x}"
 BOOKSHELF_BACKEND="${BOOKSHELF_BACKEND:-auto}"
 BOOKSHELF_METADATA_MODE="${BOOKSHELF_METADATA_MODE:-}"
 BOOKSHELF_METADATA_URL="${BOOKSHELF_METADATA_URL:-}"
@@ -48,6 +51,26 @@ BOOKSHELF_HARDCOVER="${BOOKSHELF_HARDCOVER:-}"
 BOOKSHELF_HARDCOVER_NATIVE="${BOOKSHELF_HARDCOVER_NATIVE:-}"
 BOOKSHELF_HARDCOVER_AUTH="${BOOKSHELF_HARDCOVER_AUTH:-}"
 BOOKSHELF_HARDCOVER_API_URL="${BOOKSHELF_HARDCOVER_API_URL:-}"
+BOOKSHELF_M4B_MERGE_EXPLICIT="${BOOKSHELF_M4B_MERGE+x}"
+BOOKSHELF_M4B_MERGE="${BOOKSHELF_M4B_MERGE:-false}"
+BOOKSHELF_M4B_AAC_BITRATE_KBPS_EXPLICIT="${BOOKSHELF_M4B_AAC_BITRATE_KBPS+x}"
+BOOKSHELF_M4B_AAC_BITRATE_KBPS="${BOOKSHELF_M4B_AAC_BITRATE_KBPS:-128}"
+BOOKSHELF_METADATA_SOURCES_EXPLICIT="${BOOKSHELF_METADATA_SOURCES+x}"
+BOOKSHELF_METADATA_SOURCES="${BOOKSHELF_METADATA_SOURCES:-}"
+BOOKSHELF_EBOOKS_METADATA_SOURCES_EXPLICIT="${BOOKSHELF_EBOOKS_METADATA_SOURCES+x}"
+BOOKSHELF_EBOOKS_METADATA_SOURCES="${BOOKSHELF_EBOOKS_METADATA_SOURCES-}"
+BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES_EXPLICIT="${BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES+x}"
+BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES="${BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES-}"
+GOOGLE_BOOKS_API_KEY_EXPLICIT="${GOOGLE_BOOKS_API_KEY+x}"
+GOOGLE_BOOKS_API_KEY="${GOOGLE_BOOKS_API_KEY:-}"
+EUROPEANA_API_KEY_EXPLICIT="${EUROPEANA_API_KEY+x}"
+EUROPEANA_API_KEY="${EUROPEANA_API_KEY:-}"
+HARDCOVER_APIFY_GOODREADS_ACTOR_EXPLICIT="${HARDCOVER_APIFY_GOODREADS_ACTOR+x}"
+HARDCOVER_APIFY_GOODREADS_ACTOR="${HARDCOVER_APIFY_GOODREADS_ACTOR:-}"
+HARDCOVER_APIFY_TOKEN_EXPLICIT="${HARDCOVER_APIFY_TOKEN+x}"
+HARDCOVER_APIFY_TOKEN="${HARDCOVER_APIFY_TOKEN:-}"
+HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE_EXPLICIT="${HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE+x}"
+HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE="${HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE:-}"
 RREADING_GLASSES_IMAGE="${RREADING_GLASSES_IMAGE:-}"
 COMPOSE_PROFILES="${COMPOSE_PROFILES:-}"
 HARDCOVER_AUTH="${HARDCOVER_AUTH:-${BOOKSHELF_HARDCOVER_AUTH:-${RREADING_GLASSES_HARDCOVER_AUTH:-}}}"
@@ -60,7 +83,9 @@ usage() {
   cat <<EOF
 Usage: $0 [options]
 
-Deploy a two-instance Bookshelf backend for SeerrNG ebook and audiobook requests.
+Deploy a Bookshelf backend for SeerrNG ebook and audiobook requests. Fresh
+installs use one combined BookshelfNG process; existing split databases keep
+the isolated layout unless you choose otherwise.
 
 Options:
   --dry-run          Print the actions that would be taken without changing files
@@ -68,7 +93,13 @@ Options:
   --validate-only    Validate commands, paths, compose config, and image pull
                     availability without changing files or starting containers.
   --validate-api     After startup, validate Bookshelf development config and
-                    lookup endpoints. Set EBOOK_API_KEY and AUDIOBOOK_API_KEY.
+                    lookup endpoints. Set EBOOK_API_KEY, plus AUDIOBOOK_API_KEY
+                    in split-instance mode.
+  --single-instance  Run one BookshelfNG process for both formats. Both SeerrNG
+                    format entries use the ebook port and API key. This does
+                    not merge existing databases.
+  --split-instances  Run isolated ebook and audiobook processes. This remains
+                    the default when an existing audiobook database is detected.
   --skip-pull        Do not run docker compose pull before starting containers.
   --no-stop-readarr  Ignore STOP_OLD_READARR_CONTAINER even if it is set.
   --migrate-to-hardcover
@@ -94,6 +125,14 @@ Common environment overrides:
   BOOKSHELF_HARDCOVER_NATIVE=true|false
   BOOKSHELF_HARDCOVER_AUTH (rendered native token; include Bearer prefix)
   BOOKSHELF_HARDCOVER_API_URL
+  BOOKSHELF_M4B_MERGE=true (opt in to chaptered M4B imports; default false)
+  BOOKSHELF_M4B_AAC_BITRATE_KBPS (48-320; default 128)
+  BOOKSHELF_METADATA_SOURCES (legacy shared override; empty disables extras)
+  BOOKSHELF_EBOOKS_METADATA_SOURCES (default: gutendex,googlebooks,europeana)
+  BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES (default: loc,gutendex,googlebooks,europeana)
+  GOOGLE_BOOKS_API_KEY / EUROPEANA_API_KEY (optional; enable their runtime searches)
+  HARDCOVER_APIFY_GOODREADS_ACTOR / HARDCOVER_APIFY_TOKEN (optional; may incur charges)
+  HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE (optional Actor-specific JSON template)
   RREADING_GLASSES_IMAGE
   HARDCOVER_AUTH (required for native and compatibility Hardcover modes; include Bearer prefix)
   COOKIE (optional for softcover mode)
@@ -140,6 +179,12 @@ while [ "$#" -gt 0 ]; do
     --validate-api)
       VALIDATE_API=true
       ;;
+    --single-instance)
+      SINGLE_INSTANCE=true
+      ;;
+    --split-instances)
+      SPLIT_INSTANCES=true
+      ;;
     --skip-pull)
       SKIP_PULL=true
       ;;
@@ -170,6 +215,11 @@ done
 
 if [ "$RESTORE_BACKUP" = "true" ]; then
   SKIP_PULL=true
+fi
+
+if [ "$SINGLE_INSTANCE" = "true" ] && [ "$SPLIT_INSTANCES" = "true" ]; then
+  echo "Choose either --single-instance or --split-instances, not both." >&2
+  exit 2
 fi
 
 require_command() {
@@ -287,6 +337,22 @@ validate_boolean() {
   fi
 }
 
+validate_audio_bitrate() {
+  local value="$1"
+
+  case "$value" in
+    '' | *[!0-9]*)
+      echo "BOOKSHELF_M4B_AAC_BITRATE_KBPS must be an integer from 48 to 320." >&2
+      exit 2
+      ;;
+  esac
+
+  if [ "$value" -lt 48 ] || [ "$value" -gt 320 ]; then
+    echo "BOOKSHELF_M4B_AAC_BITRATE_KBPS must be an integer from 48 to 320." >&2
+    exit 2
+  fi
+}
+
 validate_configuration() {
   local name
 
@@ -313,6 +379,8 @@ validate_configuration() {
   validate_boolean HARDCOVER_LOCAL_DB_IMPORT "$HARDCOVER_LOCAL_DB_IMPORT"
   validate_boolean BOOKSHELF_HARDCOVER "$BOOKSHELF_HARDCOVER"
   validate_boolean BOOKSHELF_HARDCOVER_NATIVE "$BOOKSHELF_HARDCOVER_NATIVE"
+  validate_boolean BOOKSHELF_M4B_MERGE "$BOOKSHELF_M4B_MERGE"
+  validate_audio_bitrate "$BOOKSHELF_M4B_AAC_BITRATE_KBPS"
 
   for name in \
     INSTALL_DIR BACKUP_DIR BOOKSHELF_EBOOKS_CONFIG_DIR \
@@ -320,7 +388,11 @@ validate_configuration() {
     MEDIA_ROOT DOWNLOAD_ROOT PLEX_ROOT TZ BOOKSHELF_IMAGE \
     BOOKSHELF_METADATA_MODE BOOKSHELF_METADATA_URL BOOKSHELF_HARDCOVER \
     BOOKSHELF_HARDCOVER_NATIVE BOOKSHELF_HARDCOVER_AUTH \
-    BOOKSHELF_HARDCOVER_API_URL \
+    BOOKSHELF_HARDCOVER_API_URL BOOKSHELF_M4B_MERGE \
+    BOOKSHELF_M4B_AAC_BITRATE_KBPS BOOKSHELF_METADATA_SOURCES \
+    BOOKSHELF_EBOOKS_METADATA_SOURCES BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES \
+    GOOGLE_BOOKS_API_KEY EUROPEANA_API_KEY HARDCOVER_APIFY_GOODREADS_ACTOR \
+    HARDCOVER_APIFY_TOKEN HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE \
     COMPOSE_PROFILES STOP_OLD_READARR_CONTAINER \
     RREADING_GLASSES_IMAGE RREADING_GLASSES_POSTGRES_PASSWORD \
     HARDCOVER_AUTH COOKIE; do
@@ -341,16 +413,67 @@ has_existing_bookshelf_config() {
     [ -f "${BOOKSHELF_AUDIOBOOKS_CONFIG_DIR}/readarr.db" ]
 }
 
+select_instance_mode() {
+  local stored_mode=""
+  local audiobook_database
+
+  if [ "$SINGLE_INSTANCE" = "true" ]; then
+    stored_mode="single"
+  elif [ "$SPLIT_INSTANCES" = "true" ]; then
+    stored_mode="split"
+  else
+    stored_mode="$(env_file_value "${INSTALL_DIR}/.env" "BOOKSHELF_INSTANCE_MODE")"
+  fi
+
+  if [ -z "$stored_mode" ]; then
+    stored_mode="single"
+    if [ "$BOOKSHELF_AUDIOBOOKS_CONFIG_DIR" != "$BOOKSHELF_EBOOKS_CONFIG_DIR" ]; then
+      for audiobook_database in \
+        "${BOOKSHELF_AUDIOBOOKS_CONFIG_DIR}/nzbdrone.db" \
+        "${BOOKSHELF_AUDIOBOOKS_CONFIG_DIR}/readarr.db"; do
+        if [ -f "$audiobook_database" ]; then
+          stored_mode="split"
+          break
+        fi
+      done
+    fi
+  fi
+
+  case "$stored_mode" in
+    single)
+      SINGLE_INSTANCE=true
+      SPLIT_INSTANCES=false
+      ;;
+    split)
+      SINGLE_INSTANCE=false
+      SPLIT_INSTANCES=true
+      ;;
+    *)
+      echo "Invalid BOOKSHELF_INSTANCE_MODE in ${INSTALL_DIR}/.env: ${stored_mode}" >&2
+      echo "Expected single or split." >&2
+      exit 2
+      ;;
+  esac
+}
+
 resolve_backend() {
   local existing_hardcover_auth
   local existing_metadata_mode
   local existing_metadata_url
   local existing_native
   local existing_profiles
+  local existing_backend
+  local existing_instance_mode
 
   case "$BOOKSHELF_BACKEND" in
     auto)
-      if has_existing_bookshelf_config; then
+      existing_backend="$(env_file_value "${INSTALL_DIR}/.env" "BOOKSHELF_BACKEND")"
+      existing_instance_mode="$(env_file_value "${INSTALL_DIR}/.env" "BOOKSHELF_INSTANCE_MODE")"
+      if [ "$BOOKSHELF_BACKEND_EXPLICIT" != "x" ] &&
+        [ -n "$existing_instance_mode" ] &&
+        { [ "$existing_backend" = "hardcover" ] || [ "$existing_backend" = "softcover" ]; }; then
+        BOOKSHELF_BACKEND_RESOLVED="$existing_backend"
+      elif has_existing_bookshelf_config; then
         BOOKSHELF_BACKEND_RESOLVED=hardcover
         MIGRATE_TO_HARDCOVER=true
       else
@@ -883,7 +1006,25 @@ EOF
 write_env_file() {
   local env_file="${INSTALL_DIR}/.env"
   local env_backup
+  local instance_mode="split"
+
+  if [ "$SINGLE_INSTANCE" = "true" ]; then
+    instance_mode="single"
+  fi
   local existing_postgres_password
+  local existing_m4b_merge
+  local existing_m4b_aac_bitrate
+  local existing_metadata_sources
+  local existing_ebooks_metadata_sources
+  local existing_audiobooks_metadata_sources
+  local has_existing_metadata_sources=false
+  local has_existing_ebooks_metadata_sources=false
+  local has_existing_audiobooks_metadata_sources=false
+  local existing_google_books_api_key
+  local existing_europeana_api_key
+  local existing_apify_actor
+  local existing_apify_token
+  local existing_apify_template
 
   if [ "$DRY_RUN" = "true" ]; then
     echo "Would write ${env_file}"
@@ -891,8 +1032,96 @@ write_env_file() {
   fi
 
   existing_postgres_password="$(env_file_value "$env_file" "RREADING_GLASSES_POSTGRES_PASSWORD")"
+  existing_m4b_merge="$(env_file_value "$env_file" "BOOKSHELF_M4B_MERGE")"
+  existing_m4b_aac_bitrate="$(env_file_value "$env_file" "BOOKSHELF_M4B_AAC_BITRATE_KBPS")"
   RREADING_GLASSES_POSTGRES_PASSWORD="${RREADING_GLASSES_POSTGRES_PASSWORD:-${existing_postgres_password:-$(generate_password)}}"
   validate_no_control_characters RREADING_GLASSES_POSTGRES_PASSWORD "$RREADING_GLASSES_POSTGRES_PASSWORD"
+
+  if [ "$BOOKSHELF_M4B_MERGE_EXPLICIT" != "x" ] && [ -n "$existing_m4b_merge" ]; then
+    BOOKSHELF_M4B_MERGE="$existing_m4b_merge"
+  fi
+  if [ "$BOOKSHELF_M4B_AAC_BITRATE_KBPS_EXPLICIT" != "x" ] && [ -n "$existing_m4b_aac_bitrate" ]; then
+    BOOKSHELF_M4B_AAC_BITRATE_KBPS="$existing_m4b_aac_bitrate"
+  fi
+  validate_boolean BOOKSHELF_M4B_MERGE "$BOOKSHELF_M4B_MERGE"
+  validate_audio_bitrate "$BOOKSHELF_M4B_AAC_BITRATE_KBPS"
+  validate_no_control_characters BOOKSHELF_M4B_MERGE "$BOOKSHELF_M4B_MERGE"
+  validate_no_control_characters BOOKSHELF_M4B_AAC_BITRATE_KBPS "$BOOKSHELF_M4B_AAC_BITRATE_KBPS"
+
+  existing_metadata_sources="$(env_file_value "$env_file" "BOOKSHELF_METADATA_SOURCES")"
+  existing_ebooks_metadata_sources="$(env_file_value "$env_file" "BOOKSHELF_EBOOKS_METADATA_SOURCES")"
+  existing_audiobooks_metadata_sources="$(env_file_value "$env_file" "BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES")"
+  grep -q '^BOOKSHELF_METADATA_SOURCES=' "$env_file" 2>/dev/null && has_existing_metadata_sources=true || true
+  grep -q '^BOOKSHELF_EBOOKS_METADATA_SOURCES=' "$env_file" 2>/dev/null && has_existing_ebooks_metadata_sources=true || true
+  grep -q '^BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES=' "$env_file" 2>/dev/null && has_existing_audiobooks_metadata_sources=true || true
+  existing_google_books_api_key="$(env_file_value "$env_file" "GOOGLE_BOOKS_API_KEY")"
+  existing_europeana_api_key="$(env_file_value "$env_file" "EUROPEANA_API_KEY")"
+  existing_apify_actor="$(env_file_value "$env_file" "HARDCOVER_APIFY_GOODREADS_ACTOR")"
+  existing_apify_token="$(env_file_value "$env_file" "HARDCOVER_APIFY_TOKEN")"
+  existing_apify_template="$(env_file_value "$env_file" "HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE")"
+
+  if [ "$BOOKSHELF_METADATA_SOURCES_EXPLICIT" != "x" ]; then
+    if [ "$has_existing_metadata_sources" = "true" ]; then
+      BOOKSHELF_METADATA_SOURCES="$existing_metadata_sources"
+    else
+      BOOKSHELF_METADATA_SOURCES=""
+    fi
+    if [ "$existing_metadata_sources" = "loc,googlebooks,europeana" ] || [ "$existing_metadata_sources" = "loc,gutendex,googlebooks,europeana" ]; then
+      BOOKSHELF_METADATA_SOURCES=""
+    fi
+  fi
+
+  if [ "$BOOKSHELF_EBOOKS_METADATA_SOURCES_EXPLICIT" = "x" ]; then
+    :
+  elif [ "$BOOKSHELF_METADATA_SOURCES_EXPLICIT" = "x" ]; then
+    BOOKSHELF_EBOOKS_METADATA_SOURCES="$BOOKSHELF_METADATA_SOURCES"
+  elif [ "$has_existing_ebooks_metadata_sources" = "true" ]; then
+    BOOKSHELF_EBOOKS_METADATA_SOURCES="$existing_ebooks_metadata_sources"
+  elif [ "$has_existing_metadata_sources" = "true" ] && [ "$existing_metadata_sources" != "loc,googlebooks,europeana" ] && [ "$existing_metadata_sources" != "loc,gutendex,googlebooks,europeana" ]; then
+    BOOKSHELF_EBOOKS_METADATA_SOURCES="$existing_metadata_sources"
+  else
+    if [ "$SINGLE_INSTANCE" = "true" ]; then
+      BOOKSHELF_EBOOKS_METADATA_SOURCES="loc,gutendex,googlebooks,europeana"
+    else
+      BOOKSHELF_EBOOKS_METADATA_SOURCES="gutendex,googlebooks,europeana"
+    fi
+  fi
+
+  if [ "$BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES_EXPLICIT" = "x" ]; then
+    :
+  elif [ "$BOOKSHELF_METADATA_SOURCES_EXPLICIT" = "x" ]; then
+    BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES="$BOOKSHELF_METADATA_SOURCES"
+  elif [ "$has_existing_audiobooks_metadata_sources" = "true" ]; then
+    BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES="$existing_audiobooks_metadata_sources"
+  elif [ "$has_existing_metadata_sources" = "true" ] && [ "$existing_metadata_sources" != "loc,googlebooks,europeana" ] && [ "$existing_metadata_sources" != "loc,gutendex,googlebooks,europeana" ]; then
+    BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES="$existing_metadata_sources"
+  else
+    BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES="loc,gutendex,googlebooks,europeana"
+  fi
+  if [ "$GOOGLE_BOOKS_API_KEY_EXPLICIT" != "x" ]; then
+    GOOGLE_BOOKS_API_KEY="$existing_google_books_api_key"
+  fi
+  if [ "$EUROPEANA_API_KEY_EXPLICIT" != "x" ]; then
+    EUROPEANA_API_KEY="$existing_europeana_api_key"
+  fi
+  if [ "$HARDCOVER_APIFY_GOODREADS_ACTOR_EXPLICIT" != "x" ]; then
+    HARDCOVER_APIFY_GOODREADS_ACTOR="$existing_apify_actor"
+  fi
+  if [ "$HARDCOVER_APIFY_TOKEN_EXPLICIT" != "x" ]; then
+    HARDCOVER_APIFY_TOKEN="$existing_apify_token"
+  fi
+  if [ "$HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE_EXPLICIT" != "x" ]; then
+    HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE="$existing_apify_template"
+  fi
+
+  validate_no_control_characters BOOKSHELF_METADATA_SOURCES "$BOOKSHELF_METADATA_SOURCES"
+  validate_no_control_characters BOOKSHELF_EBOOKS_METADATA_SOURCES "$BOOKSHELF_EBOOKS_METADATA_SOURCES"
+  validate_no_control_characters BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES "$BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES"
+  validate_no_control_characters GOOGLE_BOOKS_API_KEY "$GOOGLE_BOOKS_API_KEY"
+  validate_no_control_characters EUROPEANA_API_KEY "$EUROPEANA_API_KEY"
+  validate_no_control_characters HARDCOVER_APIFY_GOODREADS_ACTOR "$HARDCOVER_APIFY_GOODREADS_ACTOR"
+  validate_no_control_characters HARDCOVER_APIFY_TOKEN "$HARDCOVER_APIFY_TOKEN"
+  validate_no_control_characters HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE "$HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE"
 
   if [ -f "$env_file" ]; then
     env_backup="${env_file}.bak-$(date +%Y%m%d-%H%M%S)-$$"
@@ -905,6 +1134,7 @@ PGID=${PGID}
 TZ=${TZ}
 
 BOOKSHELF_BACKEND=${BOOKSHELF_BACKEND_RESOLVED}
+BOOKSHELF_INSTANCE_MODE=${instance_mode}
 BOOKSHELF_METADATA_MODE=${BOOKSHELF_METADATA_MODE}
 BOOKSHELF_IMAGE=${BOOKSHELF_IMAGE}
 BOOKSHELF_METADATA_URL=${BOOKSHELF_METADATA_URL}
@@ -912,6 +1142,16 @@ BOOKSHELF_HARDCOVER=${BOOKSHELF_HARDCOVER}
 BOOKSHELF_HARDCOVER_NATIVE=${BOOKSHELF_HARDCOVER_NATIVE}
 BOOKSHELF_HARDCOVER_AUTH=${BOOKSHELF_HARDCOVER_AUTH:-}
 BOOKSHELF_HARDCOVER_API_URL=${BOOKSHELF_HARDCOVER_API_URL:-}
+BOOKSHELF_M4B_MERGE=${BOOKSHELF_M4B_MERGE}
+BOOKSHELF_M4B_AAC_BITRATE_KBPS=${BOOKSHELF_M4B_AAC_BITRATE_KBPS}
+BOOKSHELF_METADATA_SOURCES=${BOOKSHELF_METADATA_SOURCES}
+BOOKSHELF_EBOOKS_METADATA_SOURCES=${BOOKSHELF_EBOOKS_METADATA_SOURCES}
+BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES=${BOOKSHELF_AUDIOBOOKS_METADATA_SOURCES}
+GOOGLE_BOOKS_API_KEY=${GOOGLE_BOOKS_API_KEY}
+EUROPEANA_API_KEY=${EUROPEANA_API_KEY}
+HARDCOVER_APIFY_GOODREADS_ACTOR=${HARDCOVER_APIFY_GOODREADS_ACTOR}
+HARDCOVER_APIFY_TOKEN=${HARDCOVER_APIFY_TOKEN}
+HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE=${HARDCOVER_APIFY_GOODREADS_INPUT_TEMPLATE}
 BOOKSHELF_EBOOKS_PORT=${BOOKSHELF_EBOOKS_PORT}
 BOOKSHELF_AUDIOBOOKS_PORT=${BOOKSHELF_AUDIOBOOKS_PORT}
 BOOKSHELF_EBOOKS_CONFIG_DIR=${BOOKSHELF_EBOOKS_CONFIG_DIR}
@@ -1244,6 +1484,23 @@ validate_bookshelf_api() {
 
   require_command curl
 
+  if [ "$SINGLE_INSTANCE" = "true" ]; then
+    if [ -z "${EBOOK_API_KEY:-}" ]; then
+      echo "Skipping API validation because EBOOK_API_KEY is not set for the combined instance." >&2
+      return 0
+    fi
+
+    echo "Validating combined Bookshelf API on ${ebook_base}"
+    curl -fsS -H "X-Api-Key: ${EBOOK_API_KEY}" \
+      "${ebook_base}/config/development" >/dev/null
+    curl -fsS -G -H "X-Api-Key: ${EBOOK_API_KEY}" \
+      --data-urlencode "term=${validation_term}" \
+      "${ebook_base}/book/lookup" >/dev/null
+
+    echo "Combined Bookshelf API validation passed."
+    return 0
+  fi
+
   if [ -z "${EBOOK_API_KEY:-}" ] || [ -z "${AUDIOBOOK_API_KEY:-}" ]; then
     echo "Skipping API validation because EBOOK_API_KEY and AUDIOBOOK_API_KEY are not both set." >&2
     return 0
@@ -1332,10 +1589,38 @@ Bookshelf backend deployment summary:
   rreading-glasses:         ${proxy_status}
   rreading-glasses image:   ${RREADING_GLASSES_IMAGE}
   rreading-glasses upstream: ${RREADING_GLASSES_UPSTREAM}
-  Ebook config:             ${BOOKSHELF_EBOOKS_CONFIG_DIR}
-  Audiobook config:         ${BOOKSHELF_AUDIOBOOKS_CONFIG_DIR}
   rreading-glasses data:    ${RREADING_GLASSES_POSTGRES_DIR}
   Metadata URL:             ${BOOKSHELF_METADATA_URL}
+EOF
+
+  if [ "$SINGLE_INSTANCE" = "true" ]; then
+    cat <<EOF
+  Bookshelf processes:      one combined ebook/audiobook instance
+  Bookshelf config:         ${BOOKSHELF_EBOOKS_CONFIG_DIR}
+  Bookshelf port:           ${BOOKSHELF_EBOOKS_PORT}
+  Audiobook config:         unused; no existing database was changed
+
+Seerr service settings:
+  Hostname:                 127.0.0.1 or the Docker host name reachable by Seerr
+  Port for both entries:    ${BOOKSHELF_EBOOKS_PORT}
+  API key for both entries: the key from the combined BookshelfNG instance
+
+After Bookshelf finishes first boot:
+  1. Copy its API key from Settings > General > Security.
+  2. In Seerr, add one Bookshelf service with Book Format = Book.
+  3. Add another Bookshelf service with Book Format = Audiobook.
+  4. Point both entries to the same hostname, port, and API key, and mark each as default for its format.
+  5. Use the Run Diagnostic button in Seerr's Bookshelf service modal.
+
+Optional validation commands, after replacing BOOKSHELF_API_KEY:
+  curl -H 'X-Api-Key: BOOKSHELF_API_KEY' 'http://127.0.0.1:${BOOKSHELF_EBOOKS_PORT}/api/v1/config/development'
+  curl -H 'X-Api-Key: BOOKSHELF_API_KEY' 'http://127.0.0.1:${BOOKSHELF_EBOOKS_PORT}/api/v1/book/lookup?term=Foundation%20Isaac%20Asimov'
+EOF
+  else
+    cat <<EOF
+  Bookshelf processes:      two isolated instances
+  Ebook config:             ${BOOKSHELF_EBOOKS_CONFIG_DIR}
+  Audiobook config:         ${BOOKSHELF_AUDIOBOOKS_CONFIG_DIR}
   Ebook Bookshelf port:     ${BOOKSHELF_EBOOKS_PORT}
   Audiobook Bookshelf port: ${BOOKSHELF_AUDIOBOOKS_PORT}
 
@@ -1356,8 +1641,10 @@ Optional validation commands, after replacing API keys:
   curl -H 'X-Api-Key: EBOOK_API_KEY' 'http://127.0.0.1:${BOOKSHELF_EBOOKS_PORT}/api/v1/book/lookup?term=Foundation%20Isaac%20Asimov'
   curl -H 'X-Api-Key: AUDIOBOOK_API_KEY' 'http://127.0.0.1:${BOOKSHELF_AUDIOBOOKS_PORT}/api/v1/book/lookup?term=Foundation%20Isaac%20Asimov'
 EOF
+  fi
 }
 
+select_instance_mode
 resolve_backend
 
 if [ "$RESTORE_BACKUP" = "true" ]; then
@@ -1366,6 +1653,15 @@ if [ "$RESTORE_BACKUP" = "true" ]; then
 fi
 
 validate_configuration
+if [ "$SINGLE_INSTANCE" = "true" ] && [ "$BOOKSHELF_AUDIOBOOKS_CONFIG_DIR" != "$BOOKSHELF_EBOOKS_CONFIG_DIR" ]; then
+  for audiobook_database in "${BOOKSHELF_AUDIOBOOKS_CONFIG_DIR}/nzbdrone.db" "${BOOKSHELF_AUDIOBOOKS_CONFIG_DIR}/readarr.db"; do
+    if [ -f "$audiobook_database" ]; then
+      echo "An existing audiobook database was found at ${BOOKSHELF_AUDIOBOOKS_CONFIG_DIR}; --single-instance does not merge databases. Keep split mode or migrate the data separately before using one instance." >&2
+      exit 2
+    fi
+  done
+fi
+
 preflight
 render_compose_inputs
 validate_compose
@@ -1398,18 +1694,23 @@ backup_path "$BOOKSHELF_AUDIOBOOKS_CONFIG_DIR" "bookshelf-audiobooks-config"
 backup_path "$RREADING_GLASSES_POSTGRES_DIR" "rreading-glasses-postgres"
 write_backup_manifest
 
-run mkdir -p "$BOOKSHELF_EBOOKS_CONFIG_DIR" "$BOOKSHELF_AUDIOBOOKS_CONFIG_DIR"
+run mkdir -p "$BOOKSHELF_EBOOKS_CONFIG_DIR"
+if [ "$SINGLE_INSTANCE" != "true" ]; then
+  run mkdir -p "$BOOKSHELF_AUDIOBOOKS_CONFIG_DIR"
+fi
 if [ "$COMPOSE_PROFILES" = "rreading-glasses" ]; then
   run mkdir -p "$RREADING_GLASSES_POSTGRES_DIR"
 fi
 
-if [ "$CLONE_EBOOKS_CONFIG_TO_AUDIOBOOKS" = "true" ] && [ -d "$BOOKSHELF_EBOOKS_CONFIG_DIR" ] && [ -z "$(find "$BOOKSHELF_AUDIOBOOKS_CONFIG_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+if [ "$SINGLE_INSTANCE" != "true" ] && [ "$CLONE_EBOOKS_CONFIG_TO_AUDIOBOOKS" = "true" ] && [ -d "$BOOKSHELF_EBOOKS_CONFIG_DIR" ] && [ -z "$(find "$BOOKSHELF_AUDIOBOOKS_CONFIG_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
   run cp -a "${BOOKSHELF_EBOOKS_CONFIG_DIR}/." "$BOOKSHELF_AUDIOBOOKS_CONFIG_DIR/"
   echo "Cloned ebook config into audiobook config directory."
 fi
 
 ensure_bookshelf_config "$BOOKSHELF_EBOOKS_CONFIG_DIR" "$BOOKSHELF_EBOOKS_PORT" "ebook"
-ensure_bookshelf_config "$BOOKSHELF_AUDIOBOOKS_CONFIG_DIR" "$BOOKSHELF_AUDIOBOOKS_PORT" "audiobook"
+if [ "$SINGLE_INSTANCE" != "true" ]; then
+  ensure_bookshelf_config "$BOOKSHELF_AUDIOBOOKS_CONFIG_DIR" "$BOOKSHELF_AUDIOBOOKS_PORT" "audiobook"
+fi
 
 if [ "$NO_STOP_READARR" != "true" ] && [ -n "$STOP_OLD_READARR_CONTAINER" ]; then
   run docker stop "$STOP_OLD_READARR_CONTAINER" >/dev/null 2>&1 || true
@@ -1422,9 +1723,19 @@ if [ "$DRY_RUN" != "true" ]; then
     if [ "$SKIP_PULL" != "true" ]; then
       compose_cmd pull
     fi
-    compose_cmd up -d
-    wait_for_bookshelf bookshelf-ebooks "$BOOKSHELF_EBOOKS_PORT"
-    wait_for_bookshelf bookshelf-audiobooks "$BOOKSHELF_AUDIOBOOKS_PORT"
+    if [ "$SINGLE_INSTANCE" = "true" ]; then
+      compose_cmd stop bookshelf-audiobooks >/dev/null 2>&1 || true
+      if [ "$COMPOSE_PROFILES" = "rreading-glasses" ]; then
+        compose_cmd up -d bookshelf-ebooks rreading-glasses rreading-glasses-postgres
+      else
+        compose_cmd up -d bookshelf-ebooks
+      fi
+      wait_for_bookshelf bookshelf-ebooks "$BOOKSHELF_EBOOKS_PORT"
+    else
+      compose_cmd up -d
+      wait_for_bookshelf bookshelf-ebooks "$BOOKSHELF_EBOOKS_PORT"
+      wait_for_bookshelf bookshelf-audiobooks "$BOOKSHELF_AUDIOBOOKS_PORT"
+    fi
     if [ "$COMPOSE_PROFILES" = "rreading-glasses" ]; then
       wait_for_metadata_proxy
     fi

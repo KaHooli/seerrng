@@ -5,6 +5,7 @@ import PageTitle from '@app/components/Common/PageTitle';
 import LanguageSelector from '@app/components/LanguageSelector';
 import QuotaSelector from '@app/components/QuotaSelector';
 import RegionSelector from '@app/components/RegionSelector';
+import RequestRootFolderSettings from '@app/components/UserProfile/UserSettings/UserGeneralSettings/RequestRootFolderSettings';
 import { availableLanguages } from '@app/context/LanguageContext';
 import useLocale from '@app/hooks/useLocale';
 import useSettings from '@app/hooks/useSettings';
@@ -15,13 +16,14 @@ import globalMessages from '@app/i18n/globalMessages';
 import ErrorPage from '@app/pages/_error';
 import defineMessages from '@app/utils/defineMessages';
 import { ArrowDownOnSquareIcon } from '@heroicons/react/24/outline';
+import type { TmdbLanguage } from '@server/api/themoviedb/interfaces';
 import { ApiErrorCode } from '@server/constants/error';
 import type { UserSettingsGeneralResponse } from '@server/interfaces/api/userSettingsInterfaces';
 import type { AvailableLocale } from '@server/types/languages';
 import axios from 'axios';
 import { Field, Form, Formik } from 'formik';
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useIntl } from 'react-intl';
 import useSWR from 'swr';
 import validator from 'validator';
@@ -61,9 +63,21 @@ const messages = defineMessages(
     seriesrequestlimit: 'Series Request Limit',
     musicrequestlimit: 'Music Request Limit',
     bookrequestlimit: 'Book Request Limit',
+    comicrequestlimit: 'Comic Request Limit',
+    magazinerequestlimit: 'Magazine Request Limit',
+    softwarerequestlimit: 'Software Request Limit',
     enableOverride: 'Override Global Limit',
     applanguage: 'Display Language',
     languageDefault: 'Default ({language})',
+    preferredLanguageAll: 'Preferred Language for All Media',
+    preferredLanguageMovie: 'Movie Language Override',
+    preferredLanguageTv: 'Series Language Override',
+    preferredLanguageMusic: 'Music Language Override',
+    preferredLanguageBook: 'Book Language Override',
+    preferredLanguageTip:
+      'Each medium inherits this default unless you set an override. SeerrNG uses matching Radarr or Sonarr language profiles when available and selects a matching book edition when available. Music services do not currently expose a language-based request choice. You can still change the destination or edition for each request.',
+    preferredLanguageAny: 'Any language',
+    preferredLanguageInherit: 'Use all-media preference',
     validationemailrequired: 'Email required',
     validationemailformat: 'Valid email required',
     plexwatchlistsyncmovies: 'Auto-Request Movies',
@@ -78,6 +92,12 @@ const messages = defineMessages(
     bookwatchlistsync: 'Auto-Request Books',
     bookwatchlistsynctip:
       'Automatically request books added to SeerrNG book watchlists when a supported book watchlist source is available.',
+    comicwatchlistsync: 'Auto-Request Comics',
+    comicwatchlistsynctip:
+      'Automatically request comics added to your SeerrNG comic watchlist.',
+    magazinewatchlistsync: 'Auto-Request Magazines',
+    magazinewatchlistsynctip:
+      'Automatically request magazines added to your SeerrNG magazine watchlist.',
     cardTextVisibility: 'Card Titles',
     cardTextVisibilityTip:
       'Choose when each media type shows title text on poster cards.',
@@ -98,6 +118,9 @@ const UserGeneralSettings = () => {
   const [tvQuotaEnabled, setTvQuotaEnabled] = useState(false);
   const [musicQuotaEnabled, setMusicQuotaEnabled] = useState(false);
   const [bookQuotaEnabled, setBookQuotaEnabled] = useState(false);
+  const [comicQuotaEnabled, setComicQuotaEnabled] = useState(false);
+  const [magazineQuotaEnabled, setMagazineQuotaEnabled] = useState(false);
+  const [softwareQuotaEnabled, setSoftwareQuotaEnabled] = useState(false);
   const router = useRouter();
   const userId = getPositiveQueryParamNumber(router.query.userId);
   const {
@@ -115,6 +138,26 @@ const UserGeneralSettings = () => {
     mutate: revalidate,
   } = useSWR<UserSettingsGeneralResponse>(
     user ? `/api/v1/user/${user?.id}/settings/main` : null
+  );
+  const { data: languages } = useSWR<TmdbLanguage[]>('/api/v1/languages');
+  const preferredLanguageOptions = useMemo(
+    () =>
+      (languages ?? [])
+        .filter((language) => /^[a-z]{2}$/.test(language.iso_639_1))
+        .map((language) => ({
+          code: language.iso_639_1,
+          name:
+            intl.formatDisplayName(language.iso_639_1, {
+              type: 'language',
+              fallback: 'none',
+            }) ||
+            language.english_name ||
+            language.name,
+        }))
+        .sort((left, right) =>
+          left.name.localeCompare(right.name, intl.locale)
+        ),
+    [intl, languages]
   );
 
   const UserGeneralSettingsSchema = Yup.object().shape({
@@ -151,6 +194,17 @@ const UserGeneralSettings = () => {
     setBookQuotaEnabled(
       data?.bookQuotaLimit != undefined && data?.bookQuotaDays != undefined
     );
+    setComicQuotaEnabled(
+      data?.comicQuotaLimit != undefined && data?.comicQuotaDays != undefined
+    );
+    setMagazineQuotaEnabled(
+      data?.magazineQuotaLimit != undefined &&
+        data?.magazineQuotaDays != undefined
+    );
+    setSoftwareQuotaEnabled(
+      data?.softwareQuotaLimit != undefined &&
+        data?.softwareQuotaDays != undefined
+    );
   }, [data]);
 
   if (!data && !error) {
@@ -160,6 +214,39 @@ const UserGeneralSettings = () => {
   if (!data) {
     return <ErrorPage statusCode={500} />;
   }
+
+  const preferredLanguageOverrides = [
+    {
+      field: 'preferredLanguageMovie',
+      label: messages.preferredLanguageMovie,
+    },
+    {
+      field: 'preferredLanguageTv',
+      label: messages.preferredLanguageTv,
+    },
+    {
+      field: 'preferredLanguageMusic',
+      label: messages.preferredLanguageMusic,
+    },
+    {
+      field: 'preferredLanguageBook',
+      label: messages.preferredLanguageBook,
+    },
+  ] as const;
+
+  const preferredLanguageFieldValue = (
+    mediaType: 'movie' | 'tv' | 'music' | 'book'
+  ) => {
+    const preferredLanguages = data.preferredLanguages;
+    if (
+      !preferredLanguages ||
+      !Object.prototype.hasOwnProperty.call(preferredLanguages, mediaType)
+    ) {
+      return 'inherit';
+    }
+
+    return preferredLanguages[mediaType] ?? 'any';
+  };
 
   return (
     <>
@@ -179,6 +266,11 @@ const UserGeneralSettings = () => {
           displayName: data?.username !== user?.email ? data?.username : '',
           email: data?.email?.includes('@') ? data.email : '',
           locale: data?.locale,
+          preferredLanguageAll: data?.preferredLanguages?.all ?? '',
+          preferredLanguageMovie: preferredLanguageFieldValue('movie'),
+          preferredLanguageTv: preferredLanguageFieldValue('tv'),
+          preferredLanguageMusic: preferredLanguageFieldValue('music'),
+          preferredLanguageBook: preferredLanguageFieldValue('book'),
           discoverRegion: data?.discoverRegion,
           streamingRegion: data?.streamingRegion,
           originalLanguage: data?.originalLanguage,
@@ -190,14 +282,23 @@ const UserGeneralSettings = () => {
           musicQuotaDays: data?.musicQuotaDays,
           bookQuotaLimit: data?.bookQuotaLimit,
           bookQuotaDays: data?.bookQuotaDays,
+          comicQuotaLimit: data?.comicQuotaLimit,
+          comicQuotaDays: data?.comicQuotaDays,
+          magazineQuotaLimit: data?.magazineQuotaLimit,
+          magazineQuotaDays: data?.magazineQuotaDays,
+          softwareQuotaLimit: data?.softwareQuotaLimit,
+          softwareQuotaDays: data?.softwareQuotaDays,
           watchlistSyncMovies: data?.watchlistSyncMovies,
           watchlistSyncTv: data?.watchlistSyncTv,
           watchlistSyncMusic: data?.watchlistSyncMusic,
           watchlistSyncBooks: data?.watchlistSyncBooks,
+          watchlistSyncComics: data?.watchlistSyncComics,
+          watchlistSyncMagazines: data?.watchlistSyncMagazines,
           cardTextVisibilityMovie: data?.cardTextVisibility?.movie ?? 'hover',
           cardTextVisibilityTv: data?.cardTextVisibility?.tv ?? 'hover',
           cardTextVisibilityAlbum: data?.cardTextVisibility?.album ?? 'always',
           cardTextVisibilityBook: data?.cardTextVisibility?.book ?? 'always',
+          requestRootFolders: data?.requestRootFolders ?? {},
         }}
         validationSchema={UserGeneralSettingsSchema}
         enableReinitialize
@@ -208,6 +309,33 @@ const UserGeneralSettings = () => {
               email:
                 values.email || user?.jellyfinUsername || user?.plexUsername,
               locale: values.locale,
+              preferredLanguages: {
+                all: values.preferredLanguageAll || null,
+                movie:
+                  values.preferredLanguageMovie === 'inherit'
+                    ? undefined
+                    : values.preferredLanguageMovie === 'any'
+                      ? null
+                      : values.preferredLanguageMovie,
+                tv:
+                  values.preferredLanguageTv === 'inherit'
+                    ? undefined
+                    : values.preferredLanguageTv === 'any'
+                      ? null
+                      : values.preferredLanguageTv,
+                music:
+                  values.preferredLanguageMusic === 'inherit'
+                    ? undefined
+                    : values.preferredLanguageMusic === 'any'
+                      ? null
+                      : values.preferredLanguageMusic,
+                book:
+                  values.preferredLanguageBook === 'inherit'
+                    ? undefined
+                    : values.preferredLanguageBook === 'any'
+                      ? null
+                      : values.preferredLanguageBook,
+              },
               discoverRegion: values.discoverRegion,
               streamingRegion: values.streamingRegion,
               originalLanguage: values.originalLanguage,
@@ -223,16 +351,35 @@ const UserGeneralSettings = () => {
               musicQuotaDays: musicQuotaEnabled ? values.musicQuotaDays : null,
               bookQuotaLimit: bookQuotaEnabled ? values.bookQuotaLimit : null,
               bookQuotaDays: bookQuotaEnabled ? values.bookQuotaDays : null,
+              comicQuotaLimit: comicQuotaEnabled
+                ? values.comicQuotaLimit
+                : null,
+              comicQuotaDays: comicQuotaEnabled ? values.comicQuotaDays : null,
+              magazineQuotaLimit: magazineQuotaEnabled
+                ? values.magazineQuotaLimit
+                : null,
+              magazineQuotaDays: magazineQuotaEnabled
+                ? values.magazineQuotaDays
+                : null,
+              softwareQuotaLimit: softwareQuotaEnabled
+                ? values.softwareQuotaLimit
+                : null,
+              softwareQuotaDays: softwareQuotaEnabled
+                ? values.softwareQuotaDays
+                : null,
               watchlistSyncMovies: values.watchlistSyncMovies,
               watchlistSyncTv: values.watchlistSyncTv,
               watchlistSyncMusic: values.watchlistSyncMusic,
               watchlistSyncBooks: values.watchlistSyncBooks,
+              watchlistSyncComics: values.watchlistSyncComics,
+              watchlistSyncMagazines: values.watchlistSyncMagazines,
               cardTextVisibility: {
                 movie: values.cardTextVisibilityMovie,
                 tv: values.cardTextVisibilityTv,
                 album: values.cardTextVisibilityAlbum,
                 book: values.cardTextVisibilityBook,
               },
+              requestRootFolders: values.requestRootFolders,
             });
 
             if (currentUser?.id === user?.id && setLocale) {
@@ -413,6 +560,72 @@ const UserGeneralSettings = () => {
                   </div>
                 </div>
               </div>
+              <div className="form-row">
+                <div className="text-label">
+                  <label htmlFor="preferredLanguageAll">
+                    {intl.formatMessage(messages.preferredLanguageAll)}
+                  </label>
+                  <span className="label-tip">
+                    {intl.formatMessage(messages.preferredLanguageTip)}
+                  </span>
+                </div>
+                <div className="form-input-area">
+                  <div className="form-input-field">
+                    <Field
+                      as="select"
+                      id="preferredLanguageAll"
+                      name="preferredLanguageAll"
+                    >
+                      <option value="">
+                        {intl.formatMessage(messages.preferredLanguageAny)}
+                      </option>
+                      {preferredLanguageOptions.map((language) => (
+                        <option
+                          key={language.code}
+                          value={language.code}
+                          lang={language.code}
+                        >
+                          {language.name}
+                        </option>
+                      ))}
+                    </Field>
+                  </div>
+                </div>
+              </div>
+              {preferredLanguageOverrides.map((override) => (
+                <div className="form-row" key={override.field}>
+                  <label htmlFor={override.field} className="text-label">
+                    {intl.formatMessage(override.label)}
+                  </label>
+                  <div className="form-input-area">
+                    <div className="form-input-field">
+                      <Field
+                        as="select"
+                        id={override.field}
+                        name={override.field}
+                      >
+                        <option value="inherit">
+                          {intl.formatMessage(
+                            messages.preferredLanguageInherit
+                          )}
+                        </option>
+                        <option value="any">
+                          {intl.formatMessage(messages.preferredLanguageAny)}
+                        </option>
+                        {preferredLanguageOptions.map((language) => (
+                          <option
+                            key={language.code}
+                            value={language.code}
+                            lang={language.code}
+                          >
+                            {language.name}
+                          </option>
+                        ))}
+                      </Field>
+                    </div>
+                  </div>
+                </div>
+              ))}
               <div className="form-row">
                 <div className="text-label">
                   <span>{intl.formatMessage(messages.discoverRegion)}</span>
@@ -632,6 +845,130 @@ const UserGeneralSettings = () => {
                         </div>
                       </div>
                     </div>
+                    <div className="form-row">
+                      <div className="text-label">
+                        <span>
+                          {intl.formatMessage(messages.comicrequestlimit)}
+                        </span>
+                      </div>
+                      <div className="form-input-area">
+                        <div className="flex flex-col">
+                          <div className="mb-4 flex items-center">
+                            <input
+                              type="checkbox"
+                              checked={comicQuotaEnabled}
+                              onChange={() => setComicQuotaEnabled((s) => !s)}
+                            />
+                            <span className="ml-2 text-gray-300">
+                              {intl.formatMessage(messages.enableOverride)}
+                            </span>
+                          </div>
+                          <QuotaSelector
+                            isDisabled={!comicQuotaEnabled}
+                            dayFieldName="comicQuotaDays"
+                            limitFieldName="comicQuotaLimit"
+                            mediaType="comic"
+                            onChange={setFieldValue}
+                            defaultDays={values.comicQuotaDays}
+                            defaultLimit={values.comicQuotaLimit}
+                            dayOverride={
+                              !comicQuotaEnabled
+                                ? data?.globalComicQuotaDays
+                                : undefined
+                            }
+                            limitOverride={
+                              !comicQuotaEnabled
+                                ? data?.globalComicQuotaLimit
+                                : undefined
+                            }
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="form-row">
+                      <div className="text-label">
+                        <span>
+                          {intl.formatMessage(messages.magazinerequestlimit)}
+                        </span>
+                      </div>
+                      <div className="form-input-area">
+                        <div className="flex flex-col">
+                          <div className="mb-4 flex items-center">
+                            <input
+                              type="checkbox"
+                              checked={magazineQuotaEnabled}
+                              onChange={() =>
+                                setMagazineQuotaEnabled((enabled) => !enabled)
+                              }
+                            />
+                            <span className="ml-2 text-gray-300">
+                              {intl.formatMessage(messages.enableOverride)}
+                            </span>
+                          </div>
+                          <QuotaSelector
+                            isDisabled={!magazineQuotaEnabled}
+                            dayFieldName="magazineQuotaDays"
+                            limitFieldName="magazineQuotaLimit"
+                            mediaType="magazine"
+                            onChange={setFieldValue}
+                            defaultDays={values.magazineQuotaDays}
+                            defaultLimit={values.magazineQuotaLimit}
+                            dayOverride={
+                              !magazineQuotaEnabled
+                                ? data?.globalMagazineQuotaDays
+                                : undefined
+                            }
+                            limitOverride={
+                              !magazineQuotaEnabled
+                                ? data?.globalMagazineQuotaLimit
+                                : undefined
+                            }
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="form-row">
+                      <div className="text-label">
+                        <span>
+                          {intl.formatMessage(messages.softwarerequestlimit)}
+                        </span>
+                      </div>
+                      <div className="form-input-area">
+                        <div className="flex flex-col">
+                          <div className="mb-4 flex items-center">
+                            <input
+                              type="checkbox"
+                              checked={softwareQuotaEnabled}
+                              onChange={() =>
+                                setSoftwareQuotaEnabled((enabled) => !enabled)
+                              }
+                            />
+                            <span className="ml-2 text-gray-300">
+                              {intl.formatMessage(messages.enableOverride)}
+                            </span>
+                          </div>
+                          <QuotaSelector
+                            isDisabled={!softwareQuotaEnabled}
+                            dayFieldName="softwareQuotaDays"
+                            limitFieldName="softwareQuotaLimit"
+                            mediaType="software"
+                            onChange={setFieldValue}
+                            defaultDays={values.softwareQuotaDays}
+                            defaultLimit={values.softwareQuotaLimit}
+                            dayOverride={
+                              !softwareQuotaEnabled
+                                ? data?.globalSoftwareQuotaDays
+                                : undefined
+                            }
+                            limitOverride={
+                              !softwareQuotaEnabled
+                                ? data?.globalSoftwareQuotaLimit
+                                : undefined
+                            }
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </>
                 )}
               {hasPermission(
@@ -789,6 +1126,68 @@ const UserGeneralSettings = () => {
                   </div>
                 </div>
               )}
+              {hasPermission(
+                [Permission.AUTO_REQUEST, Permission.AUTO_REQUEST_COMIC],
+                { type: 'or' }
+              ) && (
+                <div className="form-row">
+                  <label
+                    htmlFor="watchlistSyncComics"
+                    className="checkbox-label"
+                  >
+                    <span>
+                      {intl.formatMessage(messages.comicwatchlistsync)}
+                    </span>
+                    <span className="label-tip">
+                      {intl.formatMessage(messages.comicwatchlistsynctip)}
+                    </span>
+                  </label>
+                  <div className="form-input-area">
+                    <Field
+                      type="checkbox"
+                      id="watchlistSyncComics"
+                      name="watchlistSyncComics"
+                      onChange={() => {
+                        setFieldValue(
+                          'watchlistSyncComics',
+                          !values.watchlistSyncComics
+                        );
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+              {hasPermission(
+                [Permission.AUTO_REQUEST, Permission.AUTO_REQUEST_MAGAZINE],
+                { type: 'or' }
+              ) && (
+                <div className="form-row">
+                  <label
+                    htmlFor="watchlistSyncMagazines"
+                    className="checkbox-label"
+                  >
+                    <span>
+                      {intl.formatMessage(messages.magazinewatchlistsync)}
+                    </span>
+                    <span className="label-tip">
+                      {intl.formatMessage(messages.magazinewatchlistsynctip)}
+                    </span>
+                  </label>
+                  <div className="form-input-area">
+                    <Field
+                      type="checkbox"
+                      id="watchlistSyncMagazines"
+                      name="watchlistSyncMagazines"
+                      onChange={() => {
+                        setFieldValue(
+                          'watchlistSyncMagazines',
+                          !values.watchlistSyncMagazines
+                        );
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
               <div className="form-row">
                 <label htmlFor="cardTextVisibilityMovie" className="text-label">
                   <span>{intl.formatMessage(messages.cardTextVisibility)}</span>
@@ -830,6 +1229,16 @@ const UserGeneralSettings = () => {
                   </div>
                 </div>
               </div>
+              <RequestRootFolderSettings
+                canEdit={currentHasPermission(
+                  [Permission.MANAGE_REQUESTS, Permission.REQUEST_ADVANCED],
+                  { type: 'or' }
+                )}
+                value={values.requestRootFolders ?? {}}
+                onChange={(requestRootFolders) =>
+                  void setFieldValue('requestRootFolders', requestRootFolders)
+                }
+              />
               <div className="actions">
                 <div className="flex justify-end">
                   <span className="ml-3 inline-flex rounded-md shadow-sm">

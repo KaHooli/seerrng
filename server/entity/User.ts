@@ -2,6 +2,7 @@ import { MediaRequestStatus, MediaType } from '@server/constants/media';
 import { UserType } from '@server/constants/user';
 import { getRepository } from '@server/datasource';
 import { ImportList } from '@server/entity/ImportList';
+import SoftwareRequest from '@server/entity/SoftwareRequest';
 import { Watchlist } from '@server/entity/Watchlist';
 import type { QuotaResponse } from '@server/interfaces/api/userInterfaces';
 import PreparedEmail from '@server/lib/email';
@@ -230,6 +231,24 @@ export class User {
 
   @Column({ nullable: true })
   public bookQuotaDays?: number;
+
+  @Column({ nullable: true })
+  public comicQuotaLimit?: number;
+
+  @Column({ nullable: true })
+  public comicQuotaDays?: number;
+
+  @Column({ nullable: true })
+  public magazineQuotaLimit?: number;
+
+  @Column({ nullable: true })
+  public magazineQuotaDays?: number;
+
+  @Column({ nullable: true })
+  public softwareQuotaLimit?: number;
+
+  @Column({ nullable: true })
+  public softwareQuotaDays?: number;
 
   @OneToOne(() => UserSettings, (settings) => settings.user, {
     cascade: true,
@@ -638,6 +657,78 @@ export class User {
         })
       : 0;
 
+    const comicQuotaLimit = !canBypass
+      ? (this.comicQuotaLimit ?? defaultQuotas.comic.quotaLimit)
+      : 0;
+    const comicQuotaDays = this.comicQuotaDays ?? defaultQuotas.comic.quotaDays;
+
+    const comicDate = new Date();
+    if (comicQuotaDays) {
+      comicDate.setDate(comicDate.getDate() - comicQuotaDays);
+    }
+
+    const comicQuotaUsed = comicQuotaLimit
+      ? await requestRepository.count({
+          where: {
+            requestedBy: {
+              id: this.id,
+            },
+            ...(comicQuotaDays ? { createdAt: AfterDate(comicDate) } : {}),
+            type: MediaType.COMIC,
+            status: Not(
+              In([MediaRequestStatus.DECLINED, MediaRequestStatus.FAILED])
+            ),
+            ignoreQuota: false,
+          },
+        })
+      : 0;
+
+    const magazineQuotaLimit = !canBypass
+      ? (this.magazineQuotaLimit ?? defaultQuotas.magazine.quotaLimit)
+      : 0;
+    const magazineQuotaDays =
+      this.magazineQuotaDays ?? defaultQuotas.magazine.quotaDays;
+    const magazineDate = new Date();
+    if (magazineQuotaDays) {
+      magazineDate.setDate(magazineDate.getDate() - magazineQuotaDays);
+    }
+    const magazineQuotaUsed = magazineQuotaLimit
+      ? await requestRepository.count({
+          where: {
+            requestedBy: { id: this.id },
+            ...(magazineQuotaDays
+              ? { createdAt: AfterDate(magazineDate) }
+              : {}),
+            type: MediaType.MAGAZINE,
+            status: Not(
+              In([MediaRequestStatus.DECLINED, MediaRequestStatus.FAILED])
+            ),
+            ignoreQuota: false,
+          },
+        })
+      : 0;
+
+    const softwareQuotaLimit = !canBypass
+      ? (this.softwareQuotaLimit ?? defaultQuotas.software.quotaLimit)
+      : 0;
+    const softwareQuotaDays =
+      this.softwareQuotaDays ?? defaultQuotas.software.quotaDays;
+    const softwareDate = new Date();
+    if (softwareQuotaDays) {
+      softwareDate.setDate(softwareDate.getDate() - softwareQuotaDays);
+    }
+    const softwareQuotaUsed = softwareQuotaLimit
+      ? await getRepository(SoftwareRequest).count({
+          where: {
+            requestedById: this.id,
+            ...(softwareQuotaDays
+              ? { createdAt: AfterDate(softwareDate) }
+              : {}),
+            status: Not(In(['declined', 'failed', 'cancelled'])),
+          },
+        })
+      : 0;
+
     return {
       movie: {
         days: movieQuotaDays,
@@ -678,6 +769,39 @@ export class User {
           ? Math.max(0, bookQuotaLimit - bookQuotaUsed)
           : undefined,
         restricted: !!(bookQuotaLimit && bookQuotaLimit - bookQuotaUsed <= 0),
+      },
+      comic: {
+        days: comicQuotaDays,
+        limit: comicQuotaLimit,
+        used: comicQuotaUsed,
+        remaining: comicQuotaLimit
+          ? Math.max(0, comicQuotaLimit - comicQuotaUsed)
+          : undefined,
+        restricted: !!(
+          comicQuotaLimit && comicQuotaLimit - comicQuotaUsed <= 0
+        ),
+      },
+      magazine: {
+        days: magazineQuotaDays,
+        limit: magazineQuotaLimit,
+        used: magazineQuotaUsed,
+        remaining: magazineQuotaLimit
+          ? Math.max(0, magazineQuotaLimit - magazineQuotaUsed)
+          : undefined,
+        restricted: !!(
+          magazineQuotaLimit && magazineQuotaLimit - magazineQuotaUsed <= 0
+        ),
+      },
+      software: {
+        days: softwareQuotaDays,
+        limit: softwareQuotaLimit,
+        used: softwareQuotaUsed,
+        remaining: softwareQuotaLimit
+          ? Math.max(0, softwareQuotaLimit - softwareQuotaUsed)
+          : undefined,
+        restricted: !!(
+          softwareQuotaLimit && softwareQuotaLimit - softwareQuotaUsed <= 0
+        ),
       },
     };
   }

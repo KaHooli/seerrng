@@ -4,21 +4,27 @@ import RTFresh from '@app/assets/rt_fresh.svg';
 import RTRotten from '@app/assets/rt_rotten.svg';
 import ImdbLogo from '@app/assets/services/imdb.svg';
 import TmdbLogo from '@app/assets/tmdb_logo.svg';
-import CachedImage from '@app/components/Common/CachedImage';
+import CollectionSummaryCard from '@app/components/CollectionDetails/CollectionSummaryCard';
 import Tooltip from '@app/components/Common/Tooltip';
-import AvailabilityValue from '@app/components/MediaDetails/AvailabilityValue';
 import DetailDisclosureButton from '@app/components/MediaDetails/DetailDisclosureButton';
 import ExpandableCreditList from '@app/components/MediaDetails/ExpandableCreditList';
+import MdblistRatingBadges from '@app/components/MediaDetails/MdblistRatingBadges';
+import MediaDetailArtwork from '@app/components/MediaDetails/MediaDetailArtwork';
+import MediaQualitySelect from '@app/components/MediaDetails/MediaQualitySelect';
+import MovieSummaryCard from '@app/components/MediaDetails/MovieSummaryCard';
+import { subjectTagClassName } from '@app/components/MediaDetails/subjectTagStyle';
 import MediaSlider from '@app/components/MediaSlider';
+import useDetailDisclosurePins from '@app/hooks/useDetailDisclosurePins';
 import useLocale from '@app/hooks/useLocale';
+import useWatchStatus from '@app/hooks/useWatchStatus';
 import defineMessages from '@app/utils/defineMessages';
-import { getTmdbPosterImageUrl } from '@app/utils/imageCache';
 import { getSafeHref } from '@app/utils/safeUrl';
+import { getEffectiveVideoRatings } from '@app/utils/videoRatings';
 import type { RatingResponse } from '@server/api/ratings';
 import { MediaStatus } from '@server/constants/media';
 import type { MovieDetails } from '@server/models/Movie';
 import Link from 'next/link';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useIntl } from 'react-intl';
 
 const messages = defineMessages('components.MovieDetails.Layout', {
@@ -33,15 +39,16 @@ const messages = defineMessages('components.MovieDetails.Layout', {
   ultraHd: '4K',
   overview: 'Overview',
   overviewUnavailable: 'Overview unavailable',
-  viewCast: 'View Cast',
-  viewCrew: 'View Crew',
+  viewCast: 'Cast',
+  viewCollection: 'Collection',
+  viewCrew: 'Crew',
   subjectTags: 'Subject Tags',
   fullCastList: 'Full Cast List',
   fullCrewList: 'Full Crew List',
   noCast: 'No cast information available',
   noCrew: 'No crew information available',
   noTags: 'No subject tags available',
-  movieDetails: 'Movie Details',
+  movieDetails: 'Details',
   status: 'Status',
   releaseDates: 'Release Dates',
   revenue: 'Revenue',
@@ -56,10 +63,12 @@ const messages = defineMessages('components.MovieDetails.Layout', {
   rtCriticsScore: 'Rotten Tomatoes Tomatometer',
   rtAudienceScore: 'Rotten Tomatoes Audience Score',
   imdbUserScore: 'IMDB User Score – votes: {formattedCount}',
+  imdbScore: 'IMDb user score',
   tmdbUserScore: 'TMDB User Score',
   theatrical: 'Theatrical',
   digital: 'Digital',
   physical: 'Physical',
+  quality: 'Quality',
 });
 
 interface MovieDetailsLayoutProps {
@@ -73,42 +82,17 @@ interface MovieDetailsLayoutProps {
   show4kAvailability: boolean;
   primaryActions: ReactNode;
   secondaryActions: ReactNode;
-  playbackActions?: ReactNode;
+  indexerSearchAction: ReactNode;
+  indexerCompanionActions: ReactNode;
+  reportIssueAction: ReactNode;
+  requestAction: ReactNode;
+  playbackActions?: (is4k: boolean) => ReactNode;
 }
 
 const availableStatuses = new Set([
   MediaStatus.PARTIALLY_AVAILABLE,
   MediaStatus.AVAILABLE,
 ]);
-
-const getAvailabilityText = (
-  status: MediaStatus | undefined,
-  unavailable: string
-) => {
-  switch (status) {
-    case MediaStatus.AVAILABLE:
-      return 'Available';
-    case MediaStatus.PARTIALLY_AVAILABLE:
-      return 'Partially Available';
-    case MediaStatus.PROCESSING:
-      return 'Processing';
-    case MediaStatus.PENDING:
-      return 'Requested';
-    case MediaStatus.BLOCKLISTED:
-      return 'Blocklisted';
-    default:
-      return unavailable;
-  }
-};
-
-const subjectTagTones = [
-  'border-indigo-400/80 bg-indigo-500/20 text-indigo-100 hover:bg-indigo-500/35',
-  'border-purple-400/80 bg-purple-500/20 text-purple-100 hover:bg-purple-500/35',
-  'border-emerald-400/80 bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/35',
-  'border-amber-400/80 bg-amber-500/20 text-amber-100 hover:bg-amber-500/35',
-  'border-sky-400/80 bg-sky-500/20 text-sky-100 hover:bg-sky-500/35',
-  'border-rose-400/80 bg-rose-500/20 text-rose-100 hover:bg-rose-500/35',
-] as const;
 
 const MovieDetailsLayout = ({
   data,
@@ -118,18 +102,55 @@ const MovieDetailsLayout = ({
   show4kAvailability,
   primaryActions,
   secondaryActions,
+  indexerSearchAction,
+  indexerCompanionActions,
+  reportIssueAction,
+  requestAction,
   playbackActions,
 }: MovieDetailsLayoutProps) => {
   const intl = useIntl();
   const { locale } = useLocale();
+  const effectiveRatings = getEffectiveVideoRatings(ratingData);
+  const { data: watchedStatus } = useWatchStatus(
+    'movie',
+    data.id,
+    Boolean(data.mediaInfo)
+  );
+  const { pins, togglePinned } = useDetailDisclosurePins('movie');
+  const [showRatingsReview, setShowRatingsReview] = useState(false);
+  useEffect(() => {
+    setShowRatingsReview(
+      new URLSearchParams(window.location.search).has('ratingsReview')
+    );
+  }, []);
+  const [showDetails, setShowDetails] = useState(false);
+  useEffect(() => {
+    setShowDetails(pins.details);
+  }, [pins.details, data.id]);
+  const [showCollection, setShowCollection] = useState(false);
   const [showCast, setShowCast] = useState(false);
   const [showCrew, setShowCrew] = useState(false);
   const [showTags, setShowTags] = useState(false);
-  const unavailable = intl.formatMessage(messages.notAvailable);
-  const directors = sortedCrew.filter((person) => person.job === 'Director');
-  const screenplay = sortedCrew.find((person) =>
-    ['Screenplay', 'Writer', 'Story'].includes(person.job)
+  const [selectedQuality, setSelectedQuality] = useState<'hd' | '4k'>(() =>
+    show4kAvailability &&
+    !availableStatuses.has(data.mediaInfo?.status as MediaStatus) &&
+    availableStatuses.has(data.mediaInfo?.status4k as MediaStatus)
+      ? '4k'
+      : 'hd'
   );
+  useEffect(() => {
+    setShowCollection(pins.collection);
+  }, [pins.collection, data.id]);
+  useEffect(() => {
+    setShowCast(pins.cast);
+  }, [pins.cast]);
+  useEffect(() => {
+    setShowCrew(pins.crew);
+  }, [pins.crew]);
+  useEffect(() => {
+    setShowTags(pins.subjectTags);
+  }, [pins.subjectTags]);
+  const unavailable = intl.formatMessage(messages.notAvailable);
   const featuredCrew = sortedCrew.slice(0, 6);
   const featuredCrewGroups = [0, 1, 2].map((column) =>
     [featuredCrew[column], featuredCrew[column + 3]].filter(Boolean)
@@ -181,6 +202,7 @@ const MovieDetailsLayout = ({
       (language) => language.iso_639_1 === data.originalLanguage
     )?.name ??
     unavailable;
+
   const availableFormats = [
     availableStatuses.has(data.mediaInfo?.status as MediaStatus)
       ? 'HD'
@@ -189,295 +211,26 @@ const MovieDetailsLayout = ({
       ? '4K'
       : undefined,
   ].filter(Boolean);
-  const mediaAndFormat = `Movie${availableFormats.length > 0 ? ` · ${availableFormats.join(' + ')}` : ''}`;
 
   return (
     <div className="media-page">
-      <article className="refreshed-card-surface refreshed-detail-text relative overflow-hidden rounded-xl border border-gray-700 p-3 shadow-lg shadow-gray-950/20">
+      <article className="media-detail-card app-card-main refreshed-card-surface refreshed-detail-text relative overflow-hidden rounded-xl border border-gray-700 p-3 shadow-lg shadow-gray-950/20">
         {data.backdropPath && (
-          <div className="pointer-events-none absolute inset-0 z-0" aria-hidden>
-            <CachedImage
-              type="tmdb"
-              src={`https://image.tmdb.org/t/p/original${data.backdropPath}`}
-              alt=""
-              fill
-              priority
-              sizes="100vw"
-              className="object-cover object-top"
-            />
-            <div className="refreshed-artwork-scrim" />
-            <div className="refreshed-artwork-gradient" />
-          </div>
+          <MediaDetailArtwork
+            type="tmdb"
+            src={`https://image.tmdb.org/t/p/original${data.backdropPath}`}
+          />
         )}
 
         <div className="relative z-10">
-          <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] gap-3 sm:grid-cols-[80px_minmax(0,1fr)]">
-            <div
-              className="relative h-24 w-16 overflow-hidden rounded-lg ring-1 ring-gray-600 sm:h-[120px] sm:w-20"
-              data-testid="media-details-poster"
-            >
-              <CachedImage
-                type="tmdb"
-                src={
-                  getTmdbPosterImageUrl(data.posterPath) ||
-                  '/images/seerr_poster_not_found.png'
-                }
-                alt=""
-                fill
-                priority
-                sizes="(min-width: 640px) 80px, 64px"
-                className="object-cover"
-              />
-            </div>
-
-            <div className="flex min-w-0 flex-col">
-              <h1
-                className="text-lg leading-5 font-semibold text-white"
-                data-testid="media-title"
-              >
-                {data.title}
-                {data.releaseDate ? ` (${data.releaseDate.slice(0, 4)})` : ''}
-              </h1>
-
-              <div className="card:grid-cols-3 mt-4 grid min-w-0 flex-1 grid-cols-1">
-                <div className="card:col-span-2 card:pr-3 min-w-0">
-                  <dl className="card:grid-cols-[max-content_0.75rem_6rem_0.75rem_1px_0.75rem_minmax(0,1fr)] card:gap-x-0 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-0.5 text-xs leading-4">
-                    <dt className="card:col-start-1 card:row-start-1 font-medium text-gray-100">
-                      {intl.formatMessage(messages.mediaAndFormat)}:
-                    </dt>
-                    <dd className="card:col-start-3 card:row-start-1 m-0 truncate">
-                      {mediaAndFormat}
-                    </dd>
-                    <dt className="card:col-start-1 card:row-start-2 font-medium text-gray-100">
-                      {intl.formatMessage(messages.releaseDate)}:
-                    </dt>
-                    <dd className="card:col-start-3 card:row-start-2 m-0 truncate">
-                      {data.releaseDate
-                        ? intl.formatDate(data.releaseDate, {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                            timeZone: 'UTC',
-                          })
-                        : unavailable}
-                    </dd>
-                    <dt className="card:col-start-1 card:row-start-3 font-medium text-gray-100">
-                      {intl.formatMessage(messages.runtime)}:
-                    </dt>
-                    <dd className="card:col-start-3 card:row-start-3 m-0 truncate">
-                      {data.runtime
-                        ? intl.formatMessage(messages.minutes, {
-                            minutes: data.runtime,
-                          })
-                        : unavailable}
-                    </dd>
-                    <div className="card:col-start-5 card:row-span-3 card:row-start-1 card:block hidden bg-gray-600" />
-                    <div className="card:col-span-1 card:col-start-7 card:row-span-3 card:row-start-1 card:mt-0 card:border-t-0 card:pt-0 col-span-2 mt-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-0.5 border-t border-gray-600 pt-2">
-                      <dt className="font-medium text-gray-100">
-                        {intl.formatMessage(messages.director)}:
-                      </dt>
-                      <dd className="m-0 truncate">
-                        {directors.length > 0
-                          ? directors.slice(0, 2).map((person, index) => (
-                              <span key={`${person.id}-${person.creditId}`}>
-                                {index > 0 && ', '}
-                                <Link
-                                  href={`/person/${person.id}`}
-                                  className="text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
-                                >
-                                  {person.name}
-                                </Link>
-                              </span>
-                            ))
-                          : unavailable}
-                      </dd>
-                      <dt className="font-medium text-gray-100">
-                        {intl.formatMessage(messages.screenplay)}:
-                      </dt>
-                      <dd className="m-0 truncate">
-                        {screenplay ? (
-                          <Link
-                            href={`/person/${screenplay.id}`}
-                            className="text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
-                          >
-                            {screenplay.name}
-                          </Link>
-                        ) : (
-                          unavailable
-                        )}
-                      </dd>
-                      <dt className="font-medium text-gray-100">
-                        {intl.formatMessage(messages.studio)}:
-                      </dt>
-                      <dd className="m-0 truncate">
-                        {data.productionCompanies[0] ? (
-                          <Link
-                            href={`/discover/movies/studio/${data.productionCompanies[0].id}`}
-                            className="text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
-                          >
-                            {data.productionCompanies[0].name}
-                          </Link>
-                        ) : (
-                          unavailable
-                        )}
-                      </dd>
-                    </div>
-
-                    <dt className="card:col-start-1 card:row-start-4 mt-0.5 font-medium text-gray-100">
-                      {intl.formatMessage(messages.genres)}:
-                    </dt>
-                    <dd
-                      className="card:col-span-5 card:col-start-3 card:row-start-4 m-0 mt-0.5 min-w-0 break-words"
-                      data-testid="media-details-genres"
-                    >
-                      {data.genres.length > 0
-                        ? data.genres.map((genre, index) => (
-                            <span key={genre.id}>
-                              {index > 0 && ', '}
-                              <Link
-                                href={`/discover/movies?genre=${genre.id}`}
-                                className="text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
-                              >
-                                {genre.name}
-                              </Link>
-                            </span>
-                          ))
-                        : unavailable}
-                    </dd>
-                  </dl>
-                </div>
-
-                <dl className="card:relative card:mt-0 card:border-t-0 card:pl-3 card:pt-0 card:before:absolute card:before:bottom-0 card:before:left-0 card:before:top-0 card:before:w-px card:before:bg-gray-600 mt-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-0.5 border-t border-gray-600 pt-2 text-xs leading-4">
-                  <dt className="font-medium text-gray-100">
-                    {intl.formatMessage(messages.hd)}:
-                  </dt>
-                  <dd className="m-0 truncate">
-                    <AvailabilityValue status={data.mediaInfo?.status}>
-                      {getAvailabilityText(data.mediaInfo?.status, unavailable)}
-                    </AvailabilityValue>
-                  </dd>
-                  {show4kAvailability && (
-                    <>
-                      <dt className="font-medium text-gray-100">
-                        {intl.formatMessage(messages.ultraHd)}:
-                      </dt>
-                      <dd className="m-0 truncate">
-                        <AvailabilityValue status={data.mediaInfo?.status4k}>
-                          {getAvailabilityText(
-                            data.mediaInfo?.status4k,
-                            unavailable
-                          )}
-                        </AvailabilityValue>
-                      </dd>
-                    </>
-                  )}
-                </dl>
-              </div>
-            </div>
-          </div>
-
-          {(playbackActions ||
-            ratingData?.rt?.criticsScore !== undefined ||
-            ratingData?.rt?.audienceScore !== undefined ||
-            ratingData?.imdb?.criticsScore !== undefined ||
-            data.voteCount > 0) && (
-            <div className="media-rating-row">
-              {playbackActions}
-              {ratingData?.rt?.criticsRating &&
-                typeof ratingData.rt.criticsScore === 'number' && (
-                  <Tooltip
-                    content={intl.formatMessage(messages.rtCriticsScore)}
-                  >
-                    <a
-                      href={getSafeHref(ratingData.rt.url)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="media-rating-link"
-                    >
-                      {ratingData.rt.criticsRating === 'Rotten' ? (
-                        <RTRotten className="media-rating-icon" />
-                      ) : (
-                        <RTFresh className="media-rating-icon" />
-                      )}
-                      <span className="media-rating-value">
-                        {ratingData.rt.criticsScore}%
-                      </span>
-                    </a>
-                  </Tooltip>
-                )}
-              {ratingData?.rt?.audienceRating &&
-                typeof ratingData.rt.audienceScore === 'number' && (
-                  <Tooltip
-                    content={intl.formatMessage(messages.rtAudienceScore)}
-                  >
-                    <a
-                      href={getSafeHref(ratingData.rt.url)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="media-rating-link"
-                    >
-                      {ratingData.rt.audienceRating === 'Spilled' ? (
-                        <RTAudRotten className="media-rating-icon media-rating-icon-audience" />
-                      ) : (
-                        <RTAudFresh className="media-rating-icon media-rating-icon-audience" />
-                      )}
-                      <span className="media-rating-value">
-                        {ratingData.rt.audienceScore}%
-                      </span>
-                    </a>
-                  </Tooltip>
-                )}
-              {ratingData?.imdb?.criticsScore !== undefined && (
-                <Tooltip
-                  content={intl.formatMessage(messages.imdbUserScore, {
-                    formattedCount: intl.formatNumber(
-                      ratingData.imdb.criticsScoreCount,
-                      {
-                        notation: 'compact',
-                        compactDisplay: 'short',
-                        maximumFractionDigits: 1,
-                      }
-                    ),
-                  })}
-                >
-                  <a
-                    href={getSafeHref(ratingData.imdb.url)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="media-rating-link"
-                  >
-                    <ImdbLogo className="media-rating-wordmark" />
-                    <span className="media-rating-value">
-                      {ratingData.imdb.criticsScore}
-                    </span>
-                  </a>
-                </Tooltip>
-              )}
-              {data.voteCount > 0 && (
-                <Tooltip content={intl.formatMessage(messages.tmdbUserScore)}>
-                  <a
-                    href={`https://www.themoviedb.org/movie/${data.id}?language=${locale}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="media-rating-link"
-                  >
-                    <TmdbLogo className="media-rating-wordmark" />
-                    <span className="media-rating-value">
-                      {Math.round(data.voteAverage * 10)}%
-                    </span>
-                  </a>
-                </Tooltip>
-              )}
-            </div>
-          )}
-
-          <div className="media-primary-action-row">
-            {primaryActions}
-            {secondaryActions}
-          </div>
-
-          <section className="refreshed-inset-surface mt-[5px] rounded-lg border border-gray-700 p-3">
-            <h2 className="text-xs font-semibold text-gray-200">
+          <MovieSummaryCard
+            data={data}
+            sortedCrew={sortedCrew}
+            show4kAvailability={show4kAvailability}
+            watchedStatus={watchedStatus}
+          />
+          <section className="app-card-inset refreshed-inset-surface card-spacing-before rounded-lg border border-gray-700 p-3">
+            <h2 className="media-inset-heading">
               {intl.formatMessage(messages.overview)}
             </h2>
             {data.tagline && (
@@ -491,11 +244,11 @@ const MovieDetailsLayout = ({
             </p>
 
             {featuredCrew.length > 0 && (
-              <div className="card:grid-cols-3 card:border-t-0 card:pt-0 mt-4 grid grid-cols-1 border-t border-gray-600 pt-3">
+              <div className="detail-three-column-grid card:border-t-0 card:pt-0 mt-4 grid border-t border-gray-600 pt-3">
                 {featuredCrewGroups.map((group, groupIndex) => (
                   <dl
                     key={`featured-crew-${groupIndex}`}
-                    className={`grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-1 text-xs leading-4 ${groupIndex > 0 ? 'card:relative card:mt-0 card:border-t-0 card:pl-3 card:pt-0 card:before:absolute card:before:bottom-0 card:before:left-0 card:before:top-0 card:before:w-px card:before:bg-gray-600 mt-2 border-t border-gray-600 pt-2' : 'card:pr-3'}`}
+                    className={`media-detail-rows grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 text-xs ${groupIndex > 0 ? `media-detail-column-divider ${groupIndex === 1 ? 'card:pr-3' : ''}` : 'card:pr-3'}`}
                   >
                     {group.map((person) => (
                       <div
@@ -520,50 +273,52 @@ const MovieDetailsLayout = ({
               </div>
             )}
           </section>
-
-          {data.collection && (
-            <section className="refreshed-inset-surface mt-[5px] rounded-lg border border-gray-700 p-3">
-              <h2 className="text-xs font-semibold text-gray-200">
-                {data.collection.name}
-              </h2>
-              <Link
-                href={`/collection/${data.collection.id}`}
-                aria-label={data.collection.name}
-                className="group relative mt-2 block h-28 overflow-hidden rounded-lg border border-gray-700 bg-gray-900/60 transition-[border-color,border-width] duration-200 hover:border-[3px] hover:border-white focus:ring-2 focus:ring-white focus:outline-none"
-              >
-                {(data.collection.backdropPath ||
-                  data.collection.posterPath) && (
-                  <CachedImage
-                    type="tmdb"
-                    src={`https://image.tmdb.org/t/p/original${data.collection.backdropPath || data.collection.posterPath}`}
-                    alt=""
-                    fill
-                    sizes="100vw"
-                    className="object-cover object-top brightness-[0.6] transition-[filter] duration-200 group-hover:brightness-[0.9]"
-                  />
-                )}
-              </Link>
-            </section>
-          )}
-
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="media-detail-disclosure-row">
+            {data.collection && (
+              <DetailDisclosureButton
+                label={intl.formatMessage(messages.viewCollection)}
+                open={showCollection}
+                onClick={() => setShowCollection((open) => !open)}
+                pinned={pins.collection}
+                onPinClick={() => void togglePinned('collection')}
+              />
+            )}
             <DetailDisclosureButton
               label={intl.formatMessage(messages.viewCast)}
               open={showCast}
               onClick={() => setShowCast((open) => !open)}
+              pinned={pins.cast}
+              onPinClick={() => void togglePinned('cast')}
             />
             <DetailDisclosureButton
               label={intl.formatMessage(messages.viewCrew)}
               open={showCrew}
               onClick={() => setShowCrew((open) => !open)}
+              pinned={pins.crew}
+              onPinClick={() => void togglePinned('crew')}
             />
             <DetailDisclosureButton
               label={intl.formatMessage(messages.subjectTags)}
               open={showTags}
               onClick={() => setShowTags((open) => !open)}
+              pinned={pins.subjectTags}
+              onPinClick={() => void togglePinned('subjectTags')}
+            />
+            <DetailDisclosureButton
+              label={intl.formatMessage(messages.movieDetails)}
+              open={showDetails}
+              onClick={() => setShowDetails((open) => !open)}
+              pinned={pins.details}
+              onPinClick={() => void togglePinned('details')}
+              controls="movie-additional-details"
             />
           </div>
-
+          {data.collection && showCollection && (
+            <CollectionSummaryCard
+              key={data.collection.id}
+              collection={data.collection}
+            />
+          )}
           {showCast && (
             <ExpandableCreditList
               title={intl.formatMessage(messages.fullCastList)}
@@ -579,8 +334,8 @@ const MovieDetailsLayout = ({
             />
           )}
           {showTags && (
-            <section className="refreshed-inset-surface mt-[5px] rounded-lg border border-gray-700 p-3">
-              <h2 className="mb-2 text-xs font-semibold text-gray-200">
+            <section className="app-card-inset refreshed-inset-surface card-spacing-before rounded-lg border border-gray-700 p-3">
+              <h2 className="media-inset-heading mb-2">
                 {intl.formatMessage(messages.subjectTags)}
               </h2>
               {data.keywords.length === 0 ? (
@@ -589,11 +344,11 @@ const MovieDetailsLayout = ({
                 </p>
               ) : (
                 <div className="flex flex-wrap gap-1.5">
-                  {data.keywords.map((keyword) => (
+                  {data.keywords.map((keyword, index) => (
                     <Link
                       key={keyword.id}
                       href={`/discover/movies/keyword?keywords=${keyword.id}`}
-                      className={`inline-flex h-[22px] items-center rounded-full border px-2 text-[11px] font-medium transition focus:ring-2 focus:ring-indigo-400 focus:outline-none ${subjectTagTones[keyword.id % subjectTagTones.length]}`}
+                      className={subjectTagClassName(index)}
                     >
                       {keyword.name}
                     </Link>
@@ -602,103 +357,246 @@ const MovieDetailsLayout = ({
               )}
             </section>
           )}
-
-          <section className="refreshed-inset-surface mt-[5px] rounded-lg border border-gray-700 p-3">
-            <h2 className="mb-3 text-xs font-semibold text-gray-200">
-              {intl.formatMessage(messages.movieDetails)}
-            </h2>
-            <div className="card:grid-cols-3 grid grid-cols-1">
-              <dl className="grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-1 text-xs leading-4">
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.status)}:
-                </dt>
-                <dd className="m-0">{data.status || unavailable}</dd>
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.releaseDates)}:
-                </dt>
-                <dd className="m-0 min-w-0">
-                  {displayedReleases.length > 0
-                    ? displayedReleases.map((release, index) => (
-                        <span
-                          className="block"
-                          key={`${release.type}-${index}`}
-                        >
-                          {releaseTypeLabel(release.type)} ·{' '}
-                          {intl.formatDate(release.release_date, {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                            timeZone: 'UTC',
-                          })}
-                        </span>
-                      ))
-                    : unavailable}
-                </dd>
-              </dl>
-
-              <dl className="card:relative card:mt-0 card:border-t-0 card:px-3 card:pt-0 card:before:absolute card:before:bottom-0 card:before:left-0 card:before:top-0 card:before:w-px card:before:bg-gray-600 mt-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-1 border-t border-gray-600 pt-2 text-xs leading-4">
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.revenue)}:
-                </dt>
-                <dd className="m-0 truncate">{formatCurrency(data.revenue)}</dd>
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.budget)}:
-                </dt>
-                <dd className="m-0 truncate">{formatCurrency(data.budget)}</dd>
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.language)}:
-                </dt>
-                <dd className="m-0 truncate">
-                  <Link
-                    href={`/discover/movies/language/${data.originalLanguage}`}
-                    className="text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
-                  >
-                    {originalLanguage}
-                  </Link>
-                </dd>
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.country)}:
-                </dt>
-                <dd className="m-0 min-w-0">
-                  {data.productionCountries.length > 0
-                    ? data.productionCountries.map((country, index) => (
-                        <span key={country.iso_3166_1}>
-                          {index > 0 && ', '}
-                          <Link
-                            href={`/discover/movies?country=${country.iso_3166_1}`}
-                            className="text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
+          {showDetails && (
+            <section
+              id="movie-additional-details"
+              className="app-card-inset refreshed-inset-surface card-spacing-before rounded-lg border border-gray-700 p-3"
+            >
+              <h2 className="media-inset-heading detail-card-heading-after">
+                {intl.formatMessage(messages.movieDetails)}
+              </h2>
+              <div className="detail-three-column-grid grid">
+                <dl className="media-detail-rows grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 text-xs">
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.status)}:
+                  </dt>
+                  <dd className="m-0">{data.status || unavailable}</dd>
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.releaseDates)}:
+                  </dt>
+                  <dd className="m-0 min-w-0">
+                    {displayedReleases.length > 0
+                      ? displayedReleases.map((release, index) => (
+                          <span
+                            className="block"
+                            key={`${release.type}-${index}`}
                           >
-                            {intl.formatDisplayName(country.iso_3166_1, {
-                              type: 'region',
-                              fallback: 'none',
-                            }) ?? country.name}
-                          </Link>
-                        </span>
-                      ))
-                    : unavailable}
-                </dd>
-              </dl>
+                            {releaseTypeLabel(release.type)} ·{' '}
+                            {intl.formatDate(release.release_date, {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric',
+                              timeZone: 'UTC',
+                            })}
+                          </span>
+                        ))
+                      : unavailable}
+                  </dd>
+                </dl>
 
-              <dl className="card:relative card:mt-0 card:border-t-0 card:pl-3 card:pt-0 card:before:absolute card:before:bottom-0 card:before:left-0 card:before:top-0 card:before:w-px card:before:bg-gray-600 mt-2 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 gap-y-1 border-t border-gray-600 pt-2 text-xs leading-4">
-                <dt className="font-medium text-gray-100">
-                  {intl.formatMessage(messages.studios)}:
-                </dt>
-                <dd className="m-0 min-w-0">
-                  {data.productionCompanies.length > 0
-                    ? data.productionCompanies.slice(0, 4).map((studio) => (
-                        <Link
-                          key={studio.id}
-                          href={`/discover/movies/studio/${studio.id}`}
-                          className="block truncate text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
-                        >
-                          {studio.name}
-                        </Link>
-                      ))
-                    : unavailable}
-                </dd>
-              </dl>
+                <dl className="media-detail-rows media-detail-column-divider card:pr-3 grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 text-xs">
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.revenue)}:
+                  </dt>
+                  <dd className="m-0 truncate">
+                    {formatCurrency(data.revenue)}
+                  </dd>
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.budget)}:
+                  </dt>
+                  <dd className="m-0 truncate">
+                    {formatCurrency(data.budget)}
+                  </dd>
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.language)}:
+                  </dt>
+                  <dd className="m-0 truncate">
+                    <Link
+                      href={`/discover/movies/language/${data.originalLanguage}`}
+                      className="text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
+                    >
+                      {originalLanguage}
+                    </Link>
+                  </dd>
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.country)}:
+                  </dt>
+                  <dd className="m-0 min-w-0">
+                    {data.productionCountries.length > 0
+                      ? data.productionCountries.map((country, index) => (
+                          <span key={country.iso_3166_1}>
+                            {index > 0 && ', '}
+                            <Link
+                              href={`/discover/movies?country=${country.iso_3166_1}`}
+                              className="text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
+                            >
+                              {intl.formatDisplayName(country.iso_3166_1, {
+                                type: 'region',
+                                fallback: 'none',
+                              }) ?? country.name}
+                            </Link>
+                          </span>
+                        ))
+                      : unavailable}
+                  </dd>
+                </dl>
+
+                <dl className="media-detail-rows media-detail-column-divider grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] content-start gap-x-3 text-xs">
+                  <dt className="font-medium text-gray-100">
+                    {intl.formatMessage(messages.studios)}:
+                  </dt>
+                  <dd className="m-0 min-w-0">
+                    {data.productionCompanies.length > 0
+                      ? data.productionCompanies.slice(0, 4).map((studio) => (
+                          <Link
+                            key={studio.id}
+                            href={`/discover/movies/studio/${studio.id}`}
+                            className="block truncate text-indigo-300 hover:text-indigo-200 hover:underline focus:ring-2 focus:ring-indigo-400 focus:outline-none"
+                          >
+                            {studio.name}
+                          </Link>
+                        ))
+                      : unavailable}
+                  </dd>
+                </dl>
+              </div>
+            </section>
+          )}
+          +{' '}
+          <div className="media-rating-row">
+            <MediaQualitySelect
+              value={selectedQuality}
+              options={[
+                {
+                  label: 'HD',
+                  value: 'hd',
+                  disabled: !availableFormats.includes('HD'),
+                },
+                ...(show4kAvailability
+                  ? ([
+                      {
+                        label: '4K',
+                        value: '4k',
+                        disabled: !availableFormats.includes('4K'),
+                      },
+                    ] as const)
+                  : []),
+              ]}
+              onChange={setSelectedQuality}
+              label={intl.formatMessage(messages.quality)}
+            />
+            {effectiveRatings.rtCriticsRating !== undefined &&
+              effectiveRatings.rtCriticsScore !== undefined && (
+                <Tooltip content={intl.formatMessage(messages.rtCriticsScore)}>
+                  <a
+                    href={getSafeHref(effectiveRatings.rtUrl)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="media-rating-link"
+                  >
+                    {effectiveRatings.rtCriticsRating === 'Rotten' ? (
+                      <RTRotten className="media-rating-icon" />
+                    ) : (
+                      <RTFresh className="media-rating-icon" />
+                    )}
+                    <span className="media-rating-value">
+                      {effectiveRatings.rtCriticsScore}%
+                    </span>
+                  </a>
+                </Tooltip>
+              )}
+            {effectiveRatings.rtAudienceRating !== undefined &&
+              effectiveRatings.rtAudienceScore !== undefined && (
+                <Tooltip content={intl.formatMessage(messages.rtAudienceScore)}>
+                  <a
+                    href={getSafeHref(effectiveRatings.rtUrl)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="media-rating-link"
+                  >
+                    {effectiveRatings.rtAudienceRating === 'Spilled' ? (
+                      <RTAudRotten className="media-rating-icon media-rating-icon-audience" />
+                    ) : (
+                      <RTAudFresh className="media-rating-icon media-rating-icon-audience" />
+                    )}
+                    <span className="media-rating-value">
+                      {effectiveRatings.rtAudienceScore}%
+                    </span>
+                  </a>
+                </Tooltip>
+              )}
+            {effectiveRatings.imdbScore !== undefined && (
+              <Tooltip
+                content={
+                  effectiveRatings.imdbVotes
+                    ? intl.formatMessage(messages.imdbUserScore, {
+                        formattedCount: intl.formatNumber(
+                          effectiveRatings.imdbVotes,
+                          {
+                            notation: 'compact',
+                            compactDisplay: 'short',
+                            maximumFractionDigits: 1,
+                          }
+                        ),
+                      })
+                    : intl.formatMessage(messages.imdbScore)
+                }
+              >
+                <a
+                  href={getSafeHref(effectiveRatings.imdbUrl)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="media-rating-link"
+                >
+                  <ImdbLogo className="media-rating-wordmark" />
+                  <span className="media-rating-value">
+                    {effectiveRatings.imdbScore.toFixed(1)}
+                  </span>
+                </a>
+              </Tooltip>
+            )}
+            <MdblistRatingBadges
+              ratings={
+                showRatingsReview
+                  ? {
+                      ...ratingData?.mdblist,
+                      metacriticRating: 68,
+                      traktRating: 8.3,
+                    }
+                  : ratingData?.mdblist
+              }
+            />
+            {data.voteCount > 0 && (
+              <Tooltip content={intl.formatMessage(messages.tmdbUserScore)}>
+                <a
+                  href={`https://www.themoviedb.org/movie/${data.id}?language=${locale}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="media-rating-link"
+                >
+                  <TmdbLogo className="media-rating-wordmark" />
+                  <span className="media-rating-value">
+                    {Math.round(data.voteAverage * 10)}%
+                  </span>
+                </a>
+              </Tooltip>
+            )}
+          </div>
+          <div className="media-primary-action-row">
+            {playbackActions?.(selectedQuality === '4k')}
+            {primaryActions}
+            {secondaryActions}
+            <div className="media-primary-report-action">
+              {reportIssueAction}
             </div>
-          </section>
+          </div>
+          <div className="media-request-action-row">
+            <div className="media-request-search-action">
+              {indexerSearchAction}
+              {indexerCompanionActions}
+            </div>
+            <div className="media-request-submit-action">{requestAction}</div>
+          </div>
         </div>
       </article>
 

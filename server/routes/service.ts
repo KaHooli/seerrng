@@ -1,3 +1,4 @@
+import KapowarrAPI from '@server/api/comics/kapowarr';
 import LidarrAPI from '@server/api/servarr/lidarr';
 import RadarrAPI from '@server/api/servarr/radarr';
 import ReadarrAPI from '@server/api/servarr/readarr';
@@ -7,6 +8,8 @@ import TheMovieDb from '@server/api/themoviedb';
 import { getRepository } from '@server/datasource';
 import { User } from '@server/entity/User';
 import type {
+  ComicServiceOption,
+  MagazineServiceOption,
   ServiceCommonServer,
   ServiceCommonServerWithDetails,
 } from '@server/interfaces/api/serviceInterfaces';
@@ -23,7 +26,7 @@ import { isAuthenticated } from '@server/middleware/auth';
 import { authorizedMutation } from '@server/middleware/authorizedMutation';
 import {
   classifyBookshelfProvider,
-  getBookshelfProviderWarning,
+  getBookshelfProviderNotice,
 } from '@server/utils/bookshelfProvider';
 import {
   parseNonNegativeRouteId,
@@ -363,6 +366,96 @@ serviceRoutes.get('/lidarr', async (req, res, next) => {
   }
 });
 
+serviceRoutes.get('/comic', async (req, res, next) => {
+  try {
+    return await runServiceSummaryRead(req, () => {
+      const settings = getExternalRuntimeConfig();
+      const comicServices: ComicServiceOption[] = [
+        ...settings.mylar.map((mylar): ComicServiceOption => ({
+          id: mylar.id,
+          name: mylar.name,
+          isDefault: mylar.isDefault,
+          backendType: 'mylar',
+        })),
+        ...settings.kapowarr.map((kapowarr): ComicServiceOption => ({
+          id: kapowarr.id,
+          name: kapowarr.name,
+          isDefault: kapowarr.isDefault,
+          backendType: 'kapowarr',
+        })),
+        ...settings.backissue.map((backissue): ComicServiceOption => ({
+          id: backissue.id,
+          name: backissue.name,
+          isDefault: backissue.isDefault,
+          backendType: 'backissue',
+        })),
+      ];
+
+      return res.status(200).json(comicServices);
+    });
+  } catch (error) {
+    return reportServiceSummaryReadError(error, next);
+  }
+});
+
+serviceRoutes.get(
+  '/comic/:id/rootfolders',
+  isAuthenticated(SERVICE_DETAILS_PERMISSIONS, { type: 'or' }),
+  async (req, res) => {
+    const id = parseNonNegativeRouteId(req.params.id);
+    if (id === undefined) {
+      return res.status(404).json({ message: 'Comic service not found.' });
+    }
+
+    const server = getExternalRuntimeConfig().kapowarr.find(
+      (instance) => instance.id === id
+    );
+    if (!server) {
+      return res.status(404).json({ message: 'Kapowarr service not found.' });
+    }
+
+    try {
+      const kapowarr = new KapowarrAPI({
+        url: KapowarrAPI.buildUrl(server),
+        apiKey: server.apiKey,
+      });
+      const rootFolders = await kapowarr.getRootFolders();
+      return res.status(200).json({
+        defaultRootFolder: server.rootFolder ?? null,
+        rootFolders: rootFolders.map(({ id: folderId, folder }) => ({
+          id: folderId,
+          path: folder,
+        })),
+      });
+    } catch (error) {
+      logger.warn('Could not load Kapowarr root folders for comic request', {
+        serviceId: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return res
+        .status(502)
+        .json({ message: 'Kapowarr root folders could not be loaded.' });
+    }
+  }
+);
+
+serviceRoutes.get('/magazine', async (req, res, next) => {
+  try {
+    return await runServiceSummaryRead(req, () => {
+      const magazineServices: MagazineServiceOption[] =
+        getExternalRuntimeConfig().lazylibrarian.map((service) => ({
+          id: service.id,
+          name: service.name,
+          isDefault: service.isDefault,
+        }));
+
+      return res.status(200).json(magazineServices);
+    });
+  } catch (error) {
+    return reportServiceSummaryReadError(error, next);
+  }
+});
+
 serviceRoutes.get('/readarr', async (req, res, next) => {
   try {
     return await runServiceSummaryRead(req, (includeOperationalDetails) => {
@@ -440,7 +533,8 @@ serviceRoutes.get<{ readarrId: string }>(
                 activeTags: readarrSettings.tags,
                 serviceType: readarrSettings.serviceType ?? 'ebook',
                 provider,
-                legacyWarning: getBookshelfProviderWarning(provider),
+                providerNotice: getBookshelfProviderNotice(provider),
+                legacyWarning: getBookshelfProviderNotice(provider),
                 metadataSource: development?.metadataSource,
               },
               profiles: profiles.map((profile) => ({

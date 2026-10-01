@@ -13,12 +13,7 @@ import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import { formatBytes } from '@app/utils/numberHelpers';
 import { Transition } from '@headlessui/react';
-import {
-  NoSymbolIcon,
-  PlayIcon,
-  StopIcon,
-  TrashIcon,
-} from '@heroicons/react/24/outline';
+import { NoSymbolIcon, PlayIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { CheckIcon, PencilIcon } from '@heroicons/react/24/solid';
 import { MediaServerType } from '@server/constants/server';
 import type {
@@ -100,12 +95,18 @@ const messages: { [messageName: string]: MessageDescriptor } = defineMessages(
     'lidarr-scan': 'Lidarr Scan',
     'readarr-scan': 'Bookshelf Scan',
     'readarr-request-retry': 'Bookshelf Request Retry',
+    'mylar-scan': 'Mylar Comics Scan',
+    'kapowarr-scan': 'Kapowarr Comics Scan',
+    'backissue-scan': 'BackIssue Comics Scan',
+    'magazine-scan': 'LazyLibrarian Magazine Scan',
     'download-sync': 'Download Sync',
+    'software-request-reconciliation': 'Software Request Reconciliation',
     'download-recovery': 'Download Recovery',
     'download-sync-reset': 'Download Sync Reset',
     'image-cache-cleanup': 'Image Cache Cleanup',
     'process-blocklisted-tags': 'Process Blocklisted Tags',
     'import-list-sync': 'Import List Sync',
+    'release-calendar-history': 'Release Calendar History',
     editJobSchedule: 'Modify Job',
     jobScheduleEditSaved: 'Job edited successfully!',
     jobScheduleEditFailed: 'Something went wrong while saving the job.',
@@ -390,7 +391,7 @@ const SettingsJobs = () => {
           okDisabled={isSaving}
           onOk={() => scheduleJob()}
         >
-          <div className="section">
+          <div className="app-card-sub section">
             <form className="mb-6">
               <div className="form-row">
                 <label className="text-label">
@@ -519,21 +520,27 @@ const SettingsJobs = () => {
           {intl.formatMessage(messages.jobsDescription)}
         </p>
       </div>
-      <div className="section">
-        <Table>
+      <div className="app-card-sub section">
+        <Table className="settings-jobs-table">
           <thead>
             <tr>
-              <Table.TH>{intl.formatMessage(messages.jobname)}</Table.TH>
-              <Table.TH>{intl.formatMessage(messages.jobtype)}</Table.TH>
-              <Table.TH>{intl.formatMessage(messages.nextexecution)}</Table.TH>
-              <Table.TH />
+              <Table.TH className="settings-jobs-name-column">
+                {intl.formatMessage(messages.jobname)}
+              </Table.TH>
+              <Table.TH className="settings-jobs-type-column">
+                {intl.formatMessage(messages.jobtype)}
+              </Table.TH>
+              <Table.TH className="settings-jobs-next-column">
+                {intl.formatMessage(messages.nextexecution)}
+              </Table.TH>
+              <Table.TH className="settings-jobs-actions-column" />
             </tr>
           </thead>
           <Table.TBody>
             {data?.map((job) => (
               <tr key={`job-list-${job.id}`}>
                 <Table.TD>
-                  <div className="flex items-center text-sm leading-5 text-white">
+                  <div className="flex items-center text-xs leading-4">
                     <span>
                       {intl.formatMessage(
                         messages[job.id] ?? messages.unknownJob
@@ -558,7 +565,7 @@ const SettingsJobs = () => {
                   </Badge>
                 </Table.TD>
                 <Table.TD>
-                  <div className="text-sm leading-5 text-white">
+                  <div className="text-xs leading-4">
                     {job.enabled && job.nextExecutionTime ? (
                       <FormattedRelativeTime
                         value={Math.floor(
@@ -575,39 +582,49 @@ const SettingsJobs = () => {
                   </div>
                 </Table.TD>
                 <Table.TD alignText="right">
-                  <Button
-                    className="mr-2"
-                    buttonType={job.enabled ? 'danger' : 'success'}
-                    onClick={() => toggleJob(job)}
-                  >
-                    {job.enabled ? <NoSymbolIcon /> : <CheckIcon />}
-                    <span>
-                      {intl.formatMessage(
-                        job.enabled ? messages.disablejob : messages.enablejob
-                      )}
-                    </span>
-                  </Button>
-                  {job.interval !== 'fixed' && (
+                  <div className="settings-table-action-row">
                     <Button
-                      className="mr-2"
-                      buttonType="warning"
-                      onClick={() => dispatch({ type: 'open', job })}
+                      buttonType={job.enabled ? 'danger' : 'success'}
+                      buttonSize="standard"
+                      onClick={() => toggleJob(job)}
                     >
-                      <PencilIcon />
-                      <span>{intl.formatMessage(globalMessages.edit)}</span>
+                      {job.enabled ? <NoSymbolIcon /> : <CheckIcon />}
+                      <span>
+                        {intl.formatMessage(
+                          job.enabled ? messages.disablejob : messages.enablejob
+                        )}
+                      </span>
                     </Button>
-                  )}
-                  {job.running ? (
-                    <Button buttonType="danger" onClick={() => cancelJob(job)}>
-                      <StopIcon />
-                      <span>{intl.formatMessage(messages.canceljob)}</span>
-                    </Button>
-                  ) : (
-                    <Button buttonType="primary" onClick={() => runJob(job)}>
-                      <PlayIcon />
-                      <span>{intl.formatMessage(messages.runnow)}</span>
-                    </Button>
-                  )}
+                    {job.interval !== 'fixed' && (
+                      <Button
+                        buttonType="warning"
+                        buttonSize="standard"
+                        onClick={() => dispatch({ type: 'open', job })}
+                      >
+                        <PencilIcon />
+                        <span>{intl.formatMessage(globalMessages.edit)}</span>
+                      </Button>
+                    )}
+                    {job.running ? (
+                      <Button
+                        buttonType="danger"
+                        buttonSize="standard"
+                        onClick={() => cancelJob(job)}
+                        buttonIcon="cancel"
+                      >
+                        <span>{intl.formatMessage(messages.canceljob)}</span>
+                      </Button>
+                    ) : (
+                      <Button
+                        buttonType="primary"
+                        buttonSize="standard"
+                        onClick={() => runJob(job)}
+                      >
+                        <PlayIcon />
+                        <span>{intl.formatMessage(messages.runnow)}</span>
+                      </Button>
+                    )}
+                  </div>
                 </Table.TD>
               </tr>
             ))}
@@ -620,7 +637,7 @@ const SettingsJobs = () => {
           {intl.formatMessage(messages.cacheDescription)}
         </p>
       </div>
-      <div className="section">
+      <div className="app-card-sub section">
         <Table>
           <thead>
             <tr>
@@ -634,33 +651,22 @@ const SettingsJobs = () => {
             </tr>
           </thead>
           <Table.TBody>
-            {cacheData?.apiCaches
-              ?.filter(
-                (cache) =>
-                  !(
-                    settings.currentSettings.mediaServerType !==
-                      MediaServerType.PLEX && cache.id === 'plexguid'
-                  )
-              )
-              .map((cache) => (
-                <tr key={`cache-list-${cache.id}`}>
-                  <Table.TD>{cache.name}</Table.TD>
-                  <Table.TD>{intl.formatNumber(cache.stats.hits)}</Table.TD>
-                  <Table.TD>{intl.formatNumber(cache.stats.misses)}</Table.TD>
-                  <Table.TD>{intl.formatNumber(cache.stats.keys)}</Table.TD>
-                  <Table.TD>{formatBytes(cache.stats.ksize)}</Table.TD>
-                  <Table.TD>{formatBytes(cache.stats.vsize)}</Table.TD>
-                  <Table.TD alignText="right">
-                    <Button
-                      buttonType="danger"
-                      onClick={() => flushCache(cache)}
-                    >
-                      <TrashIcon />
-                      <span>{intl.formatMessage(messages.flushcache)}</span>
-                    </Button>
-                  </Table.TD>
-                </tr>
-              ))}
+            {cacheData?.apiCaches?.map((cache) => (
+              <tr key={`cache-list-${cache.id}`}>
+                <Table.TD>{cache.name}</Table.TD>
+                <Table.TD>{intl.formatNumber(cache.stats.hits)}</Table.TD>
+                <Table.TD>{intl.formatNumber(cache.stats.misses)}</Table.TD>
+                <Table.TD>{intl.formatNumber(cache.stats.keys)}</Table.TD>
+                <Table.TD>{formatBytes(cache.stats.ksize)}</Table.TD>
+                <Table.TD>{formatBytes(cache.stats.vsize)}</Table.TD>
+                <Table.TD alignText="right">
+                  <Button buttonType="danger" onClick={() => flushCache(cache)}>
+                    <TrashIcon />
+                    <span>{intl.formatMessage(messages.flushcache)}</span>
+                  </Button>
+                </Table.TD>
+              </tr>
+            ))}
           </Table.TBody>
         </Table>
       </div>
@@ -672,7 +678,7 @@ const SettingsJobs = () => {
               {intl.formatMessage(messages.dnsCacheDescription)}
             </p>
           </div>
-          <div className="section">
+          <div className="app-card-sub section">
             <Table>
               <thead>
                 <tr>
@@ -752,7 +758,7 @@ const SettingsJobs = () => {
               {intl.formatMessage(messages.dnsCacheGlobalStatsDescription)}
             </p>
           </div>
-          <div className="section">
+          <div className="app-card-sub section">
             {!cacheData ? (
               <LoadingSpinner />
             ) : (
@@ -804,7 +810,7 @@ const SettingsJobs = () => {
           })}
         </p>
       </div>
-      <div className="section">
+      <div className="app-card-sub section">
         <Table>
           <thead>
             <tr>

@@ -52,7 +52,7 @@ this when a post-tag publishing step fails; it checks out the requested tag,
 reuses its changelog and image version, and does not move the tag:
 
 ```bash
-gh workflow run release.yml --repo snapetech/seerrng --ref main -f tag=v3.12.8
+gh workflow run release.yml --repo YunoHost-Apps/seerrng --ref main -f tag=v3.12.8
 ```
 
 The tag must already point to a commit contained in `main`. After dispatching,
@@ -68,6 +68,17 @@ install or manage Lidarr, Bookshelf, Readarr, Sonarr, Radarr, Plex, Jellyfin, or
 Emby. Those services remain optional external integrations configured from
 SeerrNG after installation.
 
+The Windows Chocolatey package installs the x64 release as the `SeerrNG`
+service and installs Node.js 22 and NSSM as dependencies. It stores the
+database, settings, and logs under `%ProgramData%\SeerrNG\config`; package
+removal preserves this directory. The release workflow submits each stable
+package to Chocolatey Community Repository moderation and requires the
+`CHOCOLATEY_API_KEY` repository secret. This is a required release gate; set
+the secret with `gh secret set CHOCOLATEY_API_KEY --repo YunoHost-Apps/seerrng`.
+Use the **Publish Chocolatey** workflow to submit or retry a stable tag created
+from a commit that includes `packaging/chocolatey` and its Windows release
+archive.
+
 ## Live Test Deployment
 
 `request.snape.tech` is not connected to a developer's local checkout or local
@@ -77,9 +88,9 @@ pulls and starts a new image.
 
 The authoritative live deployment path is GitHub Actions:
 
-1. Push the desired commit to `snapetech/seerrng` `main`.
+1. Push the desired commit to `YunoHost-Apps/seerrng` `main`.
 2. Wait for `.github/workflows/ci.yml` (`SeerrNG CI`) to build and push
-   `ghcr.io/snapetech/seerrng:main`.
+   `ghcr.io/yunohost-apps/seerrng:main`.
 3. Wait for the `Deploy main to seerr.home` job to pass. That job pulls the
    fresh `:main` image on the host, replaces the running container, and verifies
    `/api/v1/status` locally on the host.
@@ -154,7 +165,7 @@ The current exported credential is also stored in OpenBao at
 Generate a `seerrng`-scoped credential with:
 
 ```bash
-/snap/bin/snapcraft export-login --snaps seerrng --acls package_upload,package_release --expires 2026-06-13T00:00:00Z - | gh secret set SNAPCRAFT_STORE_CREDENTIALS --repo snapetech/seerrng
+/snap/bin/snapcraft export-login --snaps seerrng --acls package_upload,package_release --expires 2026-06-13T00:00:00Z - | gh secret set SNAPCRAFT_STORE_CREDENTIALS --repo YunoHost-Apps/seerrng
 ```
 
 Do not write exported Snapcraft credentials into tracked files.
@@ -181,3 +192,16 @@ For package smoke tests against a non-default PPA:
 ```bash
 PPA=ppa:keefshape/seerrng packaging/smoke/package-smoke seerrng ppa v3.2.7 --arch amd64
 ```
+
+The PPA workflow uses the repository's existing `GPG_PRIVATE_KEY` to sign the
+source upload and `LAUNCHPAD_PPA` to select the destination. A successful
+`dput` is source transfer only, so the workflow reads Launchpad's public API
+until the exact source publication and Jammy/Noble `seerrng` binaries are
+Published. No Launchpad OAuth secret is required.
+
+The workflow retries only the classified source-publication race, with at most
+two signed uploads per Ubuntu series. A long-running nonterminal build or a
+missing source-publication record is not by itself evidence that an upload
+failed, so the workflow keeps waiting until its monitoring timeout instead of
+creating a duplicate source version. If that timeout expires, the package
+channel stays red and points to the Launchpad logs for operator review.

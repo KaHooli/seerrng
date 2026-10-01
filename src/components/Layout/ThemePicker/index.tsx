@@ -49,7 +49,7 @@ const ThemePicker = () => {
         transition
         className="absolute right-0 z-50 mt-2 w-80 origin-top-right rounded-md shadow-lg transition duration-100 ease-out data-closed:scale-95 data-closed:opacity-0"
       >
-        <div className="rounded-md bg-gray-800/95 p-3 ring-1 ring-gray-700 backdrop-blur">
+        <div className="app-theme-picker-surface rounded-md p-3 ring-1 ring-gray-700 backdrop-blur">
           <div className="mb-3 grid grid-cols-3 gap-2">
             {(
               [
@@ -73,7 +73,7 @@ const ThemePicker = () => {
               </button>
             ))}
           </div>
-          <div className="grid max-h-96 grid-cols-2 gap-2 overflow-y-auto pr-1">
+          <div className="scrollable-card grid max-h-96 grid-cols-2 gap-2 overflow-y-auto pr-1">
             {palettes.map((themePalette) => (
               <Menu.Item
                 key={themePalette.id}
@@ -94,6 +94,7 @@ const ThemePicker = () => {
                   {themePalette.swatches.map((swatch, swatchIndex) => (
                     <span
                       key={`${themePalette.id}-${swatchIndex}`}
+                      data-theme-swatch
                       className="h-4 w-4 rounded-full border border-gray-950/30"
                       style={{ backgroundColor: swatch }}
                     />

@@ -1,4 +1,4 @@
-import TraktAPI from '@server/api/trakt';
+import TraktAPI from '@server/api/trakt/importList';
 import { getAllImportListProviders } from '@server/lib/importlists/providers';
 import { Permission } from '@server/lib/permissions';
 import type { ImportListSettings } from '@server/lib/settings';

@@ -1,10 +1,15 @@
 import type {
   CardTextVisibility,
   NotificationAgentTypes,
+  UserMediaFilterPins,
+  UserPreferredLanguages,
+  UserRequestRootFolders,
+  UserSettingsDetailDisclosuresByMedia,
 } from '@server/interfaces/api/userSettingsInterfaces';
 import { Notification, hasNotificationType } from '@server/lib/notifications';
 import { NotificationAgentKey } from '@server/lib/settings';
 import { DbAwareColumn } from '@server/utils/DbColumnHelper';
+import type { AdvancedThemeOverrides } from '@server/utils/advancedThemeOverrides';
 import {
   Column,
   Entity,
@@ -130,6 +135,9 @@ export class UserSettings {
   @Column({ nullable: true })
   public originalLanguage?: string;
 
+  @Column({ type: 'simple-json', nullable: true })
+  public preferredLanguages?: UserPreferredLanguages;
+
   @Column({ nullable: true })
   public pgpKey?: string;
 
@@ -185,16 +193,46 @@ export class UserSettings {
   public watchlistSyncBooks?: boolean;
 
   @Column({ nullable: true })
+  public watchlistSyncComics?: boolean;
+
+  @Column({ nullable: true })
+  public watchlistSyncMagazines?: boolean;
+
+  @Column({ type: 'varchar', nullable: true })
   public cardTextVisibilityMovie?: CardTextVisibility;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   public cardTextVisibilityTv?: CardTextVisibility;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   public cardTextVisibilityAlbum?: CardTextVisibility;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   public cardTextVisibilityBook?: CardTextVisibility;
+
+  @Column({ default: false })
+  public detailDisclosureCastPinned: boolean;
+
+  @Column({ default: false })
+  public detailDisclosureCrewPinned: boolean;
+
+  @Column({ default: false })
+  public detailDisclosureArtistsPinned: boolean;
+
+  @Column({ default: false })
+  public detailDisclosureSubjectTagsPinned: boolean;
+
+  @Column({ type: 'simple-json', nullable: true })
+  public detailDisclosurePins?: UserSettingsDetailDisclosuresByMedia;
+
+  @Column({ type: 'simple-json', nullable: true })
+  public mediaFilterPins?: UserMediaFilterPins;
+
+  @Column({ type: 'simple-json', nullable: true })
+  public advancedThemeOverrides?: AdvancedThemeOverrides | null;
+
+  @Column({ type: 'simple-json', nullable: true })
+  public requestRootFolders?: UserRequestRootFolders;
 
   @Column({
     type: 'text',
@@ -227,16 +265,26 @@ export class UserSettings {
       discoverRegion: this.discoverRegion,
       streamingRegion: this.streamingRegion,
       originalLanguage: this.originalLanguage,
+      preferredLanguages: this.preferredLanguages,
       discordIds: this.discordIds,
       notificationTypes: this.notificationTypes,
       watchlistSyncMovies: this.watchlistSyncMovies,
       watchlistSyncTv: this.watchlistSyncTv,
       watchlistSyncMusic: this.watchlistSyncMusic,
       watchlistSyncBooks: this.watchlistSyncBooks,
+      watchlistSyncComics: this.watchlistSyncComics,
+      watchlistSyncMagazines: this.watchlistSyncMagazines,
       cardTextVisibilityMovie: this.cardTextVisibilityMovie,
       cardTextVisibilityTv: this.cardTextVisibilityTv,
       cardTextVisibilityAlbum: this.cardTextVisibilityAlbum,
       cardTextVisibilityBook: this.cardTextVisibilityBook,
+      detailDisclosureCastPinned: this.detailDisclosureCastPinned,
+      detailDisclosureCrewPinned: this.detailDisclosureCrewPinned,
+      detailDisclosureArtistsPinned: this.detailDisclosureArtistsPinned,
+      detailDisclosureSubjectTagsPinned: this.detailDisclosureSubjectTagsPinned,
+      detailDisclosurePins: this.detailDisclosurePins,
+      mediaFilterPins: this.mediaFilterPins,
+      advancedThemeOverrides: this.advancedThemeOverrides,
     };
   }
 

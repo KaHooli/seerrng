@@ -1,5 +1,8 @@
 import animeList from '@server/api/animelist';
-import { getMetadataProvider } from '@server/api/metadata';
+import {
+  getMetadataProvider,
+  isTheMovieDbProvider,
+} from '@server/api/metadata';
 import MusicBrainz from '@server/api/musicbrainz';
 import OpenLibraryAPI from '@server/api/openlibrary';
 import PlexAPI, {
@@ -7,11 +10,11 @@ import PlexAPI, {
   type PlexLibraryItem,
   type PlexMetadata,
 } from '@server/api/plexapi';
-import TheMovieDb from '@server/api/themoviedb';
 import { ANIME_KEYWORD_ID } from '@server/api/themoviedb/constants';
 import type {
   TmdbKeyword,
   TmdbTvDetails,
+  TmdbTvScanDetails,
 } from '@server/api/themoviedb/interfaces';
 import { MediaIdentifierProvider } from '@server/entity/MediaIdentifier';
 import { classifyAudioPlaybackFormats } from '@server/lib/audioPlaybackFormat';
@@ -45,6 +48,7 @@ import BaseScanner from '@server/lib/scanners/baseScanner';
 import type { Library, PlexSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { mapWithConcurrency } from '@server/utils/concurrency';
+import { getHttpErrorDetails } from '@server/utils/httpError';
 import { uniqWith } from 'lodash';
 import { createHash } from 'node:crypto';
 
@@ -155,6 +159,42 @@ export class PlexScanner
     this.isRecentOnly = isRecentOnly;
   }
 
+  /** Refresh one already verified collection member without starting a library scan. */
+  public async refreshCollectionMember(
+    id: string,
+    kind: 'tv' | 'music'
+  ): Promise<void> {
+    if (!/^\d+$/.test(id)) throw new Error('Invalid collection member');
+    const settings = getSettings();
+    this.enable4kShow = true;
+    this.configurationSnapshot = captureConfigurationAuthority(
+      'plex',
+      settings
+    );
+    this.plexSettingsSnapshot = structuredClone(settings.plex);
+    this.ownerAuthoritySnapshot = await captureMediaServerUserAuthority(
+      1,
+      'plex'
+    );
+    if (!this.ownerAuthoritySnapshot.plexToken)
+      throw new Error('Media server owner unavailable');
+    this.plexClient = new PlexAPI({
+      plexToken: this.ownerAuthoritySnapshot.plexToken,
+      plexSettings: this.plexSettingsSnapshot,
+      timeout: 8000,
+    });
+    const item = await this.withConfigurationSnapshot(() =>
+      this.plexClient.getMetadata(id)
+    );
+    if (
+      item.ratingKey !== id ||
+      item.type !== (kind === 'tv' ? 'show' : 'album')
+    )
+      throw new Error('Collection member identity changed');
+    if (kind === 'tv') await this.processPlexShow(item);
+    else await this.processPlexAlbum(item);
+  }
+
   public status(): SyncStatus {
     return {
       running: this.running,
@@ -262,7 +302,10 @@ export class PlexScanner
       );
     } catch (e) {
       this.log('Scan interrupted', 'error', {
-        errorMessage: e.message,
+        ...getHttpErrorDetails(e),
+        errorStack: e instanceof Error ? e.stack : undefined,
+        sessionId,
+        currentLibrary: this.currentLibrary?.name,
       });
     } finally {
       this.endRun(sessionId);
@@ -404,15 +447,15 @@ export class PlexScanner
   }: {
     tmdbId?: number;
     tvdbId?: number;
-  }): Promise<TmdbTvDetails> {
+  }): Promise<TmdbTvScanDetails | TmdbTvDetails> {
     let tvShow;
 
     if (tmdbId) {
-      tvShow = await this.tmdb.getTvShow({
+      tvShow = await this.tmdb.getTvShowForScan({
         tvId: Number(tmdbId),
       });
     } else if (tvdbId) {
-      tvShow = await this.tmdb.getShowByTvdbId({
+      tvShow = await this.tmdb.getShowByTvdbIdForScan({
         tvdbId: Number(tvdbId),
       });
     } else {
@@ -425,9 +468,9 @@ export class PlexScanner
       ? await getMetadataProvider('anime')
       : await getMetadataProvider('tv');
 
-    if (!(metadataProvider instanceof TheMovieDb)) {
+    if (!isTheMovieDbProvider(metadataProvider)) {
       tvShow = await metadataProvider.getTvShow({
-        tvId: Number(tmdbId),
+        tvId: Number(tvShow.id),
       });
     }
 
@@ -705,14 +748,13 @@ export class PlexScanner
 
       // If we got an IMDb ID, but no TMDB ID, lookup the TMDB ID with the IMDb ID
       if (mediaIds.imdbId && !mediaIds.tmdbId) {
-        const tmdbMedia = await this.tmdb.getMediaByImdbId({
+        mediaIds.tmdbId = await this.tmdb.resolveImdbIdForScan({
           imdbId: mediaIds.imdbId,
         });
-        mediaIds.tmdbId = tmdbMedia.id;
       }
 
       if (mediaIds.tvdbId && !mediaIds.tmdbId) {
-        const show = await this.tmdb.getShowByTvdbId({
+        const show = await this.tmdb.getShowByTvdbIdForScan({
           tvdbId: mediaIds.tvdbId,
         });
         mediaIds.tmdbId = show.id;
@@ -726,10 +768,9 @@ export class PlexScanner
       const imdbMatch = plexitem.guid.match(imdbRegex);
       if (imdbMatch) {
         mediaIds.imdbId = imdbMatch[1];
-        const tmdbMedia = await this.tmdb.getMediaByImdbId({
+        mediaIds.tmdbId = await this.tmdb.resolveImdbIdForScan({
           imdbId: mediaIds.imdbId,
         });
-        mediaIds.tmdbId = tmdbMedia.id;
       }
       // Check if the agent is TMDB
     } else if (plexitem.guid.match(tmdbRegex)) {
@@ -741,9 +782,9 @@ export class PlexScanner
     } else if (plexitem.guid.match(tvdbRegex)) {
       const matchedtvdb = plexitem.guid.match(tvdbRegex);
 
-      // If we can find a tvdb Id, use it to get the full tmdb show details
+      // If we can find a tvdb Id, use it to resolve the tmdb id
       if (matchedtvdb) {
-        const show = await this.tmdb.getShowByTvdbId({
+        const show = await this.tmdb.getShowByTvdbIdForScan({
           tvdbId: Number(matchedtvdb[1]),
         });
 
@@ -761,7 +802,7 @@ export class PlexScanner
       const matchedtvdb = plexitem.guid.match(hamaTvdbRegex);
 
       if (matchedtvdb) {
-        const show = await this.tmdb.getShowByTvdbId({
+        const show = await this.tmdb.getShowByTvdbIdForScan({
           tvdbId: Number(matchedtvdb[1]),
         });
 
@@ -783,19 +824,19 @@ export class PlexScanner
       } else if (matchedhama) {
         const anidbId = Number(matchedhama[1]);
         const result = animeList.getFromAnidbId(anidbId);
-        let tvShow: TmdbTvDetails | null = null;
+        let tvShow: TmdbTvScanDetails | TmdbTvDetails | null = null;
 
         // Set isHama to true, so we can know to add special processing to this item
         mediaIds.isHama = true;
 
         // First try to lookup the show by TVDb ID
         if (result?.tvdbId) {
-          const extResponse = await this.tmdb.getByExternalId({
+          const extResponse = await this.tmdb.getByExternalIdForScan({
             externalId: result.tvdbId,
             type: 'tvdb',
           });
           if (extResponse.tv_results[0]) {
-            tvShow = await this.tmdb.getTvShow({
+            tvShow = await this.tmdb.getTvShowForScan({
               tvId: extResponse.tv_results[0].id,
             });
             mediaIds.tvdbId = result.tvdbId;
@@ -814,10 +855,9 @@ export class PlexScanner
             mediaIds.tmdbId = result.tmdbId;
             mediaIds.imdbId = result?.imdbId;
           } else if (result?.imdbId) {
-            const tmdbMovie = await this.tmdb.getMediaByImdbId({
+            mediaIds.tmdbId = await this.tmdb.resolveImdbIdForScan({
               imdbId: result.imdbId,
             });
-            mediaIds.tmdbId = tmdbMovie.id;
             mediaIds.imdbId = result.imdbId;
           }
         }
@@ -863,10 +903,10 @@ export class PlexScanner
             if (special.tmdbId) {
               await this.processPlexMovieByTmdbId(episode, special.tmdbId);
             } else if (special.imdbId) {
-              const tmdbMovie = await this.tmdb.getMediaByImdbId({
+              const tmdbId = await this.tmdb.resolveImdbIdForScan({
                 imdbId: special.imdbId,
               });
-              await this.processPlexMovieByTmdbId(episode, tmdbMovie.id);
+              await this.processPlexMovieByTmdbId(episode, tmdbId);
             }
           }
         }

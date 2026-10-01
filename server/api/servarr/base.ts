@@ -64,6 +64,7 @@ export interface RootFolder {
 export interface QualityProfile {
   id: number;
   name: string;
+  language?: string;
 }
 
 export interface QueueStatusMessage {
@@ -119,13 +120,59 @@ export const MAX_SERVARR_QUEUE_RESULTS = 10_000;
 export const MAX_SERVARR_QUEUE_PAGE_SIZE = 1_000;
 export const MAX_SERVARR_LIBRARY_RESULTS = 100_000;
 export const MAX_SERVARR_LOOKUP_RESULTS = 1_000;
+export const MAX_SERVARR_COVER_IMAGES = 20;
 const MAX_SERVARR_TEXT_LENGTH = 10_000;
+const MAX_SERVARR_IMAGE_URL_LENGTH = 2_048;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const boundedText = (value: unknown): string =>
   typeof value === 'string' ? value.slice(0, MAX_SERVARR_TEXT_LENGTH) : '';
+
+const boundedImageUrl = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.length <= MAX_SERVARR_IMAGE_URL_LENGTH
+    ? value
+    : undefined;
+
+export interface ServarrImage {
+  coverType?: string;
+  url?: string;
+  remoteUrl?: string;
+}
+
+export const sanitizeServarrImages = (value: unknown): ServarrImage[] =>
+  (Array.isArray(value) ? value : [])
+    .slice(0, MAX_SERVARR_COVER_IMAGES)
+    .flatMap((image) =>
+      isRecord(image)
+        ? [
+            {
+              coverType: boundedText(image.coverType) || undefined,
+              url: boundedImageUrl(image.url),
+              remoteUrl: boundedImageUrl(image.remoteUrl),
+            },
+          ]
+        : []
+    );
+
+export const isServarrServiceUrl = (
+  candidateUrl: string,
+  serviceBaseUrl: string
+): boolean => {
+  try {
+    const candidate = new URL(candidateUrl);
+    const service = new URL(serviceBaseUrl);
+
+    return (
+      !candidate.username &&
+      !candidate.password &&
+      candidate.origin === service.origin
+    );
+  } catch {
+    return false;
+  }
+};
 
 export const sanitizeServarrCommand = (value: unknown): ServarrCommand => {
   if (!isRecord(value) || !Number.isSafeInteger(value.id)) {
@@ -187,7 +234,19 @@ export const sanitizeServarrProfiles = (value: unknown): QualityProfile[] =>
         return [];
       }
       const name = boundedText(profile.name);
-      return name ? [{ id: profile.id as number, name }] : [];
+      const profileLanguage = profile.language;
+      const language = isRecord(profileLanguage)
+        ? boundedText(profileLanguage.name)
+        : boundedText(profileLanguage);
+      return name
+        ? [
+            {
+              id: profile.id as number,
+              name,
+              ...(language ? { language } : {}),
+            },
+          ]
+        : [];
     });
 
 export const sanitizeServarrRootFolders = (value: unknown): RootFolder[] =>
@@ -397,6 +456,32 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
         return config;
       });
     }
+  }
+
+  public async getReleaseCalendar(
+    start: string,
+    end: string,
+    includeUnmonitored = false,
+    includeArtist = false,
+    includeAuthor = false
+  ): Promise<unknown[]> {
+    const results = await this.get<unknown>(
+      '/calendar',
+      {
+        params: {
+          ...this.requestParams,
+          start,
+          end,
+          unmonitored: includeUnmonitored,
+          ...(includeArtist ? { includeArtist: true } : {}),
+          ...(includeAuthor ? { includeAuthor: true } : {}),
+        },
+      },
+      300
+    );
+    if (!Array.isArray(results) || results.length > 5000)
+      throw new Error('Invalid release calendar response.');
+    return results;
   }
 
   protected getRequestConfig(
@@ -612,6 +697,91 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
     }
 
     await this.runCommand('RefreshMonitoredDownloads', {});
+  }
+
+  /** Complete bounded queue snapshot. Never infer disappearance from a partial page. */
+  public async getInterventionQueue(): Promise<
+    (QueueItem & QueueItemAppendT)[]
+  > {
+    const records: (QueueItem & QueueItemAppendT)[] = [];
+    const pageSize = 250;
+    const seen = new Set<number>();
+    for (let page = 1; page <= 20; page++) {
+      const response = await this.request<QueueResponse<QueueItemAppendT>>(
+        'GET',
+        '/queue',
+        undefined,
+        this.getRequestConfig({ includeEpisode: true, page, pageSize })
+      );
+      const total = response.data?.totalRecords;
+      if (
+        !Number.isSafeInteger(total) ||
+        total < 0 ||
+        total > 5000 ||
+        !Array.isArray(response.data?.records)
+      ) {
+        throw new Error(
+          'Queue snapshot exceeds supported limits or is invalid.'
+        );
+      }
+      const items = sanitizeServarrQueue<QueueItem & QueueItemAppendT>(
+        response.data.records
+      );
+      if (
+        items.length !== response.data.records.length ||
+        items.some(
+          (item) =>
+            !Number.isSafeInteger(item.id) || item.id <= 0 || seen.has(item.id)
+        )
+      ) {
+        throw new Error('Queue snapshot contains invalid or repeated records.');
+      }
+      items.forEach((item) => {
+        if (seen.has(item.id))
+          throw new Error('Queue snapshot contains repeated records.');
+        seen.add(item.id);
+      });
+      records.push(...items);
+      if (page * pageSize >= total) {
+        if (records.length !== total)
+          throw new Error('Queue changed while reading its pages.');
+        return records;
+      }
+      if (items.length === 0) throw new Error('Queue snapshot is incomplete.');
+    }
+    throw new Error('Queue snapshot is incomplete.');
+  }
+
+  public async getManualImportCandidates(params: {
+    folder: string;
+    downloadId?: string;
+    movieId?: number;
+    seriesId?: number;
+    artistId?: number;
+    authorId?: number;
+    filterExistingFiles?: boolean;
+    replaceExistingFiles?: boolean;
+  }): Promise<Record<string, unknown>[]> {
+    const response = await this.request<unknown>(
+      'GET',
+      '/manualimport',
+      undefined,
+      this.getRequestConfig(params)
+    );
+    if (!Array.isArray(response.data) || response.data.length > 5000) {
+      throw new Error('Invalid manual import response.');
+    }
+    return response.data.filter(
+      (item): item is Record<string, unknown> =>
+        !!item && typeof item === 'object' && !Array.isArray(item)
+    );
+  }
+
+  public async importManualFiles(
+    files: Record<string, unknown>[],
+    importMode: 'copy' | 'move'
+  ): Promise<ServarrCommand> {
+    return this.runCommand('ManualImport', { files, importMode });
   }
 
   public async getCommand(commandId: number): Promise<ServarrCommand> {

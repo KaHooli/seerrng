@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { before, beforeEach, describe, it, mock } from 'node:test';
 
+import KapowarrAPI, {
+  KapowarrTaskRunningError,
+} from '@server/api/comics/kapowarr';
+import MylarAPI from '@server/api/comics/mylar';
 import LidarrAPI from '@server/api/servarr/lidarr';
 import RadarrAPI from '@server/api/servarr/radarr';
 import ReadarrAPI from '@server/api/servarr/readarr';
@@ -112,6 +116,16 @@ const removeArtistMock = mock.method(
 const removeMovieMock = mock.fn(async (movieId: number) => {
   void movieId;
 });
+const removeComicMock = mock.method(
+  MylarAPI.prototype,
+  'removeComic',
+  async () => undefined
+);
+const removeVolumeMock = mock.method(
+  KapowarrAPI.prototype,
+  'removeVolume',
+  async () => undefined
+);
 const removeSeriesMock = mock.fn(async (tvdbId: number) => {
   void tvdbId;
 });
@@ -237,6 +251,10 @@ beforeEach(() => {
   removeArtistMock.mock.mockImplementation(async () => undefined);
   removeMovieMock.mock.resetCalls();
   removeMovieMock.mock.mockImplementation(async () => undefined);
+  removeComicMock.mock.resetCalls();
+  removeComicMock.mock.mockImplementation(async () => undefined);
+  removeVolumeMock.mock.resetCalls();
+  removeVolumeMock.mock.mockImplementation(async () => undefined);
   removeSeriesMock.mock.resetCalls();
   removeSeriesMock.mock.mockImplementation(async () => undefined);
   getTvShowMock.mock.resetCalls();
@@ -395,6 +413,37 @@ beforeEach(() => {
       overrideRule: [],
     },
   ];
+  settings.mylar = [
+    {
+      id: 80,
+      name: 'Mylar3',
+      hostname: 'mylar.local',
+      port: 8090,
+      apiKey: 'mylar-key',
+      useSsl: false,
+      baseUrl: '',
+      isDefault: true,
+      tags: [],
+      syncEnabled: true,
+      preventSearch: false,
+    },
+  ];
+  settings.kapowarr = [
+    {
+      id: 90,
+      name: 'Kapowarr',
+      hostname: 'kapowarr.local',
+      port: 5656,
+      apiKey: 'kapowarr-key',
+      useSsl: false,
+      baseUrl: '',
+      isDefault: true,
+      tags: [],
+      syncEnabled: true,
+      preventSearch: false,
+      rootFolder: '/comics',
+    },
+  ];
 });
 
 setupTestDb();
@@ -532,9 +581,92 @@ describe('GET /media', () => {
       await userRepository.update(2, { permissions: Permission.REQUEST });
     }
   });
+
+  it('excludes an administrator-disabled category from unfiltered listings', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      comic: false,
+    };
+    const media = await getRepository(Media).save([
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.COMIC,
+        status: MediaStatus.AVAILABLE,
+        mediaAddedAt: new Date('2026-03-02T00:00:00.000Z'),
+      }),
+      new Media({
+        tmdbId: 777,
+        mediaType: MediaType.MOVIE,
+        status: MediaStatus.AVAILABLE,
+        mediaAddedAt: new Date('2026-03-01T00:00:00.000Z'),
+      }),
+    ]);
+
+    try {
+      const agent = await loginAs('admin@seerr.dev', 'test1234');
+      const res = await agent.get('/media?filter=allavailable&sort=mediaAdded');
+
+      assert.strictEqual(res.status, 200);
+      const ids = res.body.results.map((item: { id: number }) => item.id);
+      assert.ok(!ids.includes(media[0].id));
+      assert.ok(ids.includes(media[1].id));
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+    }
+  });
+
+  it('rejects an explicit mediaType filter for an administrator-disabled category', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      comic: false,
+    };
+
+    try {
+      const agent = await loginAs('admin@seerr.dev', 'test1234');
+      const res = await agent.get(
+        '/media?filter=allavailable&sort=mediaAdded&mediaType=comic'
+      );
+
+      assert.strictEqual(res.status, 404);
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+    }
+  });
 });
 
 describe('GET /media/:id/watch_data', () => {
+  it('hides media from an administrator-disabled category', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      comic: false,
+    };
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 902,
+        mediaType: MediaType.COMIC,
+        status: MediaStatus.AVAILABLE,
+      })
+    );
+
+    try {
+      const agent = await loginAs('admin@seerr.dev', 'test1234');
+      const response = await agent.get(`/media/${media.id}/watch_data`);
+
+      assert.strictEqual(response.status, 404);
+      assert.match(response.body.message, /Media does not exist/);
+      assert.strictEqual(getMediaWatchStatsMock.mock.callCount(), 0);
+      assert.strictEqual(getMediaWatchUsersMock.mock.callCount(), 0);
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+    }
+  });
+
   it('revalidates administrator authority before using Tautulli credentials', async () => {
     await getRepository(User).update(1, {
       permissions: Permission.REQUEST,
@@ -688,9 +820,183 @@ describe('POST /media/:id/:status', () => {
     assert.strictEqual(res.status, 400);
     assert.match(res.body.message, /is4k must be a boolean/i);
   });
+
+  it('rejects status updates for media in an administrator-disabled category', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      comic: false,
+    };
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.COMIC,
+        status: MediaStatus.PENDING,
+        status4k: MediaStatus.UNKNOWN,
+      })
+    );
+
+    try {
+      const agent = await loginAs('admin@seerr.dev', 'test1234');
+      const res = await agent.post(`/media/${media.id}/available`).send();
+
+      assert.strictEqual(res.status, 404);
+
+      const persisted = await getRepository(Media).findOneOrFail({
+        where: { id: media.id },
+      });
+      assert.strictEqual(persisted.status, MediaStatus.PENDING);
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+    }
+  });
+});
+
+describe('DELETE /media/:id', () => {
+  it('refuses to remove media belonging to an administrator-disabled category', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      comic: false,
+    };
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.COMIC,
+        status: MediaStatus.AVAILABLE,
+      })
+    );
+
+    try {
+      const agent = await loginAs('admin@seerr.dev', 'test1234');
+      const res = await agent.delete(`/media/${media.id}`);
+
+      assert.strictEqual(res.status, 404);
+      assert.strictEqual(
+        await getRepository(Media).countBy({ id: media.id }),
+        1
+      );
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+    }
+  });
+});
+
+describe('library deletion authorization', () => {
+  it('hides library actions for administrator-disabled media categories', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      comic: false,
+    };
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 903,
+        mediaType: MediaType.COMIC,
+        status: MediaStatus.AVAILABLE,
+      })
+    );
+
+    try {
+      const agent = await loginAs('admin@seerr.dev', 'test1234');
+      const response = await agent.get(`/media/${media.id}/library`);
+
+      assert.strictEqual(response.status, 404);
+      assert.match(response.body.message, /Media not found/);
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+    }
+  });
+
+  it('does not remove library copies for administrator-disabled media categories', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      comic: false,
+    };
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 904,
+        mediaType: MediaType.COMIC,
+        status: MediaStatus.AVAILABLE,
+      })
+    );
+
+    try {
+      const agent = await loginAs('admin@seerr.dev', 'test1234');
+      const response = await agent
+        .delete(`/media/${media.id}/library`)
+        .send({ token: 'a'.repeat(64) });
+
+      assert.strictEqual(response.status, 404);
+      assert.strictEqual(
+        await getRepository(Media).countBy({ id: media.id }),
+        1
+      );
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+    }
+  });
+
+  it('denies request managers who are not admins from listing or deleting library copies', async () => {
+    const userRepository = getRepository(User);
+    const friend = await userRepository.findOneByOrFail({
+      email: 'friend@seerr.dev',
+    });
+    const originalPermissions = friend.permissions;
+    friend.permissions = Permission.MANAGE_REQUESTS;
+    await userRepository.save(friend);
+
+    try {
+      const agent = await loginAs('friend@seerr.dev', 'test1234');
+      const plan = await agent.get('/media/not-a-number/library');
+      const deletion = await agent
+        .delete('/media/not-a-number/library')
+        .send({ token: 'a'.repeat(64) });
+
+      assert.strictEqual(plan.status, 403);
+      assert.strictEqual(deletion.status, 403);
+    } finally {
+      friend.permissions = originalPermissions;
+      await userRepository.save(friend);
+    }
+  });
 });
 
 describe('DELETE /media/:id/file', () => {
+  it('does not remove an ebook when its administrator-disabled category is selected', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      ebook: false,
+      audiobook: true,
+    };
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 905,
+        mediaType: MediaType.BOOK,
+        status: MediaStatus.AVAILABLE,
+      })
+    );
+
+    try {
+      const agent = await loginAs('admin@seerr.dev', 'test1234');
+      const response = await agent.delete(
+        `/media/${media.id}/file?format=ebook`
+      );
+
+      assert.strictEqual(response.status, 404);
+      assert.strictEqual(removeBookMock.mock.callCount(), 0);
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+    }
+  });
+
   it('accepts book format removals through the production OpenAPI boundary', async () => {
     const validatedApp = express();
     validatedApp.use(express.json());
@@ -926,6 +1232,90 @@ describe('DELETE /media/:id/file', () => {
     assert.strictEqual(updated.externalServiceId4k, 401);
     assert.strictEqual(updated.externalServiceSlug4k, 'movie-4k');
     assert.strictEqual(updated.ratingKey4k, '4k-key');
+  });
+
+  it('removes a comic from Mylar3 and clears its comic service links', async () => {
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.COMIC,
+        status: MediaStatus.AVAILABLE,
+        serviceId: 80,
+        externalServiceId: 5678,
+        externalServiceSlug: '5678',
+        comicServiceType: 'mylar',
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+    const res = await agent.delete(`/media/${media.id}/file`);
+
+    assert.strictEqual(res.status, 204);
+    assert.strictEqual(removeComicMock.mock.callCount(), 1);
+    assert.strictEqual(removeComicMock.mock.calls[0].arguments[0], '5678');
+    assert.strictEqual(removeVolumeMock.mock.callCount(), 0);
+    const updated = await getRepository(Media).findOneOrFail({
+      where: { id: media.id },
+    });
+    assert.strictEqual(updated.status, MediaStatus.DELETED);
+    assert.strictEqual(updated.serviceId, null);
+    assert.strictEqual(updated.externalServiceId, null);
+    assert.strictEqual(updated.externalServiceSlug, null);
+    assert.strictEqual(updated.comicServiceType, null);
+  });
+
+  it('removes a comic from Kapowarr using its internal volume id', async () => {
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.COMIC,
+        status: MediaStatus.AVAILABLE,
+        serviceId: 90,
+        externalServiceId: 1,
+        externalServiceSlug: '1',
+        comicServiceType: 'kapowarr',
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+    const res = await agent.delete(`/media/${media.id}/file`);
+
+    assert.strictEqual(res.status, 204);
+    assert.strictEqual(removeVolumeMock.mock.callCount(), 1);
+    assert.strictEqual(removeVolumeMock.mock.calls[0].arguments[0], 1);
+    assert.strictEqual(removeComicMock.mock.callCount(), 0);
+    const updated = await getRepository(Media).findOneOrFail({
+      where: { id: media.id },
+    });
+    assert.strictEqual(updated.status, MediaStatus.DELETED);
+    assert.strictEqual(updated.comicServiceType, null);
+  });
+
+  it('reports a clear error when Kapowarr has a queued task for the volume', async () => {
+    removeVolumeMock.mock.mockImplementationOnce(async () => {
+      throw new KapowarrTaskRunningError(1);
+    });
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.COMIC,
+        status: MediaStatus.AVAILABLE,
+        serviceId: 90,
+        externalServiceId: 1,
+        externalServiceSlug: '1',
+        comicServiceType: 'kapowarr',
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+    const res = await agent.delete(`/media/${media.id}/file`);
+
+    assert.strictEqual(res.status, 409);
+    assert.match(res.body.message, /queued or running task/);
+    const updated = await getRepository(Media).findOneOrFail({
+      where: { id: media.id },
+    });
+    assert.strictEqual(updated.status, MediaStatus.AVAILABLE);
   });
 
   it('persists 4K series deletion and season state without clearing standard links', async () => {
@@ -1250,5 +1640,34 @@ describe('DELETE /media/:id/file', () => {
     assert.strictEqual(removeAlbumMock.mock.calls[0].arguments[0], 301);
     assert.strictEqual(removeArtistMock.mock.callCount(), 1);
     assert.strictEqual(removeArtistMock.mock.calls[0].arguments[0], 800);
+  });
+
+  it('refuses to remove a file for media in an administrator-disabled category', async () => {
+    const settings = getSettings();
+    const originalCategories = { ...settings.main.enabledMediaCategories };
+    settings.main.enabledMediaCategories = {
+      ...originalCategories,
+      comic: false,
+    };
+    const media = await getRepository(Media).save(
+      new Media({
+        tmdbId: 0,
+        mediaType: MediaType.COMIC,
+        status: MediaStatus.AVAILABLE,
+      })
+    );
+
+    try {
+      const agent = await loginAs('admin@seerr.dev', 'test1234');
+      const res = await agent.delete(`/media/${media.id}/file`);
+
+      assert.strictEqual(res.status, 404);
+      assert.strictEqual(
+        await getRepository(Media).countBy({ id: media.id }),
+        1
+      );
+    } finally {
+      settings.main.enabledMediaCategories = originalCategories;
+    }
   });
 });

@@ -39,6 +39,7 @@ describe('Narrow-window media audit', () => {
   });
 
   it('keeps book and music Discover controls within a phone viewport', () => {
+    cy.mockConfiguredMediaAvailability({ booksEnabled: true });
     cy.intercept('GET', '/api/v1/discover/books*', {
       ...emptyPage,
       totalResults: 1,
@@ -78,7 +79,8 @@ describe('Narrow-window media audit', () => {
   });
 
   it('keeps Request Status and its action controls within a phone viewport', () => {
-    cy.visit('/requests/status');
+    cy.visit('/requests');
+    cy.contains('button', 'Media Filters').click();
     cy.contains('button', 'Clear Filters').should('be.visible');
     assertNoHorizontalOverflow();
   });

@@ -10,10 +10,15 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-ppa-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   publish-ppa:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -43,7 +48,7 @@ jobs:
         run: bash scripts/ensure-release-tag-on-main.sh "$TAG"
 
       - name: Install packaging tools
-        run: sudo apt-get update && sudo apt-get install -y build-essential debhelper devscripts dpkg-dev gnupg curl
+        run: sudo apt-get update && sudo apt-get install -y build-essential debhelper devscripts dpkg-dev gnupg curl python3-launchpadlib
 
       - name: Download Linux asset
         env:
@@ -71,6 +76,7 @@ jobs:
           echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
 
       - name: Prepare source package
+        id: source
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
@@ -89,22 +95,10 @@ jobs:
           find "$src/usr/lib/seerrng" -type f \
             | sed "s#^$src/##" \
             > "$src/debian/source/include-binaries"
-          ppa_rev="$(date -u +%Y%m%d%H%M)"
-          cat > "$src/debian/changelog" <<EOF
-          seerrng (${version}+ppa${ppa_rev}~${series}) ${series}; urgency=medium
+          echo "source_dir=${src}" >> "$GITHUB_OUTPUT"
 
-            * Release ${{ steps.version.outputs.tag }}
-
-           -- snapetech <seerrng@proton.me>  $(date -R)
-          EOF
-
-      - name: Build signed source package
-        run: |
-          set -euo pipefail
-          cd "seerrng-${{ steps.version.outputs.version }}"
-          debuild -S -sa -k"${{ steps.gpg.outputs.fingerprint }}"
-
-      - name: Upload to Launchpad
+      - name: Validate Launchpad target
+        id: launchpad
         env:
           LAUNCHPAD_PPA: ${{ secrets.LAUNCHPAD_PPA || vars.LAUNCHPAD_PPA }}
         run: |
@@ -163,8 +157,6 @@ jobs:
             exit 1
           fi
 
-          changes="$(find . -maxdepth 1 -name '*.changes' -print -quit)"
-          test -n "$changes"
           {
             printf '[seerrng-ppa]\n'
             printf 'fqdn = ppa.launchpad.net\n'
@@ -173,5 +165,37 @@ jobs:
             printf 'login = anonymous\n'
             printf 'allow_unsigned_uploads = 0\n'
           } > ~/.dput.cf
-          echo "Uploading $changes to $archive_web"
-          dput -f seerrng-ppa "$changes"
+          echo "archive_api=${archive_api}" >> "$GITHUB_OUTPUT"
+          echo "archive_web=${archive_web}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: .ppa-release-tools
+          persist-credentials: false
+
+      - name: Publish and verify Launchpad source and binary packages
+        env:
+          ARCHIVE_API: ${{ steps.launchpad.outputs.archive_api }}
+          ARCHIVE_WEB: ${{ steps.launchpad.outputs.archive_web }}
+          SOURCE_DIR: ${{ steps.source.outputs.source_dir }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          UPSTREAM_VERSION: ${{ steps.version.outputs.version }}
+          UBUNTU_SERIES: ${{ matrix.ubuntu_series }}
+          GPG_FINGERPRINT: ${{ steps.gpg.outputs.fingerprint }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 .ppa-release-tools/scripts/publish-launchpad-ppa.py \
+            --package-dir "$SOURCE_DIR" \
+            --tag "$RELEASE_TAG" \
+            --upstream-version "$UPSTREAM_VERSION" \
+            --series "$UBUNTU_SERIES" \
+            --archive-url "$ARCHIVE_API" \
+            --archive-web "$ARCHIVE_WEB" \
+            --gpg-key-id "$GPG_FINGERPRINT" \
+            --run-id "$GH_RUN_ID" \
+            --run-attempt "$GH_RUN_ATTEMPT" \
+            --timeout-minutes 300 \
+            --max-attempts 2

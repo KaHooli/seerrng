@@ -21,4 +21,15 @@ describe('Report an Issue type options', () => {
       );
     }
   });
+
+  it('limits book, comic, and magazine issues to Other, since they have no audio/video track', () => {
+    for (const mediaType of ['book', 'comic', 'magazine'] as const) {
+      assert.deepStrictEqual(
+        getIssueOptionsForMediaType(mediaType).map(
+          (option) => option.issueType
+        ),
+        [IssueType.OTHER]
+      );
+    }
+  });
 });

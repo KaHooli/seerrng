@@ -32,7 +32,7 @@ const messages = defineMessages('components.Settings.SettingsAbout.Releases', {
 });
 
 const REPO_RELEASE_API =
-  'https://api.github.com/repos/snapetech/seerrng/releases?per_page=20';
+  'https://api.github.com/repos/YunoHost-Apps/seerrng/releases?per_page=20';
 
 interface ReleaseProps {
   release: SafeGithubRelease;
@@ -133,7 +133,7 @@ const Releases = ({ currentVersion }: ReleasesProps) => {
   return (
     <div>
       <h3 className="heading">{intl.formatMessage(messages.releases)}</h3>
-      <div className="section space-y-3">
+      <div className="app-card-sub section space-y-3">
         {data.map((release, index) => {
           return (
             <div key={`release-${release.id}`}>

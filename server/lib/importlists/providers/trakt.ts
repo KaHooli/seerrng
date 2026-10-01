@@ -7,7 +7,7 @@ import TraktAPI, {
   type TraktListItem,
   type TraktMediaSummary,
   type TraktMediaType,
-} from '@server/api/trakt';
+} from '@server/api/trakt/importList';
 import { ImportListProviderId } from '@server/constants/importList';
 import { MediaType } from '@server/constants/media';
 import type {

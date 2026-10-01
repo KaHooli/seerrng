@@ -59,9 +59,14 @@ const messages = defineMessages('components.RequestBlock', {
 interface RequestBlockProps {
   request: MediaRequest;
   onUpdate?: () => void;
+  hideDeleteAction?: boolean;
 }
 
-const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
+const RequestBlock = ({
+  request,
+  onUpdate,
+  hideDeleteAction = false,
+}: RequestBlockProps) => {
   const { user } = useUser();
   const intl = useIntl();
   const [isUpdating, setIsUpdating] = useState(false);
@@ -75,6 +80,9 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
   const musicId = request.media?.mbId
     ? normalizeMusicBrainzId(request.media.mbId)
     : undefined;
+  const comicId = request.media?.identifiers?.find(
+    (identifier) => identifier.provider === 'comicvine'
+  )?.value;
   const updateRequest = async (type: 'approve' | 'decline'): Promise<void> => {
     setIsUpdating(true);
     await axios.post(`/api/v1/request/${request.id}/${type}`);
@@ -104,20 +112,25 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
         <RequestModal
           show={showEditModal}
           tmdbId={
-            request.type === 'music' || request.type === 'book'
+            request.type === 'music' ||
+            request.type === 'book' ||
+            request.type === 'comic'
               ? undefined
               : request.media.tmdbId
           }
           mbId={request.type === 'music' ? musicId : undefined}
           bookId={request.type === 'book' ? bookId : undefined}
+          comicId={request.type === 'comic' ? comicId : undefined}
           type={
             request.type === 'music'
               ? 'music'
               : request.type === 'book'
                 ? 'book'
-                : request.type === 'tv'
-                  ? 'tv'
-                  : 'movie'
+                : request.type === 'comic'
+                  ? 'comic'
+                  : request.type === 'tv'
+                    ? 'tv'
+                    : 'movie'
           }
           is4k={request.is4k}
           editRequest={request}
@@ -226,17 +239,18 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
                 </Tooltip>
               </>
             )}
-            {request.status !== MediaRequestStatus.PENDING && (
-              <Tooltip content={intl.formatMessage(messages.delete)}>
-                <Button
-                  buttonType="danger"
-                  onClick={() => deleteRequest()}
-                  disabled={isUpdating}
-                >
-                  <TrashIcon className="icon-sm" />
-                </Button>
-              </Tooltip>
-            )}
+            {!hideDeleteAction &&
+              request.status !== MediaRequestStatus.PENDING && (
+                <Tooltip content={intl.formatMessage(messages.delete)}>
+                  <Button
+                    buttonType="danger"
+                    onClick={() => deleteRequest()}
+                    disabled={isUpdating}
+                  >
+                    <TrashIcon className="icon-sm" />
+                  </Button>
+                </Tooltip>
+              )}
           </div>
         </div>
         <div className="mt-2 sm:flex sm:justify-between">

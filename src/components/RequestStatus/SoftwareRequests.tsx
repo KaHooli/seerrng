@@ -1,0 +1,680 @@
+import Button from '@app/components/Common/Button';
+import CachedImage from '@app/components/Common/CachedImage';
+import LoadingSpinner from '@app/components/Common/LoadingSpinner';
+import PaginationFooter from '@app/components/Common/PaginationFooter';
+import {
+  RequestActionButton,
+  RequestActionConfirmation,
+} from '@app/components/Requests/destructiveActions';
+import useToasts from '@app/hooks/useToasts';
+import { Permission, useUser } from '@app/hooks/useUser';
+import defineMessages from '@app/utils/defineMessages';
+import {
+  ArrowDownTrayIcon,
+  ChevronDownIcon,
+} from '@heroicons/react/24/outline';
+import type {
+  PcArchitecture,
+  PcOperatingSystem,
+} from '@server/api/software/types';
+import axios from 'axios';
+import { useEffect, useMemo, useState } from 'react';
+import { useIntl } from 'react-intl';
+import useSWR from 'swr';
+
+const messages = defineMessages('components.RequestStatus.SoftwareRequests', {
+  title: 'Software requests',
+  requestedBy: 'Requested by {user}',
+  pending: 'Pending approval',
+  approved: 'Approved',
+  searching: 'Searching',
+  downloading: 'Downloading',
+  importing: 'Verifying import',
+  available: 'Available',
+  failed: 'Failed',
+  declined: 'Declined',
+  cancelled: 'Cancelled',
+  retro: 'Retro',
+  modern: 'Modern',
+  game: 'PC game',
+  operatingSystem: 'Operating system: {value}',
+  architecture: 'Architecture: {value}',
+  windows: 'Windows',
+  linux: 'Linux',
+  macos: 'macOS',
+  x64: 'x64',
+  arm64: 'ARM64',
+  x86: 'x86',
+  universal: 'Universal',
+  submitted: 'Requested {date}',
+  approve: 'Approve',
+  decline: 'Decline',
+  withdraw: 'Withdraw',
+  cancel: 'Cancel',
+  retry: 'Retry',
+  manageError: 'This software request could not be updated.',
+  downloadCopy: 'Download copy',
+  downloadCopies: 'Download copies',
+  downloadNamed: 'Download {name}',
+  retryCheckRequired:
+    'The provider cannot confirm whether the previous download started. Check the download client’s queue and history. Continue only if no matching download exists.',
+  confirmAfterCheck: 'I checked; continue',
+  cancelRetry: 'Cancel',
+  clearCancelled: 'Clear cancelled request',
+  clearCancelledTitle: 'Clear this cancelled request?',
+  clearCancelledDescription:
+    'This removes the cancelled request and its saved status history from Seerr. It does not delete installed software.',
+  clearSuccess: 'Cancelled request cleared.',
+  clearFailed: 'Unable to clear this cancelled request.',
+  loadError: 'Software request status could not be loaded.',
+  noRequests: 'No software requests yet.',
+  quotaExceeded: 'Your software request limit has been reached.',
+  showHistory: 'Show status history',
+  hideHistory: 'Hide status history',
+  historyLoading: 'Loading status history…',
+  historyError: 'Status history could not be loaded.',
+  noHistory: 'No saved status updates are available.',
+});
+
+type SoftwareStatus =
+  | 'pending'
+  | 'approved'
+  | 'searching'
+  | 'downloading'
+  | 'importing'
+  | 'available'
+  | 'failed'
+  | 'declined'
+  | 'cancelled';
+
+interface SoftwareRequestRow {
+  id: number;
+  requestedBy?: { id: number; displayName: string; avatar: string } | null;
+  category: 'retro' | 'modern' | 'game';
+  provider: 'romarr' | 'questarr';
+  status: SoftwareStatus;
+  title: string;
+  coverUrl?: string | null;
+  platform?: {
+    slug: string;
+    name: string | null;
+    catalogId: number | null;
+  } | null;
+  actions?: {
+    retry: boolean;
+    cancel: boolean;
+    cancelReason?: string;
+  } | null;
+  variant?: {
+    operatingSystem: PcOperatingSystem;
+    architecture: PcArchitecture;
+  } | null;
+  createdAt: string;
+}
+
+interface SoftwareRequestResult {
+  request: SoftwareRequestRow;
+  status: SoftwareStatus;
+  message: string | null;
+  assets: { id: string; name: string; size: number; url: string }[];
+}
+
+interface SoftwareRequestsResponse {
+  results: SoftwareRequestResult[];
+  pageInfo: { page: number; pages: number; pageSize: number; results: number };
+}
+
+interface SoftwareRequestHistoryResponse {
+  history: {
+    id: number;
+    status: SoftwareStatus;
+    message?: string | null;
+    percent?: number | null;
+    createdAt: string;
+  }[];
+}
+
+const DownloadCopies = ({
+  requestId,
+  assets,
+}: {
+  requestId: number;
+  assets: SoftwareRequestResult['assets'];
+}) => {
+  const intl = useIntl();
+  if (assets.length === 0) return null;
+  const endpoint = (id: string) =>
+    `/api/v1/request/software/status/${requestId}/downloads/${encodeURIComponent(id)}`;
+  const buttonClassName =
+    'compact-control inline-flex items-center gap-1 rounded-md border border-indigo-500/80 bg-indigo-800/25 px-2 text-[11px] leading-none font-semibold whitespace-nowrap text-indigo-200 transition hover:border-indigo-400 hover:bg-indigo-800/45 hover:text-white focus:ring-2 focus:ring-indigo-400 focus:outline-none';
+  if (assets.length === 1) {
+    const asset = assets[0];
+    return (
+      <a
+        href={endpoint(asset.id)}
+        download
+        className={buttonClassName}
+        aria-label={intl.formatMessage(messages.downloadNamed, {
+          name: asset.name,
+        })}
+        title={asset.name}
+      >
+        <ArrowDownTrayIcon className="h-3.5 w-3.5" aria-hidden="true" />
+        {intl.formatMessage(messages.downloadCopy)}
+      </a>
+    );
+  }
+  return (
+    <details className="group relative">
+      <summary className={`${buttonClassName} list-none`}>
+        <ArrowDownTrayIcon className="h-3.5 w-3.5" aria-hidden="true" />
+        {intl.formatMessage(messages.downloadCopies)}
+        <ChevronDownIcon
+          className="h-3.5 w-3.5 transition-transform group-open:rotate-180 motion-reduce:transition-none"
+          aria-hidden="true"
+        />
+      </summary>
+      <ol className="absolute right-0 z-30 mt-1 max-h-64 max-w-[min(24rem,80vw)] min-w-64 overflow-y-auto rounded-lg border border-gray-600 bg-gray-900 p-1 shadow-xl">
+        {assets.map((asset) => (
+          <li key={asset.id}>
+            <a
+              href={endpoint(asset.id)}
+              download
+              className="block truncate rounded-md px-3 py-2 text-xs text-gray-100 hover:bg-gray-700 focus:ring-2 focus:ring-indigo-400 focus:outline-none"
+              title={asset.name}
+              aria-label={intl.formatMessage(messages.downloadNamed, {
+                name: asset.name,
+              })}
+            >
+              {asset.name}
+            </a>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+};
+
+const SoftwareRequests = ({
+  enabled,
+  filter,
+  requestedById,
+  softwareRequestId,
+}: {
+  enabled: boolean;
+  filter: string;
+  requestedById?: number;
+  softwareRequestId?: number;
+}) => {
+  const intl = useIntl();
+  const { user, hasPermission } = useUser();
+  const { addToast } = useToasts();
+  const canManage = hasPermission(Permission.MANAGE_REQUESTS);
+  const canRequest = hasPermission(Permission.REQUEST);
+  const [page, setPage] = useState(1);
+  const endpoint = useMemo(() => {
+    if (!enabled) return null;
+    const params = new URLSearchParams({
+      take: '20',
+      skip: String((page - 1) * 20),
+    });
+    if (filter !== 'all') params.set('filter', filter);
+    if (requestedById !== undefined)
+      params.set('requestedBy', String(requestedById));
+    if (softwareRequestId !== undefined) {
+      params.set('requestId', String(softwareRequestId));
+    }
+    return `/api/v1/request/software/status?${params.toString()}`;
+  }, [enabled, filter, page, requestedById, softwareRequestId]);
+  const { data, error, mutate } = useSWR<SoftwareRequestsResponse>(endpoint, {
+    refreshInterval: 30_000,
+    revalidateOnFocus: true,
+    keepPreviousData: false,
+  });
+  const [workingId, setWorkingId] = useState<number | null>(null);
+  const [historyRequestId, setHistoryRequestId] = useState<number | null>(null);
+  const [handoffConfirmation, setHandoffConfirmation] = useState<{
+    requestId: number;
+    action: 'retry' | 'cancel';
+  } | null>(null);
+  const [clearSelection, setClearSelection] = useState<number | null>(null);
+  const [clearingId, setClearingId] = useState<number | null>(null);
+  const historyEndpoint = historyRequestId
+    ? `/api/v1/request/software/status/${historyRequestId}`
+    : null;
+  const { data: historyData, error: historyError } =
+    useSWR<SoftwareRequestHistoryResponse>(historyEndpoint);
+
+  useEffect(() => {
+    setPage(1);
+    setHistoryRequestId(null);
+  }, [enabled, filter, requestedById, softwareRequestId]);
+
+  useEffect(() => {
+    if (data && data.pageInfo.pages > 0 && page > data.pageInfo.pages) {
+      setPage(data.pageInfo.pages);
+    }
+  }, [data, page]);
+
+  const mutateRequest = async (
+    requestId: number,
+    action: 'approve' | 'decline' | 'retry' | 'withdraw' | 'cancel',
+    confirmNoExistingDownload = false
+  ) => {
+    setWorkingId(requestId);
+    try {
+      await axios.post(
+        `/api/v1/request/software/status/${requestId}/${action}`,
+        ['retry', 'cancel'].includes(action)
+          ? { confirmNoExistingDownload }
+          : undefined
+      );
+      setHandoffConfirmation(null);
+      await mutate();
+    } catch (actionError) {
+      const errorData =
+        axios.isAxiosError(actionError) &&
+        actionError.response?.data &&
+        typeof actionError.response.data === 'object'
+          ? (actionError.response.data as {
+              confirmationRequired?: unknown;
+              error?: unknown;
+            })
+          : undefined;
+      if (
+        (action === 'retry' || action === 'cancel') &&
+        !confirmNoExistingDownload &&
+        errorData?.confirmationRequired === 'confirmNoExistingDownload'
+      ) {
+        setHandoffConfirmation({ requestId, action });
+        return;
+      }
+      const fallbackMessage =
+        axios.isAxiosError(actionError) &&
+        actionError.response?.data?.error === 'SOFTWARE_QUOTA_EXCEEDED'
+          ? messages.quotaExceeded
+          : messages.manageError;
+      const serverMessage =
+        typeof errorData?.error === 'string' && errorData.error.length <= 300
+          ? errorData.error
+          : undefined;
+      addToast(serverMessage ?? intl.formatMessage(fallbackMessage), {
+        appearance: 'error',
+      });
+    } finally {
+      setWorkingId(null);
+    }
+  };
+
+  const clearCancelledRequest = async () => {
+    if (clearSelection === null) return;
+    const requestId = clearSelection;
+    setClearingId(requestId);
+    try {
+      await axios.delete(`/api/v1/request/software/status/${requestId}`);
+      setClearSelection(null);
+      setHistoryRequestId((current) =>
+        current === requestId ? null : current
+      );
+      addToast(intl.formatMessage(messages.clearSuccess), {
+        appearance: 'success',
+        autoDismiss: true,
+      });
+    } catch {
+      addToast(intl.formatMessage(messages.clearFailed), {
+        appearance: 'error',
+        autoDismiss: true,
+      });
+      return;
+    } finally {
+      setClearingId(null);
+    }
+    await mutate().catch(() => undefined);
+  };
+
+  if (
+    !enabled ||
+    filter === 'incomplete' ||
+    filter === 'unavailable' ||
+    filter === 'library'
+  ) {
+    return null;
+  }
+  if (!data && !error) return <LoadingSpinner />;
+  if (error) {
+    return (
+      <p className="text-sm text-gray-400">
+        {intl.formatMessage(messages.loadError)}
+      </p>
+    );
+  }
+  if (!data?.results.length) return null;
+
+  const statusLabel = (status: SoftwareStatus) =>
+    intl.formatMessage(messages[status]);
+  const groupLabel = (category: SoftwareRequestRow['category']) =>
+    intl.formatMessage(
+      category === 'game'
+        ? messages.game
+        : category === 'modern'
+          ? messages.modern
+          : messages.retro
+    );
+
+  const operatingSystemLabel = (value: PcOperatingSystem) =>
+    intl.formatMessage(
+      value === 'windows'
+        ? messages.windows
+        : value === 'macos'
+          ? messages.macos
+          : messages.linux
+    );
+
+  const architectureLabel = (value: PcArchitecture) =>
+    intl.formatMessage(
+      value === 'arm64'
+        ? messages.arm64
+        : value === 'x86'
+          ? messages.x86
+          : value === 'universal'
+            ? messages.universal
+            : messages.x64
+    );
+
+  const canManageRequest = (request: SoftwareRequestRow) =>
+    canManage || (canRequest && request.requestedBy?.id === user?.id);
+  const canRetryRequest = (request: SoftwareRequestRow) =>
+    request.status === 'failed' &&
+    (request.actions?.retry ?? true) &&
+    canManageRequest(request);
+  const canCancelRequest = (request: SoftwareRequestRow) =>
+    ['approved', 'searching', 'downloading', 'importing', 'failed'].includes(
+      request.status
+    ) &&
+    (request.actions?.cancel ?? true) &&
+    canManageRequest(request);
+
+  return (
+    <section
+      className="mb-6 space-y-3"
+      aria-label={intl.formatMessage(messages.title)}
+    >
+      {clearSelection !== null && (
+        <RequestActionConfirmation
+          action="delete"
+          heading={intl.formatMessage(messages.clearCancelledTitle)}
+          explanation={intl.formatMessage(messages.clearCancelledDescription)}
+          confirmLabel={intl.formatMessage(messages.clearCancelled)}
+          busy={clearingId === clearSelection}
+          onConfirm={() => void clearCancelledRequest()}
+          onCancel={() => setClearSelection(null)}
+        />
+      )}
+      <h2 className="text-lg font-semibold text-gray-100">
+        {intl.formatMessage(messages.title)}
+      </h2>
+      <div className="space-y-3">
+        {data.results.map(({ request, status, message, assets }) => (
+          <article
+            key={request.id}
+            className="refreshed-card-surface rounded-xl border border-gray-700 p-3 sm:p-4"
+          >
+            <div className="flex gap-3">
+              <div className="relative h-20 w-14 shrink-0 overflow-hidden rounded-md bg-gray-900 sm:h-24 sm:w-16">
+                <CachedImage
+                  type="tmdb"
+                  src={request.coverUrl || '/images/seerr_poster_not_found.png'}
+                  alt=""
+                  className="object-cover"
+                  fill
+                />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-full border border-gray-600 bg-gray-800 px-2 py-0.5 text-[10px] font-semibold text-gray-200">
+                        {groupLabel(request.category)}
+                      </span>
+                      <span className="text-xs font-medium text-indigo-200">
+                        {statusLabel(status)}
+                      </span>
+                    </div>
+                    <h3 className="mt-1 truncate text-sm font-semibold text-white sm:text-base">
+                      {request.title}
+                    </h3>
+                    <div className="refreshed-detail-text-muted mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                      {request.platform?.name && (
+                        <span>{request.platform.name}</span>
+                      )}
+                      {request.variant && (
+                        <>
+                          <span>
+                            {intl.formatMessage(messages.operatingSystem, {
+                              value: operatingSystemLabel(
+                                request.variant.operatingSystem
+                              ),
+                            })}
+                          </span>
+                          <span>
+                            {intl.formatMessage(messages.architecture, {
+                              value: architectureLabel(
+                                request.variant.architecture
+                              ),
+                            })}
+                          </span>
+                        </>
+                      )}
+                      {canManage && request.requestedBy && (
+                        <span>
+                          {intl.formatMessage(messages.requestedBy, {
+                            user: request.requestedBy.displayName,
+                          })}
+                        </span>
+                      )}
+                      <span>
+                        {intl.formatMessage(messages.submitted, {
+                          date: intl.formatDate(request.createdAt, {
+                            dateStyle: 'medium',
+                          }),
+                        })}
+                      </span>
+                    </div>
+                    {message && status === 'failed' && (
+                      <p className="mt-2 text-xs text-amber-200">{message}</p>
+                    )}
+                    {request.actions?.cancel === false &&
+                      request.actions.cancelReason && (
+                        <p className="mt-2 text-xs text-gray-300">
+                          {request.actions.cancelReason}
+                        </p>
+                      )}
+                  </div>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    {canManage && status === 'pending' && (
+                      <>
+                        <Button
+                          buttonType="success"
+                          buttonSize="sm"
+                          disabled={workingId === request.id}
+                          onClick={() => mutateRequest(request.id, 'approve')}
+                        >
+                          {intl.formatMessage(messages.approve)}
+                        </Button>
+                        <Button
+                          buttonType="default"
+                          buttonSize="sm"
+                          disabled={workingId === request.id}
+                          onClick={() => mutateRequest(request.id, 'decline')}
+                        >
+                          {intl.formatMessage(messages.decline)}
+                        </Button>
+                      </>
+                    )}
+                    {canRequest &&
+                      status === 'pending' &&
+                      request.requestedBy?.id === user?.id && (
+                        <Button
+                          buttonType="default"
+                          buttonSize="sm"
+                          disabled={workingId === request.id}
+                          onClick={() => mutateRequest(request.id, 'withdraw')}
+                        >
+                          {intl.formatMessage(messages.withdraw)}
+                        </Button>
+                      )}
+                    {canCancelRequest(request) && (
+                      <Button
+                        buttonType="default"
+                        buttonSize="sm"
+                        disabled={workingId === request.id}
+                        onClick={() => mutateRequest(request.id, 'cancel')}
+                      >
+                        {intl.formatMessage(messages.cancel)}
+                      </Button>
+                    )}
+                    {status === 'failed' && canRetryRequest(request) && (
+                      <Button
+                        buttonType="default"
+                        buttonSize="sm"
+                        disabled={workingId === request.id}
+                        onClick={() =>
+                          mutateRequest(request.id, 'retry', false)
+                        }
+                      >
+                        {intl.formatMessage(messages.retry)}
+                      </Button>
+                    )}
+                    {status === 'cancelled' && canManageRequest(request) && (
+                      <RequestActionButton
+                        action="delete"
+                        label={intl.formatMessage(messages.clearCancelled)}
+                        tooltip={intl.formatMessage(messages.clearCancelled)}
+                        busy={clearingId === request.id}
+                        disabled={workingId === request.id}
+                        onClick={() => setClearSelection(request.id)}
+                      />
+                    )}
+                    {status === 'available' && (
+                      <DownloadCopies requestId={request.id} assets={assets} />
+                    )}
+                  </div>
+                </div>
+                {handoffConfirmation?.requestId === request.id && (
+                  <div
+                    className="mt-3 rounded-lg border border-amber-700 bg-amber-950/40 p-3"
+                    role="alert"
+                  >
+                    <p className="text-xs text-amber-100">
+                      {intl.formatMessage(messages.retryCheckRequired)}
+                    </p>
+                    <div className="mt-3 flex flex-wrap justify-end gap-2">
+                      <Button
+                        buttonType="default"
+                        buttonSize="sm"
+                        disabled={workingId === request.id}
+                        onClick={() => setHandoffConfirmation(null)}
+                      >
+                        {intl.formatMessage(messages.cancelRetry)}
+                      </Button>
+                      <Button
+                        buttonType="warning"
+                        buttonSize="sm"
+                        disabled={workingId === request.id}
+                        onClick={() =>
+                          mutateRequest(
+                            request.id,
+                            handoffConfirmation.action,
+                            true
+                          )
+                        }
+                      >
+                        {intl.formatMessage(messages.confirmAfterCheck)}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                <div className="mt-3">
+                  <Button
+                    buttonSize="sm"
+                    onClick={() =>
+                      setHistoryRequestId((current) =>
+                        current === request.id ? null : request.id
+                      )
+                    }
+                  >
+                    {intl.formatMessage(
+                      historyRequestId === request.id
+                        ? messages.hideHistory
+                        : messages.showHistory
+                    )}
+                  </Button>
+                </div>
+                {historyRequestId === request.id && (
+                  <div className="refreshed-inset-surface mt-3 rounded-lg border border-gray-700 p-3">
+                    {historyError ? (
+                      <p className="text-xs text-red-200">
+                        {intl.formatMessage(messages.historyError)}
+                      </p>
+                    ) : !historyData ? (
+                      <p className="refreshed-detail-text-muted text-xs">
+                        {intl.formatMessage(messages.historyLoading)}
+                      </p>
+                    ) : historyData.history.length === 0 ? (
+                      <p className="refreshed-detail-text-muted text-xs">
+                        {intl.formatMessage(messages.noHistory)}
+                      </p>
+                    ) : (
+                      <ol className="space-y-2">
+                        {historyData.history.map((event) => (
+                          <li
+                            key={event.id}
+                            className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs"
+                          >
+                            <span className="refreshed-detail-text font-medium">
+                              {statusLabel(event.status)}
+                              {event.percent !== null &&
+                                event.percent !== undefined &&
+                                ` · ${Math.round(event.percent)}%`}
+                            </span>
+                            <time
+                              className="refreshed-detail-text-muted"
+                              dateTime={event.createdAt}
+                            >
+                              {intl.formatDate(event.createdAt, {
+                                dateStyle: 'medium',
+                                timeStyle: 'short',
+                              })}
+                            </time>
+                            {event.message && (
+                              <p className="refreshed-detail-text-muted w-full">
+                                {event.message}
+                              </p>
+                            )}
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+      {data.pageInfo.pages > 1 && (
+        <PaginationFooter
+          defaultPageSize={20}
+          page={page}
+          pageSize={20}
+          totalPages={data.pageInfo.pages}
+          onPageChange={setPage}
+          onPageSizeChange={() => undefined}
+          pageSizeOptions={[20]}
+        />
+      )}
+    </section>
+  );
+};
+
+export default SoftwareRequests;

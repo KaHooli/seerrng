@@ -50,6 +50,7 @@ import {
   mapWithConcurrency,
 } from '@server/utils/concurrency';
 import { getHostname } from '@server/utils/getHostname';
+import { getHttpErrorDetails } from '@server/utils/httpError';
 import { normalizeJellyfinGuid } from '@server/utils/jellyfin';
 import { oidcSafeFetch } from '@server/utils/oidcHttp';
 import { parseOidcIdentity } from '@server/utils/oidcIdentity';
@@ -59,6 +60,7 @@ import {
   resolvesToLocalOrPrivateAddress,
 } from '@server/utils/security';
 import { normalizeUrlBase } from '@server/utils/serviceUrl';
+import { getTlsConfigurationStatus } from '@server/utils/tls';
 import {
   parseBoundedString,
   parseOptionalBodyBoolean,
@@ -555,7 +557,8 @@ authRoutes.post('/plex/pin', authRateLimit, async (req, res, next) => {
   } catch (e) {
     logger.error('Unable to create Plex OAuth PIN', {
       label: 'Auth',
-      error: e instanceof Error ? e.message : String(e),
+      ...getHttpErrorDetails(e),
+      errorStack: e instanceof Error ? e.stack : undefined,
     });
     return next({ status: 502, message: 'Unable to contact Plex.' });
   }
@@ -610,7 +613,8 @@ authRoutes.get(
       logger.warn('Unable to poll Plex OAuth PIN', {
         label: 'Auth',
         pinId,
-        error: e instanceof Error ? e.message : String(e),
+        ...getHttpErrorDetails(e),
+        errorStack: e instanceof Error ? e.stack : undefined,
       });
       return next({ status: 502, message: 'Unable to contact Plex.' });
     }
@@ -873,6 +877,170 @@ authRoutes.post('/plex', authRateLimit, async (req, res, next) => {
 function getUserAvatarUrl(user: User): string {
   return `/avatarproxy/${user.jellyfinUserId}?v=${user.avatarVersion}`;
 }
+
+authRoutes.post('/jellyfin/bridge', authRateLimit, async (req, res, next) => {
+  res.set({
+    'Cache-Control': 'no-store, private',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+  });
+
+  const settings = getSettings();
+  if (
+    settings.main.mediaServerType !== MediaServerType.JELLYFIN ||
+    settings.main.mediaServerLogin === false ||
+    !settings.jellyfin.bridgeLoginEnabled ||
+    !settings.jellyfin.serverId
+  ) {
+    return res
+      .status(403)
+      .type('text/plain')
+      .send('Jellyfin sign-in from the SeerrNG plugin is disabled.');
+  }
+
+  const requestOrigin = req.get('origin');
+  const configuredJellyfinOrigin = settings.jellyfin.externalHostname;
+  let originMatchesConfiguredJellyfin = false;
+  if (requestOrigin && configuredJellyfinOrigin) {
+    try {
+      originMatchesConfiguredJellyfin =
+        new URL(requestOrigin).origin === requestOrigin &&
+        new URL(configuredJellyfinOrigin).origin === requestOrigin;
+    } catch {
+      originMatchesConfiguredJellyfin = false;
+    }
+  }
+
+  if (!originMatchesConfiguredJellyfin) {
+    return res
+      .status(403)
+      .type('text/plain')
+      .send(
+        'Configure the Jellyfin external URL before enabling bridge sign-in.'
+      );
+  }
+
+  if (
+    !req.secure &&
+    !getTlsConfigurationStatus(settings.network.tls).httpAuthAllowed
+  ) {
+    return res
+      .status(403)
+      .type('text/plain')
+      .send('Open SeerrNG over HTTPS before signing in from Jellyfin.');
+  }
+
+  const parsedBody = parseRequestBodyObject(req.body);
+  if ('error' in parsedBody) {
+    return res.status(400).type('text/plain').send(parsedBody.error);
+  }
+  const authToken = parseBoundedString(parsedBody.value.token, {
+    fieldName: 'Jellyfin access token',
+    maxLength: MAX_AUTH_TOKEN_LENGTH,
+  });
+  if ('error' in authToken) {
+    return res.status(400).type('text/plain').send(authToken.error);
+  }
+
+  const initialAuthorityKey = getJellyfinAuthAuthorityKey(settings);
+  try {
+    const jellyfin = new JellyfinAPI(
+      getHostname(settings.jellyfin),
+      authToken.value
+    );
+    const account = await jellyfin.getUser();
+    const jellyfinUserId = normalizeJellyfinGuid(account.Id);
+    if (!jellyfinUserId || account.ServerId !== settings.jellyfin.serverId) {
+      logger.warn('Rejected Jellyfin bridge sign-in with mismatched identity', {
+        label: 'Auth',
+        ip: req.ip,
+      });
+      return res
+        .status(403)
+        .type('text/plain')
+        .send('This Jellyfin account is not linked to SeerrNG.');
+    }
+
+    return await runAuthAccountAdmission(
+      [getAuthAccountAdmissionResource('jellyfin', jellyfinUserId)],
+      async () => {
+        const currentSettings = getSettings();
+        if (
+          !currentSettings.jellyfin.bridgeLoginEnabled ||
+          getJellyfinAuthAuthorityKey(currentSettings) !== initialAuthorityKey
+        ) {
+          return res
+            .status(409)
+            .type('text/plain')
+            .send('Jellyfin settings changed. Refresh and try again.');
+        }
+
+        const user = await getRepository(User).findOne({
+          where: { jellyfinUserId },
+        });
+        if (!user) {
+          return res
+            .status(403)
+            .type('text/plain')
+            .send('Link your Jellyfin account to SeerrNG before signing in.');
+        }
+
+        let redirectTarget = '/';
+        const applicationUrl = currentSettings.main.applicationUrl;
+        if (applicationUrl) {
+          try {
+            const destination = new URL(applicationUrl);
+            if (
+              ['http:', 'https:'].includes(destination.protocol) &&
+              !destination.username &&
+              !destination.password
+            ) {
+              const path = destination.pathname.replace(/\/+$/u, '');
+              redirectTarget = `${destination.origin}${path}/`;
+            }
+          } catch {
+            // Fall back to the same-origin app root if the optional URL is
+            // absent or stale; it never comes from this request.
+          }
+        }
+
+        await establishAuthenticatedSession(
+          req,
+          user.id,
+          user.passwordChangedAt?.getTime() ?? 0
+        );
+        req.session.jellyfinBridge = {
+          jellyfinUserId,
+          authorityKey: initialAuthorityKey,
+        };
+
+        return res.redirect(303, redirectTarget);
+      }
+    );
+  } catch (error) {
+    if (
+      error instanceof ApiError &&
+      error.errorCode === ApiErrorCode.InvalidAuthToken
+    ) {
+      return res
+        .status(403)
+        .type('text/plain')
+        .send(
+          'The Jellyfin session is no longer valid. Sign in to Jellyfin again.'
+        );
+    }
+
+    logger.error('Unable to validate Jellyfin bridge sign-in', {
+      label: 'Auth',
+      ip: req.ip,
+      errorMessage: error instanceof Error ? error.message : undefined,
+    });
+    return next({
+      status: 502,
+      message: 'Unable to validate the Jellyfin session.',
+    });
+  }
+});
 
 authRoutes.post('/jellyfin', authRateLimit, async (req, res, next) => {
   const settings = getSettings();
@@ -1410,6 +1578,30 @@ authRoutes.post('/jellyfin', authRateLimit, async (req, res, next) => {
           message: e.errorCode,
         });
 
+      case ApiErrorCode.ConnectionError:
+        logger.error(
+          `Unable to reach the ${
+            settings.main.mediaServerType === MediaServerType.JELLYFIN
+              ? ServerType.JELLYFIN
+              : ServerType.EMBY
+          } server.`,
+          {
+            label: 'Auth',
+            error: e.errorCode,
+            status: e.statusCode,
+            hostname: getHostname({
+              useSsl: body.useSsl,
+              ip: body.hostname,
+              port: body.port,
+              urlBase: body.urlBase,
+            }),
+          }
+        );
+        return next({
+          status: e.statusCode,
+          message: e.errorCode,
+        });
+
       case ApiErrorCode.InvalidCredentials:
         logger.warn(
           'Failed sign-in attempt from user with incorrect Jellyfin credentials',
@@ -1475,6 +1667,13 @@ authRoutes.post(
   '/jellyfin/quickconnect/initiate',
   authRateLimit,
   async (req, res, next) => {
+    if (getSettings().main.mediaServerType !== MediaServerType.JELLYFIN) {
+      return next({
+        status: 403,
+        message: 'Quick Connect is only supported by Jellyfin.',
+      });
+    }
+
     try {
       const hostname = getHostname();
       const jellyfinServer = new JellyfinAPI(
@@ -1506,6 +1705,13 @@ authRoutes.get(
   '/jellyfin/quickconnect/check',
   authRateLimit,
   async (req, res, next) => {
+    if (getSettings().main.mediaServerType !== MediaServerType.JELLYFIN) {
+      return next({
+        status: 403,
+        message: 'Quick Connect is only supported by Jellyfin.',
+      });
+    }
+
     const result = quickConnectSecret.safeParse(req.query);
     if (!result.success) {
       return next({
@@ -1559,6 +1765,13 @@ authRoutes.post(
       return next({
         status: 403,
         message: 'Quick Connect is not available during initial setup.',
+      });
+    }
+
+    if (settings.main.mediaServerType !== MediaServerType.JELLYFIN) {
+      return next({
+        status: 403,
+        message: 'Quick Connect is only supported by Jellyfin.',
       });
     }
 
@@ -1622,19 +1835,37 @@ authRoutes.post(
           jellyfinUserId: account.User.Id,
           jellyfinDeviceId: deviceId,
           permissions: settings.main.defaultPermissions,
-          userType:
-            settings.main.mediaServerType === MediaServerType.JELLYFIN
-              ? UserType.JELLYFIN
-              : UserType.EMBY,
+          userType: UserType.JELLYFIN,
         });
         user.avatar = getUserAvatarUrl(user);
         await userRepository.save(user);
       }
 
-      // Set session
-      if (req.session) {
-        req.session.userId = user.id;
+      if (user.jellyfinUserId) {
+        try {
+          const { changed } = await checkAvatarChanged(user);
+
+          if (changed) {
+            user.avatar = getUserAvatarUrl(user);
+            await userRepository.save(user);
+            logger.debug('Avatar updated during Quick Connect login', {
+              userId: user.id,
+              jellyfinUserId: user.jellyfinUserId,
+            });
+          }
+        } catch (error) {
+          logger.error('Error handling avatar during Quick Connect login', {
+            label: 'Auth',
+            errorMessage: error.message,
+          });
+        }
       }
+
+      await establishAuthenticatedSession(
+        req,
+        user.id,
+        user.passwordChangedAt?.getTime() ?? 0
+      );
 
       return res.status(200).json(user?.filter() ?? {});
     } catch (e) {

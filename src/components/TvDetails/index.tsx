@@ -1,6 +1,7 @@
 import Spinner from '@app/assets/spinner.svg';
 import AssociationBadge from '@app/components/Association/AssociationBadge';
 import Button from '@app/components/Common/Button';
+import IndexerSearchLink from '@app/components/Common/IndexerSearchLink';
 import LoadingSpinner from '@app/components/Common/LoadingSpinner';
 import MediaServerPlayButton from '@app/components/Common/MediaServerPlayButton';
 import PageTitle from '@app/components/Common/PageTitle';
@@ -8,6 +9,7 @@ import Tooltip from '@app/components/Common/Tooltip';
 import RequestButton from '@app/components/RequestButton';
 import SeriesDetailsLayout from '@app/components/TvDetails/SeriesDetailsLayout';
 import useSettings from '@app/hooks/useSettings';
+import useTitleBlocklist from '@app/hooks/useTitleBlocklist';
 import useToasts from '@app/hooks/useToasts';
 import { Permission, UserType, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
@@ -24,8 +26,7 @@ import {
   MinusCircleIcon,
   StarIcon,
 } from '@heroicons/react/24/outline';
-import type { RTRating } from '@server/api/rating/rottentomatoes';
-import { IssueStatus } from '@server/constants/issue';
+import type { RatingResponse } from '@server/api/ratings';
 import {
   MediaRequestStatus,
   MediaStatus,
@@ -106,8 +107,8 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
       15000
     ),
   });
-  const { data: ratingData } = useSWR<RTRating>(
-    tvId ? `/api/v1/tv/${tvId}/ratings` : null
+  const { data: ratingData } = useSWR<RatingResponse>(
+    tvId ? `/api/v1/tv/${tvId}/ratingscombined` : null
   );
   const sortedCrew = useMemo(
     () => sortCrewPriority(data?.credits.crew ?? []),
@@ -119,7 +120,10 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
       setShowManager(true);
       void router.replace({
         pathname: router.pathname,
-        query: { tvId: router.query.tvId },
+        query: {
+          tvId: router.query.tvId,
+          ...(router.query.issues === '1' ? { issues: '1' } : {}),
+        },
       });
     }
   }, [router, router.query.manage]);
@@ -128,6 +132,17 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
     () => setShowBlocklistModal(false),
     []
   );
+  const {
+    isBlocklisted,
+    checking: checkingBlocklist,
+    error: blocklistError,
+    setBlocklisted,
+  } = useTitleBlocklist(
+    data?.id,
+    MediaType.TV,
+    data?.mediaInfo?.status === MediaStatus.BLOCKLISTED
+  );
+
   if (!data && !error) {
     return <LoadingSpinner />;
   }
@@ -251,6 +266,7 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
         title: data.name,
         user: user?.id,
       });
+      await setBlocklisted(true);
       addToast(
         <span>
           {intl.formatMessage(globalMessages.blocklistSuccess, {
@@ -263,6 +279,7 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
       await revalidate();
     } catch (e) {
       if (axios.isAxiosError(e) && e.response?.status === 412) {
+        await setBlocklisted(true);
         addToast(
           <span>
             {intl.formatMessage(globalMessages.blocklistDuplicateError, {
@@ -286,7 +303,7 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
 
   const canUseBlocklist = hasPermission(Permission.MANAGE_BLOCKLIST);
   const isBlocklistAvailable =
-    data.mediaInfo?.status !== MediaStatus.BLOCKLISTED;
+    !isBlocklisted && !checkingBlocklist && !blocklistError;
   const canUseReportIssue = hasPermission(
     [Permission.CREATE_ISSUES, Permission.MANAGE_ISSUES],
     { type: 'or' }
@@ -328,7 +345,7 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
       )
     : undefined;
 
-  const primaryActions = (
+  const indexerCompanionActions = (
     <>
       {canUseBlocklist && (
         <Tooltip
@@ -371,21 +388,16 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
             className="relative"
             aria-label={intl.formatMessage(messages.manageseries)}
           >
-            <CogIcon className="!mr-0" />
-            {hasPermission([Permission.MANAGE_ISSUES, Permission.VIEW_ISSUES], {
-              type: 'or',
-            }) &&
-              (data.mediaInfo?.issues.filter(
-                (issue) => issue.status === IssueStatus.OPEN
-              ).length ?? 0) > 0 && (
-                <>
-                  <span className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-red-600" />
-                  <span className="absolute -top-1 -right-1 h-3 w-3 animate-ping rounded-full bg-red-600" />
-                </>
-              )}
+            <CogIcon />
+            <span>{intl.formatMessage(globalMessages.manage)}</span>
           </Button>
         </Tooltip>
       )}
+    </>
+  );
+
+  const reportIssueAction = (
+    <>
       {canUseReportIssue && (
         <Tooltip
           content={intl.formatMessage(
@@ -405,9 +417,15 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
             aria-label={intl.formatMessage(messages.reportissue)}
           >
             <ExclamationTriangleIcon />
+            <span>{intl.formatMessage(globalMessages.reportIssue)}</span>
           </Button>
         </Tooltip>
       )}
+    </>
+  );
+
+  const primaryActions = (
+    <>
       {safeTrailerUrl && (
         <Button
           as="a"
@@ -418,24 +436,29 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
           buttonSize="sm"
         >
           <FilmIcon />
-          <span className="ml-1.5">
-            {intl.formatMessage(messages.watchtrailer)}
-          </span>
+          <span>{intl.formatMessage(messages.watchtrailer)}</span>
         </Button>
       )}
       <AssociationBadge mediaType="tv" id={data.id} variant="button" />
-      <RequestButton
-        buttonSize="sm"
-        buttonType="detailRequest"
-        className="ml-0"
-        mediaType="tv"
-        onUpdate={() => revalidate()}
-        tmdbId={data.id}
-        media={data.mediaInfo}
-        isShowComplete={isComplete}
-        is4kShowComplete={is4kComplete}
-      />
     </>
+  );
+
+  const requestAction = (
+    <RequestButton
+      buttonSize="sm"
+      buttonType="detailRequest"
+      className="ml-0"
+      mediaType="tv"
+      onUpdate={() => revalidate()}
+      tmdbId={data.id}
+      media={data.mediaInfo}
+      isShowComplete={isComplete}
+      is4kShowComplete={is4kComplete}
+    />
+  );
+
+  const indexerSearchAction = (
+    <IndexerSearchLink category="tv" title={data.name} />
   );
 
   const secondaryActions = (
@@ -530,6 +553,10 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
         }
         primaryActions={primaryActions}
         secondaryActions={secondaryActions}
+        indexerSearchAction={indexerSearchAction}
+        indexerCompanionActions={indexerCompanionActions}
+        reportIssueAction={reportIssueAction}
+        requestAction={requestAction}
         playbackActions={playbackActions}
       />
     </>

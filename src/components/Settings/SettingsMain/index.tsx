@@ -7,6 +7,10 @@ import LanguageSelector from '@app/components/LanguageSelector';
 import RegionSelector from '@app/components/RegionSelector';
 import CopyButton from '@app/components/Settings/CopyButton';
 import SettingsBadge from '@app/components/Settings/SettingsBadge';
+import Field, {
+  default as SettingsField,
+} from '@app/components/Settings/SettingsField';
+import SettingsFormRow from '@app/components/Settings/SettingsFormRow';
 import { availableLanguages } from '@app/context/LanguageContext';
 import { themePalettes } from '@app/context/ThemeContext';
 import useLocale from '@app/hooks/useLocale';
@@ -22,7 +26,7 @@ import type { UserSettingsGeneralResponse } from '@server/interfaces/api/userSet
 import type { MainSettings } from '@server/lib/settings';
 import type { AvailableLocale } from '@server/types/languages';
 import axios from 'axios';
-import { Field, Form, Formik } from 'formik';
+import { Form, Formik } from 'formik';
 import { useState } from 'react';
 import { useIntl } from 'react-intl';
 import useSWR, { mutate } from 'swr';
@@ -35,6 +39,8 @@ const messages = defineMessages('components.Settings.SettingsMain', {
     'Configure global and default settings for Seerr.',
   apikey: 'API Key',
   apikeyCopied: 'Copied API key to clipboard.',
+  regenerateApiKey:
+    'Generate a new API key. Apps using the current key will need the new key to connect.',
   applicationTitle: 'Application Title',
   applicationurl: 'Application URL',
   discoverRegion: 'Discover Region',
@@ -65,6 +71,9 @@ const messages = defineMessages('components.Settings.SettingsMain', {
   hideAvailable: 'Hide Available Media',
   hideAvailableTip:
     'Hide available media from the discover pages but not search results',
+  hideRequested: 'Hide Requested Media',
+  hideRequestedTip:
+    'Hide media that has been requested from the discover pages but not search results',
   cacheImages: 'Enable Image Caching',
   cacheImagesTip:
     'Cache externally sourced images (requires a significant amount of disk space)',
@@ -118,6 +127,30 @@ const messages = defineMessages('components.Settings.SettingsMain', {
   themeActionFailure: 'The theme package operation failed.',
   themeActionFailureReason: 'The theme package operation failed: {message}',
   themeValidationError: '{package}: {message}',
+  comicsMetadata: 'Comics Metadata',
+  comicsMetadataDescription:
+    'Configure the metadata provider used to discover and request comics.',
+  magazinesMetadata: 'Magazine Catalog',
+  magazinesMetadataDescription:
+    'Add public magazine discovery alongside titles tracked by LazyLibrarian.',
+  googleBooksApiKey: 'Google Books API Key',
+  googleBooksApiKeyTip:
+    'A Google Books API key enables searches of the public magazine catalog.',
+  downloadCopies: 'Download Copies',
+  downloadCopiesDescription:
+    'Allow SeerrNG to serve imported files through Request Status. Path mappings connect a manager-reported library path to a read-only path mounted inside SeerrNG.',
+  downloadPathMappings: 'Library Path Mappings',
+  downloadPathMappingsTip:
+    'Enter a JSON array. Each mapping has serviceType, optional serviceId, remoteRoot, and localRoot. Use narrow library roots; SeerrNG only offers files that resolve inside a mapped root.',
+  downloadPathMappingsExample:
+    '[\n  {\n    "serviceType": "radarr",\n    "serviceId": 1,\n    "remoteRoot": "/movies",\n    "localRoot": "/mnt/media/movies"\n  }\n]',
+  downloadPathMappingsJsonError:
+    'Enter a JSON array with at most 100 path mappings.',
+  validationDownloadPathMappingsJson:
+    'Enter a JSON array with at most 100 path mappings.',
+  comicVineApiKey: 'ComicVine API Key',
+  comicVineApiKeyTip:
+    'A free ComicVine API key is required for comic discovery and requests.',
 });
 
 const SettingsMain = () => {
@@ -205,6 +238,18 @@ const SettingsMain = () => {
         intl.formatMessage(messages.validationUrlTrailingSlash),
         (value) => !value || !value.endsWith('/')
       ),
+    downloadPathMappingsJson: Yup.string().test(
+      'download-path-mappings-json',
+      intl.formatMessage(messages.validationDownloadPathMappingsJson),
+      (value) => {
+        try {
+          const parsed = JSON.parse(value || '[]');
+          return Array.isArray(parsed) && parsed.length <= 100;
+        } catch {
+          return false;
+        }
+      }
+    ),
   });
 
   const regenerate = async () => {
@@ -236,193 +281,206 @@ const SettingsMain = () => {
           intl.formatMessage(globalMessages.settings),
         ]}
       />
-      <div className="mb-6">
-        <h3 className="heading">
-          {intl.formatMessage(messages.generalsettings)}
-        </h3>
-        <p className="description">
-          {intl.formatMessage(messages.generalsettingsDescription)}
-        </p>
-      </div>
-      <div className="section">
-        <Formik
-          initialValues={{
-            applicationTitle: data?.applicationTitle,
-            applicationUrl: data?.applicationUrl,
-            hideAvailable: data?.hideAvailable,
-            hideBlocklisted: data?.hideBlocklisted,
-            locale: data?.locale ?? 'en',
-            discoverRegion: data?.discoverRegion,
-            originalLanguage: data?.originalLanguage,
-            streamingRegion: data?.streamingRegion || 'US',
-            blocklistRegion: data?.blocklistRegion || '',
-            blocklistLanguage: data?.blocklistLanguage || '',
-            blocklistedTags: data?.blocklistedTags,
-            blocklistedTagsLimit: data?.blocklistedTagsLimit || 50,
-            partialRequestsEnabled: data?.partialRequestsEnabled,
-            enableSpecialEpisodes: data?.enableSpecialEpisodes,
-            cacheImages: data?.cacheImages,
-            includeAdult: data?.includeAdult ?? false,
-            youtubeUrl: data?.youtubeUrl,
-            versionCheck: data?.versionCheck,
-            spotifyClientId: data?.spotifyClientId ?? '',
-            spotifyClientSecret: data?.spotifyClientSecret ?? '',
-            youtubeApiKey: data?.youtubeApiKey ?? '',
-            defaultTheme: data?.defaultTheme ?? 'aurora',
-            defaultThemeMode: data?.defaultThemeMode ?? 'auto',
-            enforceTheme: data?.enforceTheme ?? false,
-          }}
-          enableReinitialize
-          validationSchema={MainSettingsSchema}
-          onSubmit={async (values) => {
-            try {
-              await axios.post('/api/v1/settings/main', {
-                applicationTitle: values.applicationTitle,
-                applicationUrl: values.applicationUrl,
-                hideAvailable: values.hideAvailable,
-                hideBlocklisted: values.hideBlocklisted,
-                locale: values.locale,
-                discoverRegion: values.discoverRegion,
-                streamingRegion: values.streamingRegion,
-                originalLanguage: values.originalLanguage,
-                blocklistRegion: values.blocklistRegion,
-                blocklistLanguage: values.blocklistLanguage,
-                blocklistedTags: values.blocklistedTags,
-                blocklistedTagsLimit: values.blocklistedTagsLimit,
-                partialRequestsEnabled: values.partialRequestsEnabled,
-                enableSpecialEpisodes: values.enableSpecialEpisodes,
-                cacheImages: values.cacheImages,
-                includeAdult: values.includeAdult,
-                youtubeUrl: values.youtubeUrl,
-                versionCheck: values?.versionCheck,
-                spotifyClientId: values.spotifyClientId,
-                spotifyClientSecret: values.spotifyClientSecret,
-                youtubeApiKey: values.youtubeApiKey,
-                defaultTheme: values.defaultTheme,
-                defaultThemeMode: values.defaultThemeMode,
-                enforceTheme: values.enforceTheme,
-              });
-              mutate('/api/v1/settings/public');
-              mutate('/api/v1/status?checkUpdateAvailable=false');
+      <Formik
+        initialValues={{
+          applicationTitle: data?.applicationTitle,
+          applicationUrl: data?.applicationUrl,
+          hideAvailable: data?.hideAvailable,
+          hideBlocklisted: data?.hideBlocklisted,
+          locale: data?.locale ?? 'en',
+          discoverRegion: data?.discoverRegion,
+          originalLanguage: data?.originalLanguage,
+          streamingRegion: data?.streamingRegion || 'US',
+          blocklistRegion: data?.blocklistRegion || '',
+          blocklistLanguage: data?.blocklistLanguage || '',
+          blocklistedTags: data?.blocklistedTags,
+          blocklistedTagsLimit: data?.blocklistedTagsLimit || 50,
+          partialRequestsEnabled: data?.partialRequestsEnabled,
+          enableSpecialEpisodes: data?.enableSpecialEpisodes,
+          cacheImages: data?.cacheImages,
+          includeAdult: data?.includeAdult ?? false,
+          youtubeUrl: data?.youtubeUrl,
+          versionCheck: data?.versionCheck,
+          spotifyClientId: data?.spotifyClientId ?? '',
+          spotifyClientSecret: data?.spotifyClientSecret ?? '',
+          youtubeApiKey: data?.youtubeApiKey ?? '',
+          defaultTheme: data?.defaultTheme ?? 'aurora',
+          defaultThemeMode: data?.defaultThemeMode ?? 'auto',
+          enforceTheme: data?.enforceTheme ?? false,
+          comicVineApiKey: data?.comicVineApiKey ?? '',
+          googleBooksApiKey: data?.googleBooksApiKey ?? '',
+          downloadPathMappingsJson: JSON.stringify(
+            data?.downloadPathMappings ?? [],
+            null,
+            2
+          ),
+        }}
+        enableReinitialize
+        validationSchema={MainSettingsSchema}
+        onSubmit={async (values) => {
+          try {
+            await axios.post('/api/v1/settings/main', {
+              applicationTitle: values.applicationTitle,
+              applicationUrl: values.applicationUrl,
+              hideAvailable: values.hideAvailable,
+              hideBlocklisted: values.hideBlocklisted,
+              locale: values.locale,
+              discoverRegion: values.discoverRegion,
+              streamingRegion: values.streamingRegion,
+              originalLanguage: values.originalLanguage,
+              blocklistRegion: values.blocklistRegion,
+              blocklistLanguage: values.blocklistLanguage,
+              blocklistedTags: values.blocklistedTags,
+              blocklistedTagsLimit: values.blocklistedTagsLimit,
+              partialRequestsEnabled: values.partialRequestsEnabled,
+              enableSpecialEpisodes: values.enableSpecialEpisodes,
+              cacheImages: values.cacheImages,
+              includeAdult: values.includeAdult,
+              youtubeUrl: values.youtubeUrl,
+              versionCheck: values?.versionCheck,
+              spotifyClientId: values.spotifyClientId,
+              spotifyClientSecret: values.spotifyClientSecret,
+              youtubeApiKey: values.youtubeApiKey,
+              defaultTheme: values.defaultTheme,
+              defaultThemeMode: values.defaultThemeMode,
+              enforceTheme: values.enforceTheme,
+              comicVineApiKey: values.comicVineApiKey,
+              googleBooksApiKey: values.googleBooksApiKey,
+              downloadPathMappings: JSON.parse(
+                values.downloadPathMappingsJson || '[]'
+              ),
+            });
+            mutate('/api/v1/settings/public');
+            mutate('/api/v1/status?checkUpdateAvailable=false');
 
-              if (setLocale) {
-                setLocale(
-                  (userData?.locale
-                    ? userData.locale
-                    : values.locale) as AvailableLocale
-                );
-              }
-
-              addToast(intl.formatMessage(messages.toastSettingsSuccess), {
-                autoDismiss: true,
-                appearance: 'success',
-              });
-            } catch {
-              addToast(intl.formatMessage(messages.toastSettingsFailure), {
-                autoDismiss: true,
-                appearance: 'error',
-              });
-            } finally {
-              revalidate();
+            if (setLocale) {
+              setLocale(
+                (userData?.locale
+                  ? userData.locale
+                  : values.locale) as AvailableLocale
+              );
             }
-          }}
-        >
-          {({
-            errors,
-            touched,
-            isSubmitting,
-            isValid,
-            values,
-            setFieldValue,
-          }) => {
-            return (
-              <Form className="section" data-testid="settings-main-form">
-                {userHasPermission(Permission.ADMIN) && (
+
+            addToast(intl.formatMessage(messages.toastSettingsSuccess), {
+              autoDismiss: true,
+              appearance: 'success',
+            });
+          } catch {
+            addToast(intl.formatMessage(messages.toastSettingsFailure), {
+              autoDismiss: true,
+              appearance: 'error',
+            });
+          } finally {
+            revalidate();
+          }
+        }}
+      >
+        {({
+          errors,
+          touched,
+          isSubmitting,
+          isValid,
+          values,
+          setFieldValue,
+        }) => {
+          return (
+            <Form
+              className="settings-page-form"
+              data-testid="settings-main-form"
+            >
+              <section className="app-card-sub settings-group-card">
+                <h3 className="settings-group-heading">
+                  {intl.formatMessage(messages.generalsettings)}
+                </h3>
+                <p className="settings-group-description">
+                  {intl.formatMessage(messages.generalsettingsDescription)}
+                </p>
+                <div className="settings-group-content">
+                  {userHasPermission(Permission.ADMIN) && (
+                    <div className="form-row">
+                      <label htmlFor="apiKey" className="text-label">
+                        {intl.formatMessage(messages.apikey)}
+                      </label>
+                      <div className="form-input-area">
+                        <div className="form-input-field">
+                          <SensitiveInput
+                            type="text"
+                            id="apiKey"
+                            className="rounded-l-only"
+                            value={data?.apiKey}
+                            readOnly
+                          />
+                          <CopyButton
+                            textToCopy={data?.apiKey ?? ''}
+                            toastMessage={intl.formatMessage(
+                              messages.apikeyCopied
+                            )}
+                            key={data?.apiKey}
+                          />
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              regenerate();
+                            }}
+                            aria-label={intl.formatMessage(
+                              messages.regenerateApiKey
+                            )}
+                            className="input-action"
+                            type="button"
+                          >
+                            <ArrowPathIcon />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <div className="form-row">
-                    <label htmlFor="apiKey" className="text-label">
-                      {intl.formatMessage(messages.apikey)}
+                    <label htmlFor="applicationTitle" className="text-label">
+                      {intl.formatMessage(messages.applicationTitle)}
                     </label>
                     <div className="form-input-area">
                       <div className="form-input-field">
-                        <SensitiveInput
+                        <Field
+                          id="applicationTitle"
+                          name="applicationTitle"
                           type="text"
-                          id="apiKey"
-                          className="rounded-l-only"
-                          value={data?.apiKey}
-                          readOnly
                         />
-                        <CopyButton
-                          textToCopy={data?.apiKey ?? ''}
-                          toastMessage={intl.formatMessage(
-                            messages.apikeyCopied
-                          )}
-                          key={data?.apiKey}
-                        />
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault();
-                            regenerate();
-                          }}
-                          className="input-action"
-                          type="button"
-                        >
-                          <ArrowPathIcon />
-                        </button>
                       </div>
+                      {errors.applicationTitle &&
+                        touched.applicationTitle &&
+                        typeof errors.applicationTitle === 'string' && (
+                          <div className="error">{errors.applicationTitle}</div>
+                        )}
                     </div>
                   </div>
-                )}
-                <div className="form-row">
-                  <label htmlFor="applicationTitle" className="text-label">
-                    {intl.formatMessage(messages.applicationTitle)}
-                  </label>
-                  <div className="form-input-area">
-                    <div className="form-input-field">
-                      <Field
-                        id="applicationTitle"
-                        name="applicationTitle"
-                        type="text"
-                      />
+                  <div className="form-row">
+                    <label htmlFor="applicationUrl" className="text-label">
+                      {intl.formatMessage(messages.applicationurl)}
+                    </label>
+                    <div className="form-input-area">
+                      <div className="form-input-field">
+                        <Field
+                          id="applicationUrl"
+                          name="applicationUrl"
+                          type="text"
+                          inputMode="url"
+                        />
+                      </div>
+                      {errors.applicationUrl &&
+                        touched.applicationUrl &&
+                        typeof errors.applicationUrl === 'string' && (
+                          <div className="error">{errors.applicationUrl}</div>
+                        )}
                     </div>
-                    {errors.applicationTitle &&
-                      touched.applicationTitle &&
-                      typeof errors.applicationTitle === 'string' && (
-                        <div className="error">{errors.applicationTitle}</div>
-                      )}
                   </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="applicationUrl" className="text-label">
-                    {intl.formatMessage(messages.applicationurl)}
-                  </label>
-                  <div className="form-input-area">
-                    <div className="form-input-field">
-                      <Field
-                        id="applicationUrl"
-                        name="applicationUrl"
-                        type="text"
-                        inputMode="url"
-                      />
-                    </div>
-                    {errors.applicationUrl &&
-                      touched.applicationUrl &&
-                      typeof errors.applicationUrl === 'string' && (
-                        <div className="error">{errors.applicationUrl}</div>
-                      )}
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="cacheImages" className="checkbox-label">
-                    <span className="mr-2">
-                      {intl.formatMessage(messages.cacheImages)}
-                    </span>
-                    <SettingsBadge badgeType="experimental" />
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.cacheImagesTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
-                    <Field
+                  <SettingsFormRow
+                    htmlFor="cacheImages"
+                    label={intl.formatMessage(messages.cacheImages)}
+                    description={intl.formatMessage(messages.cacheImagesTip)}
+                    badge={<SettingsBadge badgeType="experimental" />}
+                    labelClassName="checkbox-label"
+                  >
+                    <SettingsField
                       type="checkbox"
                       id="cacheImages"
                       name="cacheImages"
@@ -430,43 +488,38 @@ const SettingsMain = () => {
                         setFieldValue('cacheImages', !values.cacheImages);
                       }}
                     />
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="locale" className="text-label">
-                    {intl.formatMessage(messages.locale)}
-                  </label>
-                  <div className="form-input-area">
-                    <div className="form-input-field">
-                      <Field as="select" id="locale" name="locale">
-                        {(
-                          Object.keys(
-                            availableLanguages
-                          ) as (keyof typeof availableLanguages)[]
-                        ).map((key) => (
-                          <option
-                            key={key}
-                            value={availableLanguages[key].code}
-                            lang={availableLanguages[key].code}
-                          >
-                            {availableLanguages[key].display}
-                          </option>
-                        ))}
-                      </Field>
+                  </SettingsFormRow>
+                  <div className="form-row">
+                    <label htmlFor="locale" className="text-label">
+                      {intl.formatMessage(messages.locale)}
+                    </label>
+                    <div className="form-input-area">
+                      <div className="form-input-field">
+                        <Field as="select" id="locale" name="locale">
+                          {(
+                            Object.keys(
+                              availableLanguages
+                            ) as (keyof typeof availableLanguages)[]
+                          ).map((key) => (
+                            <option
+                              key={key}
+                              value={availableLanguages[key].code}
+                              lang={availableLanguages[key].code}
+                            >
+                              {availableLanguages[key].display}
+                            </option>
+                          ))}
+                        </Field>
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="includeAdult" className="checkbox-label">
-                    <span className="mr-2">
-                      {intl.formatMessage(messages.includeAdult)}
-                    </span>
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.includeAdultTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
-                    <Field
+                  <SettingsFormRow
+                    htmlFor="includeAdult"
+                    label={intl.formatMessage(messages.includeAdult)}
+                    description={intl.formatMessage(messages.includeAdultTip)}
+                    labelClassName="checkbox-label"
+                  >
+                    <SettingsField
                       type="checkbox"
                       id="includeAdult"
                       name="includeAdult"
@@ -474,16 +527,12 @@ const SettingsMain = () => {
                         setFieldValue('includeAdult', !values.includeAdult);
                       }}
                     />
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="discoverRegion" className="text-label">
-                    <span>{intl.formatMessage(messages.discoverRegion)}</span>
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.discoverRegionTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
+                  </SettingsFormRow>
+                  <SettingsFormRow
+                    htmlFor="discoverRegion"
+                    label={intl.formatMessage(messages.discoverRegion)}
+                    description={intl.formatMessage(messages.discoverRegionTip)}
+                  >
                     <div className="form-input-field">
                       <RegionSelector
                         value={values.discoverRegion ?? ''}
@@ -491,16 +540,14 @@ const SettingsMain = () => {
                         onChange={setFieldValue}
                       />
                     </div>
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="originalLanguage" className="text-label">
-                    <span>{intl.formatMessage(messages.originallanguage)}</span>
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.originallanguageTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
+                  </SettingsFormRow>
+                  <SettingsFormRow
+                    htmlFor="originalLanguage"
+                    label={intl.formatMessage(messages.originallanguage)}
+                    description={intl.formatMessage(
+                      messages.originallanguageTip
+                    )}
+                  >
                     <div className="form-input-field relative z-30">
                       <LanguageSelector
                         setFieldValue={setFieldValue}
@@ -508,16 +555,14 @@ const SettingsMain = () => {
                         fieldName="originalLanguage"
                       />
                     </div>
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="streamingRegion" className="text-label">
-                    <span>{intl.formatMessage(messages.streamingRegion)}</span>
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.streamingRegionTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
+                  </SettingsFormRow>
+                  <SettingsFormRow
+                    htmlFor="streamingRegion"
+                    label={intl.formatMessage(messages.streamingRegion)}
+                    description={intl.formatMessage(
+                      messages.streamingRegionTip
+                    )}
+                  >
                     <div className="form-input-field relative">
                       <RegionSelector
                         value={values.streamingRegion}
@@ -527,16 +572,14 @@ const SettingsMain = () => {
                         disableAll
                       />
                     </div>
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="blocklistRegion" className="text-label">
-                    <span>{intl.formatMessage(messages.blocklistRegion)}</span>
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.blocklistRegionTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
+                  </SettingsFormRow>
+                  <SettingsFormRow
+                    htmlFor="blocklistRegion"
+                    label={intl.formatMessage(messages.blocklistRegion)}
+                    description={intl.formatMessage(
+                      messages.blocklistRegionTip
+                    )}
+                  >
                     <div className="form-input-field">
                       <RegionSelector
                         value={values.blocklistRegion}
@@ -545,18 +588,14 @@ const SettingsMain = () => {
                         regionType="discover"
                       />
                     </div>
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="blocklistLanguage" className="text-label">
-                    <span>
-                      {intl.formatMessage(messages.blocklistLanguage)}
-                    </span>
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.blocklistLanguageTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
+                  </SettingsFormRow>
+                  <SettingsFormRow
+                    htmlFor="blocklistLanguage"
+                    label={intl.formatMessage(messages.blocklistLanguage)}
+                    description={intl.formatMessage(
+                      messages.blocklistLanguageTip
+                    )}
+                  >
                     <div className="form-input-field relative z-20">
                       <LanguageSelector
                         setFieldValue={setFieldValue}
@@ -565,35 +604,29 @@ const SettingsMain = () => {
                         fieldName="blocklistLanguage"
                       />
                     </div>
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="blocklistedTags" className="text-label">
-                    <span>{intl.formatMessage(messages.blocklistedTags)}</span>
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.blocklistedTagsTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
+                  </SettingsFormRow>
+                  <SettingsFormRow
+                    htmlFor="blocklistedTags"
+                    label={intl.formatMessage(messages.blocklistedTags)}
+                    description={intl.formatMessage(
+                      messages.blocklistedTagsTip
+                    )}
+                  >
                     <div className="form-input-field relative z-10">
                       <BlocklistedTagsSelector
                         defaultValue={values.blocklistedTags}
                       />
                     </div>
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="blocklistedTagsLimit" className="text-label">
-                    <span className="mr-2">
-                      {intl.formatMessage(messages.blocklistedTagsLimit)}
-                    </span>
-                    <SettingsBadge badgeType="advanced" />
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.blocklistedTagsLimitTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
-                    <Field
+                  </SettingsFormRow>
+                  <SettingsFormRow
+                    htmlFor="blocklistedTagsLimit"
+                    label={intl.formatMessage(messages.blocklistedTagsLimit)}
+                    description={intl.formatMessage(
+                      messages.blocklistedTagsLimitTip
+                    )}
+                    badge={<SettingsBadge badgeType="advanced" />}
+                  >
+                    <SettingsField
                       id="blocklistedTagsLimit"
                       name="blocklistedTagsLimit"
                       type="text"
@@ -608,20 +641,15 @@ const SettingsMain = () => {
                           {errors.blocklistedTagsLimit}
                         </div>
                       )}
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="hideAvailable" className="checkbox-label">
-                    <span className="mr-2">
-                      {intl.formatMessage(messages.hideAvailable)}
-                    </span>
-                    <SettingsBadge badgeType="experimental" />
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.hideAvailableTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
-                    <Field
+                  </SettingsFormRow>
+                  <SettingsFormRow
+                    htmlFor="hideAvailable"
+                    label={intl.formatMessage(messages.hideAvailable)}
+                    description={intl.formatMessage(messages.hideAvailableTip)}
+                    badge={<SettingsBadge badgeType="experimental" />}
+                    labelClassName="checkbox-label"
+                  >
+                    <SettingsField
                       type="checkbox"
                       id="hideAvailable"
                       name="hideAvailable"
@@ -629,19 +657,16 @@ const SettingsMain = () => {
                         setFieldValue('hideAvailable', !values.hideAvailable);
                       }}
                     />
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="hideBlocklisted" className="checkbox-label">
-                    <span className="mr-2">
-                      {intl.formatMessage(messages.hideBlocklisted)}
-                    </span>
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.hideBlocklistedTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
-                    <Field
+                  </SettingsFormRow>
+                  <SettingsFormRow
+                    htmlFor="hideBlocklisted"
+                    label={intl.formatMessage(messages.hideBlocklisted)}
+                    description={intl.formatMessage(
+                      messages.hideBlocklistedTip
+                    )}
+                    labelClassName="checkbox-label"
+                  >
+                    <SettingsField
                       type="checkbox"
                       id="hideBlocklisted"
                       name="hideBlocklisted"
@@ -652,62 +677,58 @@ const SettingsMain = () => {
                         );
                       }}
                     />
+                  </SettingsFormRow>
+                  <div className="form-row">
+                    <label
+                      htmlFor="partialRequestsEnabled"
+                      className="checkbox-label"
+                    >
+                      <span className="mr-2">
+                        {intl.formatMessage(messages.partialRequestsEnabled)}
+                      </span>
+                    </label>
+                    <div className="form-input-area">
+                      <SettingsField
+                        type="checkbox"
+                        id="partialRequestsEnabled"
+                        name="partialRequestsEnabled"
+                        onChange={() => {
+                          setFieldValue(
+                            'partialRequestsEnabled',
+                            !values.partialRequestsEnabled
+                          );
+                        }}
+                      />
+                    </div>
                   </div>
-                </div>
-                <div className="form-row">
-                  <label
-                    htmlFor="partialRequestsEnabled"
-                    className="checkbox-label"
+                  <div className="form-row">
+                    <label
+                      htmlFor="enableSpecialEpisodes"
+                      className="checkbox-label"
+                    >
+                      <span className="mr-2">
+                        {intl.formatMessage(messages.enableSpecialEpisodes)}
+                      </span>
+                    </label>
+                    <div className="form-input-area">
+                      <SettingsField
+                        type="checkbox"
+                        id="enableSpecialEpisodes"
+                        name="enableSpecialEpisodes"
+                        onChange={() => {
+                          setFieldValue(
+                            'enableSpecialEpisodes',
+                            !values.enableSpecialEpisodes
+                          );
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <SettingsFormRow
+                    htmlFor="youtubeUrl"
+                    label={intl.formatMessage(messages.youtubeUrl)}
+                    description={intl.formatMessage(messages.youtubeUrlTip)}
                   >
-                    <span className="mr-2">
-                      {intl.formatMessage(messages.partialRequestsEnabled)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
-                    <Field
-                      type="checkbox"
-                      id="partialRequestsEnabled"
-                      name="partialRequestsEnabled"
-                      onChange={() => {
-                        setFieldValue(
-                          'partialRequestsEnabled',
-                          !values.partialRequestsEnabled
-                        );
-                      }}
-                    />
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label
-                    htmlFor="enableSpecialEpisodes"
-                    className="checkbox-label"
-                  >
-                    <span className="mr-2">
-                      {intl.formatMessage(messages.enableSpecialEpisodes)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
-                    <Field
-                      type="checkbox"
-                      id="enableSpecialEpisodes"
-                      name="enableSpecialEpisodes"
-                      onChange={() => {
-                        setFieldValue(
-                          'enableSpecialEpisodes',
-                          !values.enableSpecialEpisodes
-                        );
-                      }}
-                    />
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="youtubeUrl" className="text-label">
-                    {intl.formatMessage(messages.youtubeUrl)}
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.youtubeUrlTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
                     <div className="form-input-field">
                       <Field
                         id="youtubeUrl"
@@ -721,16 +742,12 @@ const SettingsMain = () => {
                       typeof errors.youtubeUrl === 'string' && (
                         <div className="error">{errors.youtubeUrl}</div>
                       )}
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="versionCheck" className="text-label">
-                    {intl.formatMessage(messages.versionCheck)}
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.versionCheckTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
+                  </SettingsFormRow>
+                  <SettingsFormRow
+                    htmlFor="versionCheck"
+                    label={intl.formatMessage(messages.versionCheck)}
+                    description={intl.formatMessage(messages.versionCheckTip)}
+                  >
                     <Field
                       type="checkbox"
                       id="versionCheck"
@@ -739,26 +756,24 @@ const SettingsMain = () => {
                         setFieldValue('versionCheck', !values.versionCheck);
                       }}
                     />
-                  </div>
+                  </SettingsFormRow>
                 </div>
-                <div className="mt-8 mb-2 border-t border-gray-700 pt-6">
-                  <h4 className="heading text-lg">
-                    {intl.formatMessage(messages.playlistIntegrations)}
-                  </h4>
-                  <p className="description">
-                    {intl.formatMessage(
-                      messages.playlistIntegrationsDescription
+              </section>
+              <section className="app-card-sub settings-group-card">
+                <h3 className="settings-group-heading">
+                  {intl.formatMessage(messages.playlistIntegrations)}
+                </h3>
+                <p className="settings-group-description">
+                  {intl.formatMessage(messages.playlistIntegrationsDescription)}
+                </p>
+                <div className="settings-group-content">
+                  <SettingsFormRow
+                    htmlFor="spotifyClientId"
+                    label={intl.formatMessage(messages.spotifyClientId)}
+                    description={intl.formatMessage(
+                      messages.spotifyClientIdTip
                     )}
-                  </p>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="spotifyClientId" className="text-label">
-                    <span>{intl.formatMessage(messages.spotifyClientId)}</span>
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.spotifyClientIdTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
+                  >
                     <div className="form-input-field">
                       <Field
                         id="spotifyClientId"
@@ -766,18 +781,14 @@ const SettingsMain = () => {
                         type="text"
                       />
                     </div>
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="spotifyClientSecret" className="text-label">
-                    <span>
-                      {intl.formatMessage(messages.spotifyClientSecret)}
-                    </span>
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.spotifyClientSecretTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
+                  </SettingsFormRow>
+                  <SettingsFormRow
+                    htmlFor="spotifyClientSecret"
+                    label={intl.formatMessage(messages.spotifyClientSecret)}
+                    description={intl.formatMessage(
+                      messages.spotifyClientSecretTip
+                    )}
+                  >
                     <div className="form-input-field">
                       <SensitiveInput
                         as="field"
@@ -795,16 +806,12 @@ const SettingsMain = () => {
                         }
                       />
                     </div>
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="youtubeApiKey" className="text-label">
-                    <span>{intl.formatMessage(messages.youtubeApiKey)}</span>
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.youtubeApiKeyTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area">
+                  </SettingsFormRow>
+                  <SettingsFormRow
+                    htmlFor="youtubeApiKey"
+                    label={intl.formatMessage(messages.youtubeApiKey)}
+                    description={intl.formatMessage(messages.youtubeApiKeyTip)}
+                  >
                     <div className="form-input-field">
                       <SensitiveInput
                         as="field"
@@ -817,225 +824,336 @@ const SettingsMain = () => {
                         ) => setFieldValue('youtubeApiKey', event.target.value)}
                       />
                     </div>
-                  </div>
+                  </SettingsFormRow>
                 </div>
-                <div className="form-row">
-                  <div>
-                    <h3 className="heading">
-                      {intl.formatMessage(messages.appearance)}
-                    </h3>
-                    <p className="description">
-                      {intl.formatMessage(messages.appearanceDescription)}
-                    </p>
-                  </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="defaultTheme" className="text-label">
-                    {intl.formatMessage(messages.defaultTheme)}
-                  </label>
-                  <div className="form-input-area">
-                    <div className="form-input-field">
-                      <Field as="select" id="defaultTheme" name="defaultTheme">
-                        <optgroup label="Built-in">
-                          {themePalettes.map((theme) => (
-                            <option key={theme.id} value={theme.id}>
-                              {theme.name}
-                            </option>
-                          ))}
-                        </optgroup>
-                        {!!themeData?.themes.length && (
-                          <optgroup label="Installed">
-                            {themeData.themes.map((theme) => (
+              </section>
+              <section className="app-card-sub settings-group-card">
+                <h3 className="settings-group-heading">
+                  {intl.formatMessage(messages.appearance)}
+                </h3>
+                <p className="settings-group-description">
+                  {intl.formatMessage(messages.appearanceDescription)}
+                </p>
+                <div className="settings-group-content">
+                  <div className="form-row">
+                    <label htmlFor="defaultTheme" className="text-label">
+                      {intl.formatMessage(messages.defaultTheme)}
+                    </label>
+                    <div className="form-input-area">
+                      <div className="form-input-field">
+                        <Field
+                          as="select"
+                          id="defaultTheme"
+                          name="defaultTheme"
+                        >
+                          <optgroup label="Built-in">
+                            {themePalettes.map((theme) => (
                               <option key={theme.id} value={theme.id}>
                                 {theme.name}
                               </option>
                             ))}
                           </optgroup>
-                        )}
-                      </Field>
+                          {!!themeData?.themes.length && (
+                            <optgroup label="Installed">
+                              {themeData.themes.map((theme) => (
+                                <option key={theme.id} value={theme.id}>
+                                  {theme.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                        </Field>
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="defaultThemeMode" className="text-label">
-                    {intl.formatMessage(messages.defaultThemeMode)}
-                  </label>
-                  <div className="form-input-area">
-                    <div className="form-input-field">
-                      <Field
-                        as="select"
-                        id="defaultThemeMode"
-                        name="defaultThemeMode"
-                      >
-                        <option value="light">
-                          {intl.formatMessage(messages.lightMode)}
-                        </option>
-                        <option value="dark">
-                          {intl.formatMessage(messages.darkMode)}
-                        </option>
-                        <option value="auto">
-                          {intl.formatMessage(messages.autoMode)}
-                        </option>
-                      </Field>
+                  <div className="form-row">
+                    <label htmlFor="defaultThemeMode" className="text-label">
+                      {intl.formatMessage(messages.defaultThemeMode)}
+                    </label>
+                    <div className="form-input-area">
+                      <div className="form-input-field">
+                        <Field
+                          as="select"
+                          id="defaultThemeMode"
+                          name="defaultThemeMode"
+                        >
+                          <option value="light">
+                            {intl.formatMessage(messages.lightMode)}
+                          </option>
+                          <option value="dark">
+                            {intl.formatMessage(messages.darkMode)}
+                          </option>
+                          <option value="auto">
+                            {intl.formatMessage(messages.autoMode)}
+                          </option>
+                        </Field>
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="enforceTheme" className="checkbox-label">
-                    <span>
-                      {intl.formatMessage(messages.enforceTheme)}
-                      <span className="label-tip">
-                        {intl.formatMessage(messages.enforceThemeTip)}
-                      </span>
-                    </span>
-                    <Field
+                  <SettingsFormRow
+                    htmlFor="enforceTheme"
+                    label={intl.formatMessage(messages.enforceTheme)}
+                    description={intl.formatMessage(messages.enforceThemeTip)}
+                    labelClassName="checkbox-label"
+                  >
+                    <SettingsField
+                      type="checkbox"
                       id="enforceTheme"
                       name="enforceTheme"
-                      type="checkbox"
+                      onChange={() => {
+                        setFieldValue('enforceTheme', !values.enforceTheme);
+                      }}
                     />
-                  </label>
-                </div>
-                <div className="form-row">
-                  <label htmlFor="themeSourceUrl" className="text-label">
-                    <span>{intl.formatMessage(messages.themeSource)}</span>
-                    <span className="label-tip">
-                      {intl.formatMessage(messages.themeSourceTip)}
-                    </span>
-                  </label>
-                  <div className="form-input-area space-y-3">
-                    <div className="form-input-field">
-                      <input
-                        id="themeSourceUrl"
-                        type="url"
-                        value={themeSourceUrl}
-                        placeholder="https://github.com/owner/theme-repository"
-                        onChange={(event) =>
-                          setThemeSourceUrl(event.target.value)
-                        }
-                      />
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        buttonType="primary"
-                        disabled={themeActionPending || !themeSourceUrl}
-                        onClick={() =>
-                          void runThemeAction(async () => {
-                            await axios.post('/api/v1/themes/install', {
-                              sourceUrl: themeSourceUrl,
-                            });
-                            setThemeSourceUrl('');
-                          })
-                        }
-                      >
-                        {intl.formatMessage(messages.installTheme)}
-                      </Button>
-                      <Button
-                        type="button"
-                        disabled={themeActionPending}
-                        onClick={() =>
-                          void runThemeAction(() =>
-                            axios.post('/api/v1/themes/reload')
-                          )
-                        }
-                      >
-                        {intl.formatMessage(messages.reloadThemes)}
-                      </Button>
-                    </div>
-                    {!!themeData?.errors.length && (
-                      <div className="space-y-1 rounded border border-red-700/70 bg-red-950/30 p-3 text-sm text-red-200">
-                        {themeData.errors.map((themeError) => (
-                          <p
-                            key={`${themeError.package}-${themeError.message}`}
-                          >
-                            {intl.formatMessage(messages.themeValidationError, {
-                              package: themeError.package,
-                              message: themeError.message,
-                            })}
-                          </p>
-                        ))}
+                  </SettingsFormRow>
+                  <div className="form-row">
+                    <label htmlFor="themeSourceUrl" className="text-label">
+                      <span>{intl.formatMessage(messages.themeSource)}</span>
+                      <span className="label-tip">
+                        {intl.formatMessage(messages.themeSourceTip)}
+                      </span>
+                    </label>
+                    <div className="form-input-area space-y-3">
+                      <div className="form-input-field">
+                        <input
+                          id="themeSourceUrl"
+                          type="url"
+                          value={themeSourceUrl}
+                          placeholder="https://github.com/owner/theme-repository"
+                          onChange={(event) =>
+                            setThemeSourceUrl(event.target.value)
+                          }
+                        />
                       </div>
-                    )}
-                    {!!themeData?.themes.length && (
-                      <div className="space-y-2">
-                        {themeData.themes.map((theme) => (
-                          <div
-                            key={theme.id}
-                            className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 p-3"
-                          >
-                            <span>
-                              <span className="block font-medium text-gray-100">
-                                {theme.name}
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          buttonType="primary"
+                          disabled={themeActionPending || !themeSourceUrl}
+                          onClick={() =>
+                            void runThemeAction(async () => {
+                              await axios.post('/api/v1/themes/install', {
+                                sourceUrl: themeSourceUrl,
+                              });
+                              setThemeSourceUrl('');
+                            })
+                          }
+                        >
+                          {intl.formatMessage(messages.installTheme)}
+                        </Button>
+                        <Button
+                          type="button"
+                          disabled={themeActionPending}
+                          onClick={() =>
+                            void runThemeAction(() =>
+                              axios.post('/api/v1/themes/reload')
+                            )
+                          }
+                        >
+                          {intl.formatMessage(messages.reloadThemes)}
+                        </Button>
+                      </div>
+                      {!!themeData?.errors.length && (
+                        <div className="space-y-1 rounded border border-red-700/70 bg-red-950/30 p-3 text-sm text-red-200">
+                          {themeData.errors.map((themeError) => (
+                            <p
+                              key={`${themeError.package}-${themeError.message}`}
+                            >
+                              {intl.formatMessage(
+                                messages.themeValidationError,
+                                {
+                                  package: themeError.package,
+                                  message: themeError.message,
+                                }
+                              )}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                      {!!themeData?.themes.length && (
+                        <div className="space-y-2">
+                          {themeData.themes.map((theme) => (
+                            <div
+                              key={theme.id}
+                              className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 p-3"
+                            >
+                              <span>
+                                <span className="block font-medium text-gray-100">
+                                  {theme.name}
+                                </span>
+                                <span className="text-xs text-gray-400">
+                                  {theme.version}
+                                </span>
                               </span>
-                              <span className="text-xs text-gray-400">
-                                {theme.version}
-                              </span>
-                            </span>
-                            <span className="flex gap-2">
-                              {/*
-                                Only packages installed from a release carry a
-                                source to update from. Offering the button for a
-                                hand-copied package guaranteed a failed request.
-                              */}
-                              {!!theme.sourceUrl && (
+                              <span className="flex gap-2">
+                                {/*
+                                  Only packages installed from a release carry a
+                                  source to update from. Offering the button for a
+                                  hand-copied package guaranteed a failed request.
+                                */}
+                                {!!theme.sourceUrl && (
+                                  <Button
+                                    type="button"
+                                    buttonSize="sm"
+                                    disabled={themeActionPending}
+                                    onClick={() =>
+                                      void runThemeAction(() =>
+                                        axios.post(
+                                          `/api/v1/themes/${theme.id}/update`
+                                        )
+                                      )
+                                    }
+                                  >
+                                    {intl.formatMessage(messages.updateTheme)}
+                                  </Button>
+                                )}
                                 <Button
                                   type="button"
                                   buttonSize="sm"
+                                  buttonType="danger"
                                   disabled={themeActionPending}
                                   onClick={() =>
                                     void runThemeAction(() =>
-                                      axios.post(
-                                        `/api/v1/themes/${theme.id}/update`
-                                      )
+                                      axios.delete(`/api/v1/themes/${theme.id}`)
                                     )
                                   }
                                 >
-                                  {intl.formatMessage(messages.updateTheme)}
+                                  {intl.formatMessage(messages.removeTheme)}
                                 </Button>
-                              )}
-                              <Button
-                                type="button"
-                                buttonSize="sm"
-                                buttonType="danger"
-                                disabled={themeActionPending}
-                                onClick={() =>
-                                  void runThemeAction(() =>
-                                    axios.delete(`/api/v1/themes/${theme.id}`)
-                                  )
-                                }
-                              >
-                                {intl.formatMessage(messages.removeTheme)}
-                              </Button>
-                            </span>
-                          </div>
-                        ))}
-                      </div>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </section>
+              <section className="app-card-sub settings-group-card">
+                <h3 className="settings-group-heading">
+                  {intl.formatMessage(messages.comicsMetadata)}
+                </h3>
+                <p className="settings-group-description">
+                  {intl.formatMessage(messages.comicsMetadataDescription)}
+                </p>
+                <div className="settings-group-content">
+                  <SettingsFormRow
+                    htmlFor="comicVineApiKey"
+                    label={intl.formatMessage(messages.comicVineApiKey)}
+                    description={intl.formatMessage(
+                      messages.comicVineApiKeyTip
                     )}
-                  </div>
+                  >
+                    <div className="form-input-field">
+                      <SensitiveInput
+                        as="field"
+                        id="comicVineApiKey"
+                        name="comicVineApiKey"
+                        type="text"
+                        value={values.comicVineApiKey}
+                        onChange={(
+                          event: React.ChangeEvent<HTMLInputElement>
+                        ) =>
+                          setFieldValue('comicVineApiKey', event.target.value)
+                        }
+                      />
+                    </div>
+                  </SettingsFormRow>
                 </div>
-                <div className="actions">
-                  <div className="flex justify-end">
-                    <span className="ml-3 inline-flex rounded-md shadow-sm">
-                      <Button
-                        buttonType="primary"
-                        type="submit"
-                        disabled={isSubmitting || !isValid}
-                      >
-                        <ArrowDownOnSquareIcon />
-                        <span>
-                          {isSubmitting
-                            ? intl.formatMessage(globalMessages.saving)
-                            : intl.formatMessage(globalMessages.save)}
-                        </span>
-                      </Button>
-                    </span>
-                  </div>
+              </section>
+              <section className="settings-group-card">
+                <h3 className="settings-group-heading">
+                  {intl.formatMessage(messages.magazinesMetadata)}
+                </h3>
+                <p className="settings-group-description">
+                  {intl.formatMessage(messages.magazinesMetadataDescription)}
+                </p>
+                <div className="settings-group-content">
+                  <SettingsFormRow
+                    htmlFor="googleBooksApiKey"
+                    label={intl.formatMessage(messages.googleBooksApiKey)}
+                    description={intl.formatMessage(
+                      messages.googleBooksApiKeyTip
+                    )}
+                  >
+                    <div className="form-input-field">
+                      <SensitiveInput
+                        as="field"
+                        id="googleBooksApiKey"
+                        name="googleBooksApiKey"
+                        type="text"
+                        value={values.googleBooksApiKey}
+                        onChange={(
+                          event: React.ChangeEvent<HTMLInputElement>
+                        ) =>
+                          setFieldValue('googleBooksApiKey', event.target.value)
+                        }
+                      />
+                    </div>
+                  </SettingsFormRow>
                 </div>
-              </Form>
-            );
-          }}
-        </Formik>
-      </div>
+              </section>
+              <section className="settings-group-card">
+                <h3 className="settings-group-heading">
+                  {intl.formatMessage(messages.downloadCopies)}
+                </h3>
+                <p className="settings-group-description">
+                  {intl.formatMessage(messages.downloadCopiesDescription)}
+                </p>
+                <div className="settings-group-content">
+                  <SettingsFormRow
+                    htmlFor="downloadPathMappingsJson"
+                    label={intl.formatMessage(messages.downloadPathMappings)}
+                    description={intl.formatMessage(
+                      messages.downloadPathMappingsTip
+                    )}
+                    badge={<SettingsBadge badgeType="advanced" />}
+                  >
+                    <div className="form-input-field">
+                      <Field
+                        as="textarea"
+                        id="downloadPathMappingsJson"
+                        name="downloadPathMappingsJson"
+                        rows={8}
+                        spellCheck={false}
+                        placeholder={intl.formatMessage(
+                          messages.downloadPathMappingsExample
+                        )}
+                        className="w-full font-mono text-xs"
+                      />
+                    </div>
+                    {errors.downloadPathMappingsJson &&
+                      touched.downloadPathMappingsJson && (
+                        <div className="error">
+                          {intl.formatMessage(
+                            messages.downloadPathMappingsJsonError
+                          )}
+                        </div>
+                      )}
+                  </SettingsFormRow>
+                </div>
+              </section>
+              <div className="actions">
+                <div className="flex justify-end">
+                  <span className="ml-3 inline-flex rounded-md shadow-sm">
+                    <Button
+                      buttonType="primary"
+                      type="submit"
+                      disabled={isSubmitting || !isValid}
+                    >
+                      <ArrowDownOnSquareIcon />
+                      <span>
+                        {isSubmitting
+                          ? intl.formatMessage(globalMessages.saving)
+                          : intl.formatMessage(globalMessages.save)}
+                      </span>
+                    </Button>
+                  </span>
+                </div>
+              </div>
+            </Form>
+          );
+        }}
+      </Formik>
     </>
   );
 };

@@ -7,6 +7,7 @@ import {
   MediaStatus,
   MediaType,
 } from '@server/constants/media';
+import type { MediaCategoryKey } from '@server/constants/mediaCategories';
 import dataSource, { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import MediaIdentifier, {
@@ -47,10 +48,17 @@ import {
   normalizeOpenLibraryWorkId,
 } from '@server/lib/externalIds';
 import { getExternalRuntimeConfig } from '@server/lib/externalRuntimeConfig';
+import { normalizeValidIsbn } from '@server/lib/isbn';
+import { cleanMagazineTitle } from '@server/lib/magazineIdentity';
+import { isMediaCategoryEnabled } from '@server/lib/mediaCategories';
 import { hydrateMediaRequestRelations } from '@server/lib/mediaRequestHydration';
 import { aliasDownloadId } from '@server/lib/mediaResponse';
 import { Permission } from '@server/lib/permissions';
 import requestDispatchManager from '@server/lib/requestDispatch';
+import {
+  listRequestDownloadAssets,
+  openRequestDownloadAsset,
+} from '@server/lib/requestDownloadAssets';
 import {
   REQUEST_STATUS_TERMINAL_STAGES,
   RequestStatusStage,
@@ -76,8 +84,10 @@ import {
   runUserSecurityReadWithActor,
   type AuthorizedUserSecurityMutationLease,
 } from '@server/lib/userSecurityMutation';
+import { hasWatchAheadMediaServerLink } from '@server/lib/watchAheadEligibility';
 import logger from '@server/logger';
 import { isAuthenticated } from '@server/middleware/auth';
+import { parseBookshelfBookId } from '@server/utils/bookshelfCatalog';
 import { mapWithConcurrency } from '@server/utils/concurrency';
 import { filterEntityResponse } from '@server/utils/entityResponse';
 import {
@@ -92,6 +102,7 @@ import {
   parseOptionalNonNegativeInteger,
 } from '@server/utils/validation';
 import { Router, type Request } from 'express';
+import { pipeline } from 'node:stream/promises';
 
 const requestRoutes = Router();
 export const REQUEST_SERVICE_PROFILE_CONCURRENCY = 10;
@@ -103,15 +114,155 @@ const maxRequestProfileNameLength = 512;
 const maxBulkRequestItemTextLength = 512;
 const maxSeasonCount = 500;
 const maxSeasonNumber = 10_000;
+
+class RequestDownloadActionError extends Error {
+  public constructor(
+    public readonly status: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
+const matchesRequestDownloadId = (
+  queueDownloadId: string | undefined,
+  requestedDownloadId: string
+) =>
+  !!queueDownloadId &&
+  (queueDownloadId === requestedDownloadId ||
+    aliasDownloadId(queueDownloadId) === requestedDownloadId);
+
+const failAndSearchRequestDownload = async (
+  request: MediaRequest,
+  requestedDownloadId: string
+): Promise<void> => {
+  if (request.type !== MediaType.MOVIE && request.type !== MediaType.TV) {
+    throw new RequestDownloadActionError(
+      400,
+      'Manual fail and search is currently available for movie and series downloads.'
+    );
+  }
+
+  const serviceId = request.is4k
+    ? request.media.serviceId4k
+    : request.media.serviceId;
+  const externalServiceId = request.is4k
+    ? request.media.externalServiceId4k
+    : request.media.externalServiceId;
+  if (
+    serviceId === undefined ||
+    serviceId === null ||
+    typeof externalServiceId !== 'number' ||
+    !Number.isSafeInteger(externalServiceId) ||
+    externalServiceId < 1
+  ) {
+    throw new RequestDownloadActionError(
+      409,
+      'This request is not linked to an active acquisition service.'
+    );
+  }
+
+  if (request.type === MediaType.MOVIE) {
+    const result = await runWithCurrentServarrService(
+      'radarr',
+      serviceId,
+      async (server) => {
+        const api = new RadarrAPI({
+          url: RadarrAPI.buildUrl(server, '/api/v3'),
+          apiKey: server.apiKey,
+        });
+        const item = (await api.getQueue()).find(
+          (candidate) =>
+            candidate.movieId === externalServiceId &&
+            matchesRequestDownloadId(candidate.downloadId, requestedDownloadId)
+        );
+        if (!item) {
+          throw new RequestDownloadActionError(
+            409,
+            'That download is no longer in Radarr. Refresh the request before trying again.'
+          );
+        }
+
+        await api.deleteQueueItem(item.id, {
+          removeFromClient: true,
+          blocklist: true,
+          skipRedownload: false,
+        });
+        try {
+          await api.searchMovieOrThrow(externalServiceId);
+          return true;
+        } catch {
+          throw new RequestDownloadActionError(
+            502,
+            'Radarr removed the release, but could not start a new search. Search the movie in Radarr or try again later.'
+          );
+        }
+      }
+    );
+    if (result !== true) {
+      throw new RequestDownloadActionError(
+        409,
+        'The Radarr connection changed. Refresh the request before trying again.'
+      );
+    }
+    return;
+  }
+
+  const result = await runWithCurrentServarrService(
+    'sonarr',
+    serviceId,
+    async (server) => {
+      const api = new SonarrAPI({
+        url: SonarrAPI.buildUrl(server, '/api/v3'),
+        apiKey: server.apiKey,
+      });
+      const item = (await api.getQueue()).find(
+        (candidate) =>
+          candidate.seriesId === externalServiceId &&
+          matchesRequestDownloadId(candidate.downloadId, requestedDownloadId)
+      );
+      if (!item) {
+        throw new RequestDownloadActionError(
+          409,
+          'That download is no longer in Sonarr. Refresh the request before trying again.'
+        );
+      }
+
+      await api.deleteQueueItem(item.id, {
+        removeFromClient: true,
+        blocklist: true,
+        skipRedownload: false,
+      });
+      try {
+        await api.searchSeriesOrThrow(externalServiceId);
+        return true;
+      } catch {
+        throw new RequestDownloadActionError(
+          502,
+          'Sonarr removed the release, but could not start a new search. Search the series in Sonarr or try again later.'
+        );
+      }
+    }
+  );
+  if (result !== true) {
+    throw new RequestDownloadActionError(
+      409,
+      'The Sonarr connection changed. Refresh the request before trying again.'
+    );
+  }
+};
 const requestMediaTypeFilters = [
   'all',
   'movie',
   'tv',
   'music',
   'book',
+  'comic',
+  'magazine',
 ] as const;
 const requestStatusFilters = [
   'all',
+  'recent',
   'approved',
   'processing',
   'pending',
@@ -191,6 +342,12 @@ const canRemoveRequestFromService = (
             (!hasAudiobookLink || canRemoveAudiobook)
           : canRemoveEbook;
     }
+    case MediaType.COMIC:
+      return media.comicServiceType === 'kapowarr'
+        ? settings.kapowarr.some((server) => server.id === media.serviceId)
+        : media.comicServiceType === 'backissue'
+          ? settings.backissue.some((server) => server.id === media.serviceId)
+          : settings.mylar.some((server) => server.id === media.serviceId);
     default:
       return false;
   }
@@ -237,9 +394,49 @@ const getRequestLogBody = (body: Partial<MediaRequestBody> | undefined) => ({
   format: body?.format,
   editionId: body?.editionId,
   hasIsbn13: !!body?.isbn13,
+  hasPreferredEdition: !!body?.preferredEditionId,
+  hasPreferredIsbn13: !!body?.preferredIsbn13,
   authorId: body?.authorId,
   userId: body?.userId,
 });
+
+const getDisabledCategoryForRequest = (
+  mediaType: MediaType,
+  format?: MediaRequestBody['format']
+): MediaCategoryKey | undefined => {
+  const categories: MediaCategoryKey[] =
+    mediaType === MediaType.MOVIE
+      ? ['movie']
+      : mediaType === MediaType.TV
+        ? ['tv']
+        : mediaType === MediaType.MUSIC
+          ? ['music']
+          : mediaType === MediaType.COMIC
+            ? ['comic']
+            : mediaType === MediaType.MAGAZINE
+              ? ['magazine']
+              : format === 'both'
+                ? ['ebook', 'audiobook']
+                : [format === 'audiobook' ? 'audiobook' : 'ebook'];
+
+  return categories.find((category) => !isMediaCategoryEnabled(category));
+};
+
+const getMediaCategoryLabel = (category: MediaCategoryKey): string => {
+  const labels: Record<MediaCategoryKey, string> = {
+    movie: 'Movie',
+    tv: 'Series',
+    music: 'Music',
+    ebook: 'Book',
+    audiobook: 'Audiobook',
+    comic: 'Comic',
+    magazine: 'Magazine',
+    retro: 'Retro emulation',
+    modern: 'Modern emulation',
+    game: 'PC game',
+  };
+  return labels[category];
+};
 
 const protectRequestStatusDownloadId = <
   T extends { downloadId: string | null },
@@ -275,7 +472,9 @@ const normalizeBulkRequestText = (value?: string) =>
 
 const normalizeBulkRequestMediaId = (mediaType: MediaType, mediaId: string) => {
   if (mediaType === MediaType.BOOK) {
-    return normalizeOpenLibraryWorkId(mediaId).toLocaleLowerCase();
+    return parseBookshelfBookId(mediaId)
+      ? mediaId
+      : normalizeOpenLibraryWorkId(mediaId).toLocaleLowerCase();
   }
 
   return normalizeMusicBrainzId(mediaId);
@@ -337,6 +536,45 @@ const logRequestValidationFailure = (
   });
 };
 
+const getWatchAheadEligibilityError = (
+  requestUser: User,
+  actorId: number,
+  is4k: boolean,
+  serverId: number | undefined
+): string | undefined => {
+  if (requestUser.id !== actorId) {
+    return 'Only the request owner can enable the requested episode queue.';
+  }
+  if (!hasMediaRequestPermission(requestUser, MediaType.TV, is4k)) {
+    return 'Your account does not have permission to request TV.';
+  }
+  const settings = getExternalRuntimeConfig();
+  if (
+    !hasWatchAheadMediaServerLink(requestUser, settings.main.mediaServerType)
+  ) {
+    return 'Link an account for the configured media server to enable the requested episode queue.';
+  }
+  const sonarrServer =
+    serverId === undefined
+      ? settings.sonarr.find(
+          (server) => server.isDefault && Boolean(server.is4k) === is4k
+        )
+      : settings.sonarr.find(
+          (server) => server.id === serverId && Boolean(server.is4k) === is4k
+        );
+  return sonarrServer
+    ? undefined
+    : 'A matching Sonarr server must be configured to enable watch-ahead.';
+};
+
+const hasWatchAheadTvdbIdentity = (tvdbId: unknown): boolean =>
+  Number.isSafeInteger(Number(tvdbId)) && Number(tvdbId) > 0;
+
+const formatEpisodeQueueSetting = (episodeCount: number): string =>
+  episodeCount === 0
+    ? 'Off'
+    : `${episodeCount} ${episodeCount === 1 ? 'episode' : 'episodes'}`;
+
 const parseRequestStatusAction = (
   status: unknown
 ): MediaRequestStatus | undefined => {
@@ -382,6 +620,78 @@ const parseOptionalRequestOptionId = (
 
 const parseRequestParamId = (value: unknown): number | undefined =>
   parsePositiveRouteId(value, maxRequestIdValue);
+
+const getRequestDownloadAccess = async (
+  req: Request,
+  requestId: number
+): Promise<{ request?: MediaRequest; status?: 403 | 404 }> => {
+  const request = await getRepository(MediaRequest).findOne({
+    where: { id: requestId },
+    relations: {
+      media: { identifiers: true, seasons: true },
+      modifiedBy: true,
+      requestedBy: true,
+      seasons: true,
+    },
+  });
+  if (!request) return { status: 404 };
+
+  const hasAccess = await runUserSecurityReadWithActor(
+    req.user!.id,
+    request.requestedBy.id,
+    [Permission.MANAGE_REQUESTS, Permission.REQUEST_VIEW],
+    async (actor) =>
+      actor.hasPermission(
+        [Permission.MANAGE_REQUESTS, Permission.REQUEST_VIEW],
+        {
+          type: 'or',
+        }
+      ) || request.requestedBy.id === actor.id,
+    { expectedCredentialVersion: getExpectedCredentialVersion(req) }
+  );
+  return hasAccess ? { request } : { status: 403 };
+};
+
+const parseRequestDownloadRange = (
+  value: string | undefined,
+  size: number
+): { start: number; end: number } | null | undefined => {
+  if (!value || !/^bytes=/i.test(value) || value.includes(',')) {
+    return undefined;
+  }
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(value.trim());
+  if (!match || (!match[1] && !match[2])) return undefined;
+  if (size <= 0) return null;
+
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return null;
+    return { start: Math.max(0, size - suffixLength), end: size - 1 };
+  }
+
+  const start = Number(match[1]);
+  const end = match[2] ? Number(match[2]) : size - 1;
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    start < 0 ||
+    end < start ||
+    start >= size
+  ) {
+    return null;
+  }
+  return { start, end: Math.min(end, size - 1) };
+};
+
+const getDownloadContentDisposition = (fileName: string): string => {
+  const fallback =
+    fileName.replace(/[^\x20-\x7e]|["\\]/g, '_').slice(0, 150) || 'download';
+  const encoded = encodeURIComponent(fileName).replace(
+    /['()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+};
 
 const parseOptionalRequestString = (
   value: unknown,
@@ -670,6 +980,29 @@ const sanitizeMediaRequestBody = (
     };
   }
 
+  if (bodyObject.watchAheadEpisodeCount !== undefined) {
+    if (
+      !Number.isSafeInteger(bodyObject.watchAheadEpisodeCount) ||
+      Number(bodyObject.watchAheadEpisodeCount) < 0 ||
+      Number(bodyObject.watchAheadEpisodeCount) > 5
+    ) {
+      return {
+        error: {
+          status: 400,
+          message: 'watchAheadEpisodeCount must be an integer from 0 to 5.',
+        },
+      };
+    }
+    if (mediaType !== MediaType.TV) {
+      return {
+        error: {
+          status: 400,
+          message: 'watchAheadEpisodeCount is only valid for TV requests.',
+        },
+      };
+    }
+  }
+
   if (mediaType === MediaType.MUSIC && bodyObject.mediaId !== undefined) {
     if (
       typeof bodyObject.mediaId !== 'string' ||
@@ -692,11 +1025,17 @@ const sanitizeMediaRequestBody = (
   }
 
   if (mediaType === MediaType.BOOK) {
+    const bookshelfBook =
+      typeof bodyObject.mediaId === 'string'
+        ? parseBookshelfBookId(bodyObject.mediaId)
+        : undefined;
     const bookIds = [
       {
         field: 'mediaId',
         value: bodyObject.mediaId,
-        normalize: normalizeOpenLibraryWorkId,
+        normalize: bookshelfBook
+          ? (value: string) => value
+          : normalizeOpenLibraryWorkId,
       },
       {
         field: 'editionId',
@@ -711,6 +1050,10 @@ const sanitizeMediaRequestBody = (
     ];
     for (const { field, value, normalize } of bookIds) {
       if (
+        !(
+          bookshelfBook &&
+          (field === 'mediaId' || field === 'editionId' || field === 'authorId')
+        ) &&
         value !== undefined &&
         (typeof value !== 'string' ||
           !isValidOpenLibraryResourceId(normalize(value)))
@@ -765,6 +1108,60 @@ const sanitizeMediaRequestBody = (
     }
     if (mediaId !== undefined) {
       bodyObject.mediaId = mediaId;
+    }
+  }
+
+  if (mediaType === MediaType.COMIC) {
+    const mediaId = parsePositiveRouteId(bodyObject.mediaId, maxRequestIdValue);
+    if (bodyObject.mediaId !== undefined && mediaId === undefined) {
+      return {
+        error: {
+          status: 400,
+          message: 'mediaId must be a positive integer ComicVine volume ID.',
+        },
+      };
+    }
+    if (options.requireCreateIdentity && mediaId === undefined) {
+      return {
+        error: {
+          status: 400,
+          message: 'mediaId is required for comic requests.',
+        },
+      };
+    }
+    if (mediaId !== undefined) {
+      bodyObject.mediaId = mediaId;
+    }
+  }
+
+  if (mediaType === MediaType.MAGAZINE) {
+    const parsedTitle = parseOptionalRequestString(
+      bodyObject.mediaId,
+      'mediaId',
+      256
+    );
+    if ('error' in parsedTitle) {
+      return parsedTitle;
+    }
+    if (options.requireCreateIdentity && !parsedTitle.value) {
+      return {
+        error: {
+          status: 400,
+          message: 'mediaId is required for magazine requests.',
+        },
+      };
+    }
+    if (parsedTitle.value !== undefined) {
+      const title = cleanMagazineTitle(parsedTitle.value);
+      if (!title) {
+        return {
+          error: {
+            status: 400,
+            message: 'Magazine title must contain 1 to 256 characters.',
+          },
+        };
+      }
+      bodyObject.mediaId = title;
     }
   }
 
@@ -832,6 +1229,47 @@ const sanitizeMediaRequestBody = (
     return format;
   }
 
+  const preferredEditionId = parseOptionalRequestString(
+    bodyObject.preferredEditionId,
+    'preferredEditionId',
+    maxBulkRequestItemTextLength
+  );
+  if ('error' in preferredEditionId) {
+    return preferredEditionId;
+  }
+
+  const preferredIsbn13 = parseOptionalRequestString(
+    bodyObject.preferredIsbn13,
+    'preferredIsbn13',
+    maxBulkRequestItemTextLength
+  );
+  if ('error' in preferredIsbn13) {
+    return preferredIsbn13;
+  }
+  const normalizedPreferredIsbn13 = preferredIsbn13.value
+    ? normalizeValidIsbn(preferredIsbn13.value)
+    : undefined;
+  if (preferredIsbn13.value && !normalizedPreferredIsbn13) {
+    return {
+      error: {
+        status: 400,
+        message: 'preferredIsbn13 must be a valid ISBN.',
+      },
+    };
+  }
+  if (
+    mediaType !== MediaType.BOOK &&
+    (preferredEditionId.value !== undefined ||
+      normalizedPreferredIsbn13 !== undefined)
+  ) {
+    return {
+      error: {
+        status: 400,
+        message: 'Edition preferences are only valid for book requests.',
+      },
+    };
+  }
+
   const tags = parseOptionalRequestTags(bodyObject.tags);
   if ('error' in tags) {
     return tags;
@@ -870,12 +1308,16 @@ const sanitizeMediaRequestBody = (
     languageProfileId: languageProfileId.value,
     metadataProfileId: metadataProfileId.value,
     format: format.value,
+    preferredEditionId: preferredEditionId.value,
+    preferredIsbn13: normalizedPreferredIsbn13,
     userId: userId.value,
     tags: tags.value,
     seasons:
       seasonRequests.value?.map((selection) => selection.seasonNumber) ??
       seasons.value,
     seasonRequests: seasonRequests.value,
+    watchAheadEpisodeCount: bodyObject.watchAheadEpisodeCount as
+      number | undefined,
   } as MediaRequestBody;
 
   return {
@@ -941,6 +1383,7 @@ const sanitizeBulkMediaRequestBody = (
     }
     if (
       body.mediaType === MediaType.BOOK &&
+      !parseBookshelfBookId(mediaId) &&
       !isValidOpenLibraryResourceId(normalizeOpenLibraryWorkId(mediaId))
     ) {
       return {
@@ -988,6 +1431,7 @@ const sanitizeBulkMediaRequestBody = (
     }
     if (
       body.mediaType === MediaType.BOOK &&
+      !parseBookshelfBookId(mediaId) &&
       ((editionId.value !== undefined &&
         !isValidOpenLibraryResourceId(
           normalizeOpenLibraryEditionId(editionId.value)
@@ -1157,6 +1601,48 @@ const validateExternalServiceConfiguration = (
     if (selectedReadarrServiceType !== requestedFormat) {
       throw new ServiceConfigurationError(
         `The selected Bookshelf server is configured for ${selectedReadarrServiceType} requests, not ${requestedFormat} requests.`
+      );
+    }
+  }
+
+  if (requestType === MediaType.COMIC) {
+    if (serverId === undefined || serverId === null) {
+      if (
+        !settings.mylar.some((mylar) => mylar.isDefault) &&
+        !settings.kapowarr.some((kapowarr) => kapowarr.isDefault) &&
+        !settings.backissue.some((backissue) => backissue.isDefault)
+      ) {
+        throw new ServiceConfigurationError(
+          'No default comic service is configured for comic requests.'
+        );
+      }
+      return;
+    }
+
+    if (
+      !settings.mylar.some((mylar) => mylar.id === serverId) &&
+      !settings.kapowarr.some((kapowarr) => kapowarr.id === serverId) &&
+      !settings.backissue.some((backissue) => backissue.id === serverId)
+    ) {
+      throw new ServiceConfigurationError(
+        'The selected comics server no longer exists.'
+      );
+    }
+  }
+
+  if (requestType === MediaType.MAGAZINE) {
+    if (serverId === undefined || serverId === null) {
+      if (!settings.lazylibrarian.some((service) => service.isDefault)) {
+        throw new ServiceConfigurationError(
+          'No default LazyLibrarian server is configured for magazine requests.'
+        );
+      }
+      return;
+    }
+
+    if (!settings.lazylibrarian.some((service) => service.id === serverId)) {
+      throw new ServiceConfigurationError(
+        'The selected LazyLibrarian server no longer exists.'
       );
     }
   }
@@ -1372,6 +1858,15 @@ requestRoutes.get<
       case 'deleted':
         mediaStatusFilter = [MediaStatus.DELETED];
         break;
+      case 'recent':
+        mediaStatusFilter = [
+          MediaStatus.UNKNOWN,
+          MediaStatus.PENDING,
+          MediaStatus.PROCESSING,
+          MediaStatus.PARTIALLY_AVAILABLE,
+          MediaStatus.AVAILABLE,
+        ];
+        break;
       default:
         mediaStatusFilter = [
           MediaStatus.UNKNOWN,
@@ -1492,6 +1987,16 @@ requestRoutes.get<
       case 'book':
         query = query.andWhere('request.type = :type', {
           type: MediaType.BOOK,
+        });
+        break;
+      case 'comic':
+        query = query.andWhere('request.type = :type', {
+          type: MediaType.COMIC,
+        });
+        break;
+      case 'magazine':
+        query = query.andWhere('request.type = :type', {
+          type: MediaType.MAGAZINE,
         });
         break;
     }
@@ -1816,6 +2321,12 @@ requestRoutes.get<
                     : canRemoveEbook,
             };
           }
+          case MediaType.COMIC: {
+            return {
+              ...r,
+              canRemove: canRemoveRequestFromService(r, settings),
+            };
+          }
           default: {
             return {
               ...r,
@@ -1910,6 +2421,39 @@ requestRoutes.post<never, MediaRequest, MediaRequestBody>(
           req.user.id
         );
         return next(body.error);
+      }
+
+      const disabledCategory = getDisabledCategoryForRequest(
+        body.value.mediaType,
+        body.value.format
+      );
+      if (disabledCategory) {
+        return next({
+          status: 403,
+          message: `${getMediaCategoryLabel(disabledCategory)} requests are disabled by the administrator.`,
+        });
+      }
+
+      if ((body.value.watchAheadEpisodeCount ?? 0) > 0) {
+        if (
+          body.value.userId !== undefined &&
+          body.value.userId !== req.user.id
+        ) {
+          return next({
+            status: 403,
+            message:
+              'Only the request owner can enable the requested episode queue.',
+          });
+        }
+        const eligibilityError = getWatchAheadEligibilityError(
+          req.user,
+          req.user.id,
+          body.value.is4k ?? false,
+          body.value.serverId
+        );
+        if (eligibilityError) {
+          return next({ status: 409, message: eligibilityError });
+        }
       }
 
       const request = await MediaRequest.request(body.value, req.user, {
@@ -2011,6 +2555,17 @@ requestRoutes.post<never, BulkMediaRequestResponse, BulkMediaRequestBody>(
         return next(sanitizedBody.error);
       }
       const body = sanitizedBody.value;
+
+      const disabledCategory = getDisabledCategoryForRequest(
+        body.mediaType,
+        body.format
+      );
+      if (disabledCategory) {
+        return next({
+          status: 403,
+          message: `${getMediaCategoryLabel(disabledCategory)} requests are disabled by the administrator.`,
+        });
+      }
 
       logger.info('Bulk request received', {
         label: 'Request',
@@ -2138,6 +2693,8 @@ requestRoutes.post<never, BulkMediaRequestResponse, BulkMediaRequestBody>(
               format: body.format,
               isbn13: item.isbn13,
               editionId: item.editionId,
+              preferredIsbn13: item.isbn13,
+              preferredEditionId: item.editionId,
               authorId: item.authorId,
               serverId: body.serverId,
               profileId: body.profileId,
@@ -2268,6 +2825,14 @@ requestRoutes.get('/count', async (req, res, next) => {
           'book'
         )
         .addSelect(
+          'SUM(CASE WHEN request.type = :comic THEN 1 ELSE 0 END)',
+          'comic'
+        )
+        .addSelect(
+          'SUM(CASE WHEN request.type = :magazine THEN 1 ELSE 0 END)',
+          'magazine'
+        )
+        .addSelect(
           'SUM(CASE WHEN request.status = :pending THEN 1 ELSE 0 END)',
           'pending'
         )
@@ -2310,6 +2875,8 @@ requestRoutes.get('/count', async (req, res, next) => {
           tv: MediaType.TV,
           music: MediaType.MUSIC,
           book: MediaType.BOOK,
+          comic: MediaType.COMIC,
+          magazine: MediaType.MAGAZINE,
           pending: MediaRequestStatus.PENDING,
           approved: MediaRequestStatus.APPROVED,
           declined: MediaRequestStatus.DECLINED,
@@ -2344,6 +2911,8 @@ requestRoutes.get('/count', async (req, res, next) => {
         tv: count('tv'),
         music: count('music'),
         book: count('book'),
+        comic: count('comic'),
+        magazine: count('magazine'),
         pending: count('pending'),
         approved: count('approved'),
         declined: count('declined'),
@@ -2374,6 +2943,13 @@ requestRoutes.get<
       take: 10,
       maxTake: 100,
     });
+    const requestId = parseOptionalPositiveInt(req.query.requestId);
+    if (req.query.requestId !== undefined && requestId === undefined) {
+      return next({
+        status: 400,
+        message: 'Request id must be a positive integer.',
+      });
+    }
     const requestedBy = parseOptionalPositiveInt(req.query.requestedBy);
     const parsedMediaType = parseOptionalAllowedString(req.query.mediaType, {
       fieldName: 'Media type',
@@ -2469,6 +3045,7 @@ requestRoutes.get<
         const page = await getRequestStatusPage({
           take: pageSize,
           skip,
+          requestId,
           ownerId: canViewAllRequests ? (requestedBy ?? undefined) : actor.id,
           mediaType: mediaType === 'all' ? undefined : (mediaType as MediaType),
           bookFormat: parsedBookFormat.value,
@@ -2651,6 +3228,137 @@ requestRoutes.get<
   }
 });
 
+requestRoutes.get('/status/:requestId/downloads', async (req, res, next) => {
+  try {
+    const requestId = parseRequestParamId(req.params.requestId);
+    if (!requestId) {
+      return next({ status: 404, message: 'Request not found.' });
+    }
+    const access = await getRequestDownloadAccess(req, requestId);
+    if (access.status === 404) {
+      return next({ status: 404, message: 'Request not found.' });
+    }
+    if (access.status === 403 || !access.request) {
+      return next({
+        status: 403,
+        message: 'You do not have permission to view this request.',
+      });
+    }
+
+    const current = await recordRequestStatus(access.request.id);
+    if (current?.stage !== RequestStatusStage.AVAILABLE) {
+      return res.status(200).json({ results: [] });
+    }
+    const results = await listRequestDownloadAssets(access.request);
+    return res.status(200).json({ results });
+  } catch (error) {
+    if (error instanceof UserMutationActorUnauthorizedError) {
+      return next({ status: 403, message: 'Access denied.' });
+    }
+    logger.error('Something went wrong listing request download copies', {
+      label: 'API',
+      ...getErrorLogFields(error),
+    });
+    return next({
+      status: 500,
+      message: 'Unable to list request download copies.',
+    });
+  }
+});
+
+requestRoutes.get(
+  '/status/:requestId/downloads/:assetId',
+  async (req, res, next) => {
+    let file: Awaited<ReturnType<typeof openRequestDownloadAsset>> = undefined;
+    try {
+      const requestId = parseRequestParamId(req.params.requestId);
+      if (!requestId) {
+        return next({ status: 404, message: 'Request not found.' });
+      }
+      const access = await getRequestDownloadAccess(req, requestId);
+      if (access.status === 404) {
+        return next({ status: 404, message: 'Request not found.' });
+      }
+      if (access.status === 403 || !access.request) {
+        return next({
+          status: 403,
+          message: 'You do not have permission to view this request.',
+        });
+      }
+
+      const current = await recordRequestStatus(access.request.id);
+      if (current?.stage !== RequestStatusStage.AVAILABLE) {
+        return next({ status: 404, message: 'Download copy not found.' });
+      }
+      file = await openRequestDownloadAsset(access.request, req.params.assetId);
+      if (!file) {
+        return next({ status: 404, message: 'Download copy not found.' });
+      }
+
+      const supportsRanges = file.file !== undefined && file.size !== undefined;
+      const range = supportsRanges
+        ? parseRequestDownloadRange(req.headers.range, file.size!)
+        : undefined;
+      if (range === null) {
+        await file.file!.close();
+        return res
+          .status(416)
+          .set({
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'private, no-store',
+            'Content-Range': `bytes */${file.size!}`,
+          })
+          .end();
+      }
+
+      const start = range?.start;
+      const end = range?.end;
+      const contentLength = range ? end! - start! + 1 : file.size;
+      const headers: Record<string, string> = {
+        'Cache-Control': 'private, no-store',
+        'Content-Disposition': getDownloadContentDisposition(file.name),
+        'Content-Type': 'application/octet-stream',
+        'X-Content-Type-Options': 'nosniff',
+      };
+      if (supportsRanges) headers['Accept-Ranges'] = 'bytes';
+      if (contentLength !== undefined) {
+        headers['Content-Length'] = String(contentLength);
+      }
+      if (range) {
+        headers['Content-Range'] = `bytes ${start}-${end}/${file.size!}`;
+      }
+      res.status(range ? 206 : 200).set(headers);
+      const stream = file.file
+        ? file.file.createReadStream({
+            autoClose: true,
+            ...(range ? { start, end } : {}),
+          })
+        : file.stream;
+      if (!stream) {
+        throw new Error('Request download provider returned no file stream.');
+      }
+      await pipeline(stream, res);
+      return;
+    } catch (error) {
+      if (file?.file) await file.file.close().catch(() => undefined);
+      if (file?.stream && !file.stream.destroyed) file.stream.destroy();
+      if (req.aborted) return;
+      if (res.headersSent) {
+        res.destroy(error instanceof Error ? error : undefined);
+        return;
+      }
+      if (error instanceof UserMutationActorUnauthorizedError) {
+        return next({ status: 403, message: 'Access denied.' });
+      }
+      logger.error('Something went wrong streaming a request download copy', {
+        label: 'API',
+        ...getErrorLogFields(error),
+      });
+      return next({ status: 500, message: 'Unable to download this copy.' });
+    }
+  }
+);
+
 requestRoutes.get('/:requestId', async (req, res, next) => {
   const requestRepository = getRepository(MediaRequest);
 
@@ -2706,6 +3414,233 @@ requestRoutes.get('/:requestId', async (req, res, next) => {
     next({ status: 404, message: 'Request not found.' });
   }
 });
+
+requestRoutes.put<{ requestId: string }>(
+  '/:requestId/watch-ahead',
+  async (req, res, next) => {
+    try {
+      const requestId = parseRequestParamId(req.params.requestId);
+      if (!requestId) {
+        return next({ status: 404, message: 'Request not found.' });
+      }
+      const body = req.body as { episodeCount?: unknown } | undefined;
+      const episodeCount = body?.episodeCount;
+      if (
+        !Number.isSafeInteger(episodeCount) ||
+        Number(episodeCount) < 0 ||
+        Number(episodeCount) > 5
+      ) {
+        return next({
+          status: 400,
+          message: 'episodeCount must be an integer from 0 to 5.',
+        });
+      }
+      const parsedEpisodeCount = Number(episodeCount);
+
+      const requestRepository = getRepository(MediaRequest);
+      const initialRequest = await requestRepository.findOne({
+        where: { id: requestId },
+        relations: { requestedBy: true, watchAheadParent: true },
+      });
+      if (!initialRequest) {
+        return next({ status: 404, message: 'Request not found.' });
+      }
+
+      return await runUserSecurityMutationWithActor(
+        req.user!.id,
+        initialRequest.requestedBy.id,
+        [Permission.MANAGE_REQUESTS],
+        async (actor) => {
+          // Enabling watch-ahead is explicit consent for future acquisition;
+          // administrators can manage the request but cannot opt in for its owner.
+          if (actor.id !== initialRequest.requestedBy.id) {
+            return next({
+              status: 403,
+              message:
+                'Only the request owner can change the requested episode queue.',
+            });
+          }
+
+          return await runWithRequestAdmission(
+            [getRequestMutationAdmissionKey(requestId)],
+            async () => {
+              const updatedRequest = await dataSource.transaction(
+                async (manager) => {
+                  const repository = manager.getRepository(MediaRequest);
+                  const current = await repository.findOne({
+                    where: { id: requestId },
+                    relations: {
+                      media: true,
+                      requestedBy: true,
+                      watchAheadParent: true,
+                    },
+                  });
+                  if (!current) {
+                    return undefined;
+                  }
+                  if (
+                    current.type !== MediaType.TV ||
+                    current.watchAheadParentRequestId
+                  ) {
+                    throw Object.assign(
+                      new Error(
+                        'Watch-ahead can only be changed on a parent TV request.'
+                      ),
+                      { status: 400 }
+                    );
+                  }
+                  if (current.requestedBy.id !== actor.id) {
+                    throw Object.assign(new Error('Access denied.'), {
+                      status: 403,
+                    });
+                  }
+
+                  if (parsedEpisodeCount > 0) {
+                    if (
+                      ![
+                        MediaRequestStatus.PENDING,
+                        MediaRequestStatus.APPROVED,
+                        MediaRequestStatus.COMPLETED,
+                      ].includes(current.status)
+                    ) {
+                      throw Object.assign(
+                        new Error(
+                          'Watch-ahead can only be enabled for pending, approved, or completed requests.'
+                        ),
+                        { status: 409 }
+                      );
+                    }
+                    const eligibilityError = getWatchAheadEligibilityError(
+                      current.requestedBy,
+                      actor.id,
+                      current.is4k,
+                      current.serverId
+                    );
+                    if (eligibilityError) {
+                      throw Object.assign(new Error(eligibilityError), {
+                        status: 409,
+                      });
+                    }
+                    if (!hasWatchAheadTvdbIdentity(current.media.tvdbId)) {
+                      throw Object.assign(
+                        new Error(
+                          'The requested episode queue requires a valid TVDB identity for this series.'
+                        ),
+                        { status: 409 }
+                      );
+                    }
+                  }
+
+                  const previousEpisodeCount =
+                    current.watchAheadEpisodeCount ?? 0;
+                  const changed = previousEpisodeCount !== parsedEpisodeCount;
+                  await repository.update(current.id, {
+                    watchAheadEpisodeCount: parsedEpisodeCount,
+                    ...(changed
+                      ? {
+                          watchAheadLastSeason: null,
+                          watchAheadLastEpisode: null,
+                          watchAheadLastReconciledAt: null,
+                        }
+                      : {}),
+                  });
+
+                  if (changed) {
+                    const statusEventRepository = manager.getRepository(
+                      MediaRequestStatusEvent
+                    );
+                    const latestStatusEvent =
+                      await statusEventRepository.findOne({
+                        where: { requestId: current.id },
+                        order: { id: 'DESC' },
+                      });
+                    const fallbackStage =
+                      current.status === MediaRequestStatus.PENDING
+                        ? RequestStatusStage.REQUESTED
+                        : current.status === MediaRequestStatus.FAILED
+                          ? RequestStatusStage.FAILED
+                          : current.status === MediaRequestStatus.DECLINED
+                            ? RequestStatusStage.DECLINED
+                            : current.status === MediaRequestStatus.COMPLETED
+                              ? RequestStatusStage.AVAILABLE
+                              : RequestStatusStage.APPROVED;
+                    const historyMessage = `Episode queue changed from ${formatEpisodeQueueSetting(
+                      previousEpisodeCount
+                    )} to ${formatEpisodeQueueSetting(parsedEpisodeCount)}.`;
+
+                    await statusEventRepository.insert(
+                      new MediaRequestStatusEvent({
+                        requestId: current.id,
+                        requestedById: current.requestedBy.id,
+                        mediaId: current.media.id,
+                        mediaType: current.type,
+                        stage: latestStatusEvent?.stage ?? fallbackStage,
+                        attempt: latestStatusEvent?.attempt ?? 0,
+                        format: current.bookFormat ?? null,
+                        service: latestStatusEvent?.service ?? null,
+                        message: historyMessage,
+                        percent: latestStatusEvent?.percent ?? null,
+                        size: latestStatusEvent?.size ?? null,
+                        sizeLeft: latestStatusEvent?.sizeLeft ?? null,
+                        estimatedCompletionTime:
+                          latestStatusEvent?.estimatedCompletionTime ?? null,
+                        downloadCount: latestStatusEvent?.downloadCount ?? 0,
+                        downloadId: latestStatusEvent?.downloadId ?? null,
+                        fingerprint: [
+                          'episode-queue',
+                          current.id,
+                          previousEpisodeCount,
+                          parsedEpisodeCount,
+                          Date.now(),
+                        ]
+                          .join(':')
+                          .slice(0, 255),
+                      })
+                    );
+                  }
+
+                  return repository.findOne({
+                    where: { id: current.id },
+                    relations: { media: true, requestedBy: true },
+                  });
+                }
+              );
+
+              if (!updatedRequest) {
+                return next({ status: 404, message: 'Request not found.' });
+              }
+              return res
+                .status(200)
+                .json(filterEntityResponse(updatedRequest, actor));
+            }
+          );
+        },
+        { expectedCredentialVersion: getExpectedCredentialVersion(req) }
+      );
+    } catch (error) {
+      if (error instanceof UserMutationActorUnauthorizedError) {
+        return next({ status: 403, message: 'Access denied.' });
+      }
+      if (
+        error &&
+        typeof error === 'object' &&
+        'status' in error &&
+        typeof error.status === 'number'
+      ) {
+        return next({
+          status: error.status,
+          message: error instanceof Error ? error.message : 'Invalid request.',
+        });
+      }
+      logger.error('Failed to update requested episode queue setting', {
+        label: 'Request',
+        requestId: req.params.requestId,
+        ...getErrorLogFields(error),
+      });
+      return next({ status: 500, message: 'Unable to update watch-ahead.' });
+    }
+  }
+);
 
 requestRoutes.put<{ requestId: string }>(
   '/:requestId',
@@ -2892,6 +3827,50 @@ requestRoutes.put<{ requestId: string }>(
                         body.format ?? request.bookFormat ?? 'ebook';
                     }
                   } else if (request.type === MediaType.TV) {
+                    if (body.watchAheadEpisodeCount !== undefined) {
+                      if (requestUser.id !== actor.id) {
+                        return next({
+                          status: 403,
+                          message:
+                            'Only the request owner can change the requested episode queue.',
+                        });
+                      }
+                      if (body.watchAheadEpisodeCount > 0) {
+                        const eligibilityError = getWatchAheadEligibilityError(
+                          requestUser,
+                          actor.id,
+                          request.is4k,
+                          body.serverId ?? request.serverId
+                        );
+                        if (eligibilityError) {
+                          return next({
+                            status: eligibilityError.startsWith(
+                              'Only the request owner'
+                            )
+                              ? 403
+                              : 409,
+                            message: eligibilityError,
+                          });
+                        }
+                        if (!hasWatchAheadTvdbIdentity(request.media.tvdbId)) {
+                          return next({
+                            status: 409,
+                            message:
+                              'The requested episode queue requires a valid TVDB identity for this series.',
+                          });
+                        }
+                      }
+                      const watchAheadChanged =
+                        request.watchAheadEpisodeCount !==
+                        body.watchAheadEpisodeCount;
+                      request.watchAheadEpisodeCount =
+                        body.watchAheadEpisodeCount;
+                      if (watchAheadChanged) {
+                        request.watchAheadLastSeason = null;
+                        request.watchAheadLastEpisode = null;
+                        request.watchAheadLastReconciledAt = null;
+                      }
+                    }
                     const requestedSeasons =
                       body.seasons === 'all' ? undefined : body.seasons;
                     const requestedSelections:
@@ -2918,6 +3897,7 @@ requestRoutes.put<{ requestId: string }>(
                         tmdbId: request.media.tmdbId,
                         mediaType: MediaType.TV,
                       },
+                      relations: { seasons: true },
                     });
                     const existingSeasonRequests = await getRepository(
                       SeasonRequest
@@ -2958,9 +3938,27 @@ requestRoutes.put<{ requestId: string }>(
                         );
                         existingEpisodes.set(season.seasonNumber, episodes);
                       });
+                    const currentSeasonNumbers = new Set(
+                      request.seasons.map((season) => season.seasonNumber)
+                    );
+                    const availableSeasonNumbers = new Set(
+                      media.seasons
+                        .filter(
+                          (season) =>
+                            (request.is4k ? season.status4k : season.status) ===
+                            MediaStatus.AVAILABLE
+                        )
+                        .map((season) => season.seasonNumber)
+                    );
                     const filteredSelections = requestedSelections.flatMap(
                       (selection) => {
                         if (fullyRequestedSeasons.has(selection.seasonNumber)) {
+                          return [];
+                        }
+                        if (
+                          !currentSeasonNumbers.has(selection.seasonNumber) &&
+                          availableSeasonNumbers.has(selection.seasonNumber)
+                        ) {
                           return [];
                         }
                         if (!selection.episodeNumbers) {
@@ -2986,10 +3984,21 @@ requestRoutes.put<{ requestId: string }>(
                     }
 
                     const quotas = await requestUser.getQuota();
-                    const existingAllowance = changesRequestUser
-                      ? 0
-                      : request.seasons.length;
+                    const quotaDays = quotas.tv.days ?? 0;
+                    const quotaWindowStart = quotaDays ? new Date() : undefined;
+                    quotaWindowStart?.setDate(
+                      quotaWindowStart.getDate() - quotaDays
+                    );
+                    const existingRequestCountsTowardQuota =
+                      !request.ignoreQuota &&
+                      (!quotaWindowStart ||
+                        request.createdAt > quotaWindowStart);
+                    const existingAllowance =
+                      changesRequestUser || !existingRequestCountsTowardQuota
+                        ? 0
+                        : request.seasons.length;
                     if (
+                      !request.ignoreQuota &&
                       quotas.tv.limit &&
                       filteredSelections.length >
                         (quotas.tv.remaining ?? 0) + existingAllowance
@@ -3037,9 +4046,6 @@ requestRoutes.put<{ requestId: string }>(
                       }
                     }
 
-                    const currentSeasonNumbers = new Set(
-                      request.seasons.map((season) => season.seasonNumber)
-                    );
                     const newSelections = filteredSelections.filter(
                       (selection) =>
                         !currentSeasonNumbers.has(selection.seasonNumber)
@@ -3086,6 +4092,12 @@ requestRoutes.put<{ requestId: string }>(
                     }
                   }
 
+                  if (changesRequestUser && request.type === MediaType.TV) {
+                    request.watchAheadEpisodeCount = 0;
+                    request.watchAheadLastSeason = null;
+                    request.watchAheadLastEpisode = null;
+                    request.watchAheadLastReconciledAt = null;
+                  }
                   request.requestedBy = requestUser;
                   await requestRepository.save(request);
                   return res
@@ -3312,11 +4324,13 @@ requestRoutes.post<{
               request.status === MediaRequestStatus.APPROVED &&
               currentStatus.stage !== RequestStatusStage.UNAVAILABLE &&
               currentStatus.stage !== RequestStatusStage.FAILED;
-            if (
-              currentStatus.stage === RequestStatusStage.REQUESTED ||
-              alreadyQueued ||
-              (!canRetryAny && !currentStatus.retryable)
-            ) {
+            if (currentStatus.stage === RequestStatusStage.REQUESTED) {
+              return next({
+                status: 409,
+                message: 'Only failed or unavailable requests can be retried.',
+              });
+            }
+            if (alreadyQueued || (!canRetryAny && !currentStatus.retryable)) {
               return next({
                 status: 409,
                 message:
@@ -3380,6 +4394,97 @@ requestRoutes.post<{
       message: e.message,
     });
     next({ status: 404, message: 'Request not found.' });
+  }
+});
+
+requestRoutes.post<{
+  requestId: string;
+}>('/:requestId/fail-download', isAuthenticated(), async (req, res, next) => {
+  const requestRepository = getRepository(MediaRequest);
+  const requestId = parseRequestParamId(req.params.requestId);
+  const requestedDownloadId = req.body?.downloadId;
+  if (!requestId) {
+    return next({ status: 404, message: 'Request not found.' });
+  }
+  if (
+    typeof requestedDownloadId !== 'string' ||
+    !requestedDownloadId.trim() ||
+    requestedDownloadId.length > 2048 ||
+    requestedDownloadId.trim() !== requestedDownloadId
+  ) {
+    return next({ status: 400, message: 'Choose a current download.' });
+  }
+
+  try {
+    const initialRequest = await requestRepository.findOne({
+      where: { id: requestId },
+      relations: { requestedBy: true },
+    });
+    if (!initialRequest) {
+      return next({ status: 404, message: 'Request not found.' });
+    }
+
+    return await runUserSecurityMutationWithActor(
+      req.user!.id,
+      initialRequest.requestedBy.id,
+      Permission.MANAGE_REQUESTS,
+      (actor) =>
+        runWithRequestAdmission(
+          [getRequestMutationAdmissionKey(requestId)],
+          async () => {
+            const request = await requestRepository.findOneOrFail({
+              where: { id: requestId },
+              relations: { requestedBy: true, modifiedBy: true },
+            });
+
+            if (
+              !actor.hasPermission(Permission.MANAGE_REQUESTS) &&
+              (request.requestedBy.id !== actor.id ||
+                !hasMediaRequestPermission(actor, request.type, request.is4k))
+            ) {
+              return next({
+                status: 403,
+                message:
+                  'You do not have permission to manage this request download.',
+              });
+            }
+            if (request.status !== MediaRequestStatus.APPROVED) {
+              return next({
+                status: 409,
+                message:
+                  'Only an active approved request download can be failed.',
+              });
+            }
+
+            await failAndSearchRequestDownload(request, requestedDownloadId);
+            return res.status(200).json({ success: true });
+          }
+        ),
+      {
+        expectedCredentialVersion: getExpectedCredentialVersion(req),
+      }
+    );
+  } catch (error) {
+    if (error instanceof UserMutationActorUnauthorizedError) {
+      return next({
+        status: 403,
+        message: 'You do not have permission to manage this request download.',
+      });
+    }
+    if (error instanceof RequestDownloadActionError) {
+      return next({ status: error.status, message: error.message });
+    }
+
+    logger.error('Unable to fail and search a request download', {
+      label: 'Media Request',
+      requestId,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    return next({
+      status: 502,
+      message:
+        'Unable to fail this download and start a new search. Refresh to check its current state.',
+    });
   }
 });
 

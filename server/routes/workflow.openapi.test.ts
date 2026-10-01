@@ -31,6 +31,16 @@ describe('workflow list filters behind the OpenAPI validator', () => {
     app.get('/api/v1/playback/devices', (_req, res) =>
       res.status(200).json([])
     );
+    app.get('/api/v1/playback/watched/:mediaType/:tmdbId', (req, res) =>
+      res.status(200).json({
+        mediaType: req.params.mediaType,
+        tmdbId: Number(req.params.tmdbId),
+        serverType: 1,
+        availableCount: 1,
+        watchedCount: 1,
+        unwatchedCount: 0,
+      })
+    );
     app.get('/api/v1/playback/media/:mediaId', (req, res) =>
       res.status(200).json({
         mediaId: Number(req.params.mediaId),
@@ -50,6 +60,19 @@ describe('workflow list filters behind the OpenAPI validator', () => {
     );
     app.post('/api/v1/playback/collection/playlist', (_req, res) =>
       res.status(200).json({ url: 'https://media.example/playlist' })
+    );
+    app.post('/api/v1/desktop/auth-tickets', (_req, res) =>
+      res.status(201).json({ ticket: 'a'.repeat(43), expiresIn: 60_000 })
+    );
+    app.post('/api/v1/desktop/auth-tickets/redeem', (_req, res) =>
+      res.status(200).json({
+        serverUrl: 'http://jellyfin.example:8096',
+        serverId: 'jellyfin-server',
+        userId: 'jellyfin-user',
+        deviceId: 'desktop-device',
+        accessToken: 'native-secret',
+        bootstrapGeneration: 'generation-id',
+      })
     );
     app.use(
       (
@@ -108,6 +131,15 @@ describe('workflow list filters behind the OpenAPI validator', () => {
     assert.strictEqual(catalog.body.mediaId, 4222);
   });
 
+  it('admits the watched-status route and details query', async () => {
+    const response = await request(createValidatedApp())
+      .get('/api/v1/playback/watched/tv/103516')
+      .query({ details: '1' });
+
+    assert.strictEqual(response.status, 200, JSON.stringify(response.body));
+    assert.strictEqual(response.body.tmdbId, 103516);
+  });
+
   it('admits media and collection playback commands', async () => {
     const app = createValidatedApp();
     const media = await request(app)
@@ -132,5 +164,22 @@ describe('workflow list filters behind the OpenAPI validator', () => {
 
     assert.strictEqual(media.status, 200, JSON.stringify(media.body));
     assert.strictEqual(collection.status, 200, JSON.stringify(collection.body));
+  });
+
+  it('admits the protocol-v1 native desktop ticket contract', async () => {
+    const app = createValidatedApp();
+    const issue = await request(app)
+      .post('/api/v1/desktop/auth-tickets')
+      .send({ challenge: 'a'.repeat(64), protocolVersion: 1 });
+    const redeem = await request(app)
+      .post('/api/v1/desktop/auth-tickets/redeem')
+      .send({
+        ticket: 'b'.repeat(43),
+        verifier: 'c'.repeat(43),
+        protocolVersion: 1,
+      });
+
+    assert.strictEqual(issue.status, 201, JSON.stringify(issue.body));
+    assert.strictEqual(redeem.status, 200, JSON.stringify(redeem.body));
   });
 });

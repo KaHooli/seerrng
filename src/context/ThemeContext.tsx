@@ -1,4 +1,6 @@
 import useSettings from '@app/hooks/useSettings';
+import { useUser } from '@app/hooks/useUser';
+import { getAdvancedThemePreset } from '@app/utils/advancedThemePresets';
 import {
   readLocalStorageValue,
   writeLocalStorageValue,
@@ -9,6 +11,12 @@ import type {
   ThemeModePreference,
 } from '@server/interfaces/api/themeInterfaces';
 import { BUILT_IN_THEME_IDS } from '@server/interfaces/api/themeInterfaces';
+import type { AdvancedThemeOverrides } from '@server/utils/advancedThemeOverrides';
+import {
+  ADVANCED_THEME_COLOR_TOKENS,
+  getAdvancedThemeCssValue,
+  validateAdvancedThemeOverrides,
+} from '@server/utils/advancedThemeOverrides';
 import axios from 'axios';
 import type { ReactNode } from 'react';
 import {
@@ -24,7 +32,7 @@ import useSWR from 'swr';
 
 export type ThemeMode = 'light' | 'dark';
 
-type ThemeChrome = 'classic';
+type ThemeChrome = 'classic' | 'blackout';
 
 export type ThemePalette = {
   id: string;
@@ -50,6 +58,15 @@ export type ThemePalette = {
 // installed package from claiming an id that a built-in palette already wins.
 export const themePalettes: ThemePalette[] = [
   {
+    id: 'seerr',
+    name: 'SeerrNG',
+    swatches: ['#000000', '#1a3260', '#333333'],
+    surface: 'gray',
+    primary: 'indigo',
+    secondary: 'purple',
+    chrome: 'blackout',
+  },
+  {
     id: 'classic',
     name: 'Seerr',
     swatches: ['#1f2937', '#4f46e5', '#9333ea'],
@@ -57,14 +74,6 @@ export const themePalettes: ThemePalette[] = [
     primary: 'indigo',
     secondary: 'purple',
     chrome: 'classic',
-  },
-  {
-    id: 'seerr',
-    name: 'SeerrNG',
-    swatches: ['#0f172a', '#2563eb', '#38bdf8'],
-    surface: 'slate',
-    primary: 'blue',
-    secondary: 'sky',
   },
   {
     id: 'aurora',
@@ -238,7 +247,7 @@ export const themePalettes: ThemePalette[] = [
 
 export const builtInThemeIds: readonly string[] = BUILT_IN_THEME_IDS;
 
-export const DEFAULT_THEME_PALETTE_ID = 'classic';
+export const DEFAULT_THEME_PALETTE_ID = 'seerr';
 
 const shades = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950];
 
@@ -530,33 +539,93 @@ const applyScale = (
   });
 };
 
+type ThemeChromeTokens = {
+  pageBg: string;
+  pageGlowStart: string;
+  pageGlowEnd: string;
+  pageSpotlightCenter: string;
+  pageSpotlightEdge: string;
+  pageGradientLight: string;
+  pageGradientMain: string;
+  pageGradientDeep: string;
+  pageGradientBlack: string;
+  searchbarScrolled: string;
+  sidebarStart: string;
+  sidebarEnd: string;
+  sidebarBorder: string;
+  sidebarHover: string;
+  controlSurface: string;
+  controlSurfaceHover: string;
+  controlBorder: string;
+  controlText: string;
+  headingText: string;
+};
+
+type ThemeArtworkTokens = {
+  artworkScrim: string;
+  artworkGradientLight: string;
+  artworkGradientMain: string;
+  artworkGradientDeep: string;
+  artworkGradientBlack: string;
+  artworkText: string;
+};
+
 const applyThemeChrome = (
   root: HTMLElement,
-  surfaceScale: readonly string[],
-  primaryScale: readonly string[],
-  secondaryScale: readonly string[],
-  mode: ThemeMode,
-  chrome?: ThemeChrome
+  theme: ThemeChromeTokens & ThemeArtworkTokens
 ) => {
-  const themeChrome = getThemeChromeTokens(
-    surfaceScale,
-    primaryScale,
-    secondaryScale,
-    mode,
-    chrome
-  );
-
-  root.style.setProperty('--theme-page-bg', themeChrome.pageBg);
-  root.style.setProperty('--theme-page-glow-start', themeChrome.pageGlowStart);
-  root.style.setProperty('--theme-page-glow-end', themeChrome.pageGlowEnd);
+  root.style.setProperty('--theme-page-bg', theme.pageBg);
+  root.style.setProperty('--theme-page-glow-start', theme.pageGlowStart);
+  root.style.setProperty('--theme-page-glow-end', theme.pageGlowEnd);
   root.style.setProperty(
-    '--theme-searchbar-scrolled',
-    themeChrome.searchbarScrolled
+    '--theme-page-spotlight-center',
+    theme.pageSpotlightCenter
   );
-  root.style.setProperty('--theme-sidebar-start', themeChrome.sidebarStart);
-  root.style.setProperty('--theme-sidebar-end', themeChrome.sidebarEnd);
-  root.style.setProperty('--theme-sidebar-border', themeChrome.sidebarBorder);
-  root.style.setProperty('--theme-sidebar-hover', themeChrome.sidebarHover);
+  root.style.setProperty(
+    '--theme-page-spotlight-edge',
+    theme.pageSpotlightEdge
+  );
+  root.style.setProperty(
+    '--theme-page-gradient-light',
+    theme.pageGradientLight
+  );
+  root.style.setProperty('--theme-page-gradient-main', theme.pageGradientMain);
+  root.style.setProperty('--theme-page-gradient-deep', theme.pageGradientDeep);
+  root.style.setProperty(
+    '--theme-page-gradient-black',
+    theme.pageGradientBlack
+  );
+  root.style.setProperty('--theme-searchbar-scrolled', theme.searchbarScrolled);
+  root.style.setProperty('--theme-sidebar-start', theme.sidebarStart);
+  root.style.setProperty('--theme-sidebar-end', theme.sidebarEnd);
+  root.style.setProperty('--theme-sidebar-border', theme.sidebarBorder);
+  root.style.setProperty('--theme-sidebar-hover', theme.sidebarHover);
+  root.style.setProperty('--theme-control-surface', theme.controlSurface);
+  root.style.setProperty(
+    '--theme-control-surface-hover',
+    theme.controlSurfaceHover
+  );
+  root.style.setProperty('--theme-control-border', theme.controlBorder);
+  root.style.setProperty('--theme-control-text', theme.controlText);
+  root.style.setProperty('--theme-heading-text', theme.headingText);
+  root.style.setProperty('--theme-artwork-scrim', theme.artworkScrim);
+  root.style.setProperty(
+    '--theme-artwork-gradient-light',
+    theme.artworkGradientLight
+  );
+  root.style.setProperty(
+    '--theme-artwork-gradient-main',
+    theme.artworkGradientMain
+  );
+  root.style.setProperty(
+    '--theme-artwork-gradient-deep',
+    theme.artworkGradientDeep
+  );
+  root.style.setProperty(
+    '--theme-artwork-gradient-black',
+    theme.artworkGradientBlack
+  );
+  root.style.setProperty('--theme-artwork-text', theme.artworkText);
 };
 
 const parseRgb = (value: string): [number, number, number] =>
@@ -619,17 +688,6 @@ const createSurfaceScale = (
   );
 };
 
-type ThemeChromeTokens = {
-  pageBg: string;
-  pageGlowStart: string;
-  pageGlowEnd: string;
-  searchbarScrolled: string;
-  sidebarStart: string;
-  sidebarEnd: string;
-  sidebarBorder: string;
-  sidebarHover: string;
-};
-
 const getThemeChromeTokens = (
   surfaceScale: readonly string[],
   primaryScale: readonly string[],
@@ -637,41 +695,129 @@ const getThemeChromeTokens = (
   mode: ThemeMode,
   chrome?: ThemeChrome
 ): ThemeChromeTokens => {
-  if (mode === 'dark' && chrome === 'classic') {
-    return {
-      pageBg: surfaceScale[9],
-      pageGlowStart: surfaceScale[8],
-      pageGlowEnd: surfaceScale[9],
-      searchbarScrolled: surfaceScale[7],
-      sidebarStart: surfaceScale[8],
-      sidebarEnd: '19 25 40',
-      sidebarBorder: surfaceScale[7],
-      sidebarHover: surfaceScale[7],
-    };
-  }
+  const blackout = chrome === 'blackout';
+  const classicDark =
+    mode === 'dark' && (chrome === 'classic' || chrome === 'blackout');
+  const pageBg = surfaceScale[9];
+  const pageGlowStart = classicDark
+    ? surfaceScale[8]
+    : mode === 'dark'
+      ? mixRgb(surfaceScale[8], primaryScale[7], 0.56)
+      : mixRgb(surfaceScale[8], primaryScale[3], 0.44);
+  const pageGlowEnd = surfaceScale[9];
+  const searchbarScrolled = blackout
+    ? '0 0 0'
+    : classicDark
+      ? surfaceScale[7]
+      : mode === 'dark'
+        ? mixRgb(surfaceScale[8], primaryScale[7], 0.44)
+        : mixRgb(surfaceScale[8], primaryScale[2], 0.38);
+  const sidebarStart = blackout
+    ? '0 0 0'
+    : classicDark
+      ? surfaceScale[8]
+      : mode === 'dark'
+        ? mixRgb(surfaceScale[8], primaryScale[8], 0.58)
+        : mixRgb(primaryScale[7], surfaceScale[2], 0.24);
+  const sidebarEnd = blackout
+    ? '0 0 0'
+    : classicDark
+      ? '19 25 40'
+      : mode === 'dark'
+        ? mixRgb(surfaceScale[10], primaryScale[9], 0.52)
+        : mixRgb(primaryScale[9], surfaceScale[1], 0.18);
+  const sidebarBorder = classicDark
+    ? surfaceScale[7]
+    : mode === 'dark'
+      ? mixRgb(surfaceScale[7], secondaryScale[6], 0.48)
+      : mixRgb(primaryScale[6], secondaryScale[6], 0.42);
+  const sidebarHover = classicDark
+    ? surfaceScale[7]
+    : mode === 'dark'
+      ? mixRgb(surfaceScale[7], primaryScale[7], 0.52)
+      : mixRgb(primaryScale[6], secondaryScale[5], 0.32);
 
-  if (mode === 'dark') {
-    return {
-      pageBg: surfaceScale[9],
-      pageGlowStart: mixRgb(surfaceScale[8], primaryScale[7], 0.56),
-      pageGlowEnd: surfaceScale[9],
-      searchbarScrolled: mixRgb(surfaceScale[8], primaryScale[7], 0.44),
-      sidebarStart: mixRgb(surfaceScale[8], primaryScale[8], 0.58),
-      sidebarEnd: mixRgb(surfaceScale[10], primaryScale[9], 0.52),
-      sidebarBorder: mixRgb(surfaceScale[7], secondaryScale[6], 0.48),
-      sidebarHover: mixRgb(surfaceScale[7], primaryScale[7], 0.52),
-    };
-  }
+  const pageSpotlightCenter = classicDark
+    ? '194 169 255'
+    : mode === 'dark'
+      ? mixRgb(primaryScale[2], secondaryScale[2], 0.5)
+      : mixRgb(primaryScale[1], secondaryScale[1], 0.5);
+  const pageSpotlightEdge = classicDark
+    ? '151 115 246'
+    : mode === 'dark'
+      ? mixRgb(primaryScale[4], secondaryScale[4], 0.5)
+      : mixRgb(primaryScale[2], secondaryScale[2], 0.5);
+
+  const pageGradientLight = blackout
+    ? '0 0 0'
+    : classicDark
+      ? '76 67 189'
+      : mode === 'dark'
+        ? mixRgb(pageGlowStart, primaryScale[6], 0.18)
+        : pageGlowStart;
+  const pageGradientMain = blackout
+    ? '40 68 120'
+    : classicDark
+      ? '52 51 157'
+      : mode === 'dark'
+        ? mixRgb(pageBg, primaryScale[8], 0.35)
+        : mixRgb(pageBg, pageGlowStart, 0.2);
+  const pageGradientDeep = blackout
+    ? '14 28 58'
+    : classicDark
+      ? '23 29 89'
+      : mode === 'dark'
+        ? mixRgb(surfaceScale[10], primaryScale[9], 0.42)
+        : mixRgb(pageBg, surfaceScale[8], 0.2);
+  const pageGradientBlack =
+    blackout || classicDark || mode === 'dark' ? '0 0 0' : pageBg;
+
+  const controlSurface = blackout
+    ? '0 0 0'
+    : classicDark
+      ? '49 46 129'
+      : mode === 'dark'
+        ? mixRgb(surfaceScale[8], primaryScale[9], 0.18)
+        : mixRgb(surfaceScale[9], secondaryScale[0], 0.12);
+  const controlSurfaceHover = blackout
+    ? '0 0 0'
+    : classicDark
+      ? '55 48 163'
+      : mode === 'dark'
+        ? mixRgb(surfaceScale[7], primaryScale[8], 0.18)
+        : mixRgb(surfaceScale[8], secondaryScale[0], 0.1);
+  const controlBorder = classicDark ? '99 102 241' : primaryScale[5];
+  const controlText =
+    blackout || classicDark
+      ? '199 210 254'
+      : mode === 'dark'
+        ? primaryScale[2]
+        : mixRgb(surfaceScale[2], primaryScale[9], 0.12);
+  const headingText =
+    blackout || mode === 'dark'
+      ? '255 255 255'
+      : mixRgb(surfaceScale[1], primaryScale[9], 0.12);
 
   return {
-    pageBg: surfaceScale[9],
-    pageGlowStart: mixRgb(surfaceScale[8], primaryScale[3], 0.44),
-    pageGlowEnd: surfaceScale[9],
-    searchbarScrolled: mixRgb(surfaceScale[8], primaryScale[2], 0.38),
-    sidebarStart: mixRgb(primaryScale[7], surfaceScale[2], 0.24),
-    sidebarEnd: mixRgb(primaryScale[9], surfaceScale[1], 0.18),
-    sidebarBorder: mixRgb(primaryScale[6], secondaryScale[6], 0.42),
-    sidebarHover: mixRgb(primaryScale[6], secondaryScale[5], 0.32),
+    pageBg,
+    pageGlowStart,
+    pageGlowEnd,
+    pageSpotlightCenter,
+    pageSpotlightEdge,
+    pageGradientLight,
+    pageGradientMain,
+    pageGradientDeep,
+    pageGradientBlack,
+    searchbarScrolled,
+    sidebarStart,
+    sidebarEnd,
+    sidebarBorder,
+    sidebarHover,
+    controlSurface,
+    controlSurfaceHover,
+    controlBorder,
+    controlText,
+    headingText,
   };
 };
 
@@ -683,10 +829,14 @@ type ThemeContextValue = {
   assets?: InstalledTheme['assetUrls'];
   assetTypes?: InstalledTheme['assetTypes'];
   enforced: boolean;
+  advancedThemeOverrides: AdvancedThemeOverrides | null;
   setMode: (mode: ThemeMode) => void;
   setModePreference: (mode: ThemeModePreference) => void;
   setPalette: (palette: string) => void;
   toggleMode: () => void;
+  saveAdvancedThemeOverrides: (
+    overrides: AdvancedThemeOverrides | null
+  ) => Promise<void>;
 };
 
 const THEME_MODE_KEY = 'seerr-theme-mode';
@@ -724,6 +874,44 @@ const getThemePalette = (
   ) ??
   palettes[0];
 
+const advancedThemeTokens = [
+  ...ADVANCED_THEME_COLOR_TOKENS,
+  '--theme-page-spotlight-strength',
+  '--theme-page-gradient-main-stop',
+  '--theme-detail-divider-shadow',
+];
+
+const applyAdvancedThemeOverrides = (
+  root: HTMLElement,
+  overrides: AdvancedThemeOverrides | null,
+  mode: ThemeMode
+) => {
+  const validation = validateAdvancedThemeOverrides(overrides);
+  if ('error' in validation || !validation.value) return;
+
+  const preset = getAdvancedThemePreset(validation.value.preset);
+  if (preset) {
+    root.dataset.themePreset = preset.id;
+    Object.entries(preset.chromeByMode[mode]).forEach(([token, value]) => {
+      if (value !== undefined) {
+        root.style.setProperty(token, getAdvancedThemeCssValue(token, value));
+      }
+    });
+  } else {
+    delete root.dataset.themePreset;
+  }
+
+  Object.entries(validation.value).forEach(([token, value]) => {
+    if (token === 'preset') return;
+    root.style.setProperty(token, getAdvancedThemeCssValue(token, value));
+  });
+};
+
+const resetAdvancedThemeOverrides = (root: HTMLElement) => {
+  advancedThemeTokens.forEach((token) => root.style.removeProperty(token));
+  delete root.dataset.themePreset;
+};
+
 const getPaletteScales = (palette: ThemePalette) => {
   if (palette.scales) {
     return palette.scales;
@@ -745,7 +933,8 @@ export const getThemeTokens = (
   const primaryScale = scales.primary;
   const secondaryScale = scales.secondary;
   const surfaceScale =
-    mode === 'dark' && activePalette.chrome === 'classic'
+    mode === 'dark' &&
+    (activePalette.chrome === 'classic' || activePalette.chrome === 'blackout')
       ? themeScales.gray
       : createSurfaceScale(scales.surface, primaryScale, secondaryScale, mode);
   const chromeTokens = getThemeChromeTokens(
@@ -755,6 +944,28 @@ export const getThemeTokens = (
     mode,
     activePalette.chrome
   );
+  const darkSurfaceScale =
+    mode === 'dark'
+      ? surfaceScale
+      : activePalette.chrome === 'classic' ||
+          activePalette.chrome === 'blackout'
+        ? themeScales.gray
+        : createSurfaceScale(
+            scales.surface,
+            primaryScale,
+            secondaryScale,
+            'dark'
+          );
+  const darkChromeTokens =
+    mode === 'dark'
+      ? chromeTokens
+      : getThemeChromeTokens(
+          darkSurfaceScale,
+          primaryScale,
+          secondaryScale,
+          'dark',
+          activePalette.chrome
+        );
 
   return {
     activePaletteId: activePalette.id,
@@ -763,13 +974,32 @@ export const getThemeTokens = (
     surfaceScale,
     chrome: activePalette.chrome,
     ...chromeTokens,
+    artworkScrim:
+      activePalette.chrome === 'blackout'
+        ? '0 0 0'
+        : darkChromeTokens.pageGradientMain,
+    artworkGradientLight:
+      activePalette.chrome === 'blackout'
+        ? '0 0 0'
+        : darkChromeTokens.pageGradientLight,
+    artworkGradientMain:
+      activePalette.chrome === 'blackout'
+        ? '0 0 0'
+        : darkChromeTokens.pageGradientMain,
+    artworkGradientDeep:
+      activePalette.chrome === 'blackout'
+        ? '0 0 0'
+        : darkChromeTokens.pageGradientDeep,
+    artworkGradientBlack: '0 0 0',
+    artworkText: primaryScale[2],
   };
 };
 
 const applyTheme = (
   mode: ThemeMode,
   palette: string,
-  palettes: ThemePalette[] = themePalettes
+  palettes: ThemePalette[] = themePalettes,
+  overrides: AdvancedThemeOverrides | null = null
 ) => {
   if (typeof window === 'undefined') {
     return;
@@ -777,6 +1007,7 @@ const applyTheme = (
 
   const themeTokens = getThemeTokens(mode, palette, palettes);
 
+  resetAdvancedThemeOverrides(document.documentElement);
   document.documentElement.dataset.themeMode = mode;
   document.documentElement.dataset.themePalette = themeTokens.activePaletteId;
   document.documentElement.classList.toggle('dark', mode === 'dark');
@@ -784,17 +1015,25 @@ const applyTheme = (
   applyScale(document.documentElement, 'indigo', themeTokens.primaryScale);
   applyScale(document.documentElement, 'purple', themeTokens.secondaryScale);
   applyScale(document.documentElement, 'gray', themeTokens.surfaceScale);
-  applyThemeChrome(
-    document.documentElement,
-    themeTokens.surfaceScale,
-    themeTokens.primaryScale,
-    themeTokens.secondaryScale,
-    mode,
-    themeTokens.chrome
-  );
+  applyThemeChrome(document.documentElement, themeTokens);
+  applyAdvancedThemeOverrides(document.documentElement, overrides, mode);
+  const presetSidebarStart = getAdvancedThemePreset(overrides?.preset)
+    ?.chromeByMode[mode]['--theme-sidebar-start'];
+  const sidebarStartOverride =
+    overrides?.['--theme-sidebar-start'] ?? presetSidebarStart;
   document
     .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
-    ?.setAttribute('content', rgbToHex(themeTokens.sidebarStart));
+    ?.setAttribute(
+      'content',
+      rgbToHex(
+        sidebarStartOverride !== undefined
+          ? getAdvancedThemeCssValue(
+              '--theme-sidebar-start',
+              sidebarStartOverride
+            )
+          : themeTokens.sidebarStart
+      )
+    );
   // Upstream also persists the mode and palette here. This fork persists them
   // in the setters instead, so that applying the admin-configured default
   // during hydration does not overwrite a choice the viewer already made.
@@ -849,15 +1088,27 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   const [modePreference, setModePreferenceState] =
     useState<ThemeModePreference>('auto');
   const [palette, setPaletteState] = useState(DEFAULT_THEME_PALETTE_ID);
+  const [advancedThemeOverrides, setAdvancedThemeOverrides] =
+    useState<AdvancedThemeOverrides | null>(null);
   const hasRestoredTheme = useRef(false);
+  const { user, revalidate } = useUser();
+
+  useEffect(() => {
+    const validation = validateAdvancedThemeOverrides(
+      user?.settings?.advancedThemeOverrides ?? null
+    );
+    const savedOverrides = 'error' in validation ? null : validation.value;
+
+    setAdvancedThemeOverrides(savedOverrides);
+  }, [user?.id, user?.settings?.advancedThemeOverrides]);
 
   useEffect(() => {
     if (!hasRestoredTheme.current) {
       return;
     }
 
-    applyTheme(mode, palette, palettes);
-  }, [mode, palette, palettes]);
+    applyTheme(mode, palette, palettes, advancedThemeOverrides);
+  }, [mode, palette, palettes, advancedThemeOverrides]);
 
   useEffect(() => {
     const fallbackPalette = palettes.some(
@@ -903,9 +1154,9 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
       setModePreferenceState(nextMode);
       setModeState(nextMode);
       writeLocalStorageValue(THEME_MODE_KEY, nextMode);
-      applyTheme(nextMode, palette, palettes);
+      applyTheme(nextMode, palette, palettes, advancedThemeOverrides);
     },
-    [currentSettings.enforceTheme, palette, palettes]
+    [currentSettings.enforceTheme, palette, palettes, advancedThemeOverrides]
   );
 
   const setModePreference = useCallback(
@@ -917,9 +1168,9 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
       setModePreferenceState(nextPreference);
       setModeState(resolvedMode);
       writeLocalStorageValue(THEME_MODE_KEY, nextPreference);
-      applyTheme(resolvedMode, palette, palettes);
+      applyTheme(resolvedMode, palette, palettes, advancedThemeOverrides);
     },
-    [currentSettings.enforceTheme, palette, palettes]
+    [currentSettings.enforceTheme, palette, palettes, advancedThemeOverrides]
   );
 
   const setPalette = useCallback(
@@ -931,9 +1182,9 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
 
       setPaletteState(activePalette.id);
       writeLocalStorageValue(THEME_PALETTE_KEY, activePalette.id);
-      applyTheme(mode, activePalette.id, palettes);
+      applyTheme(mode, activePalette.id, palettes, advancedThemeOverrides);
     },
-    [currentSettings.enforceTheme, mode, palettes]
+    [currentSettings.enforceTheme, mode, palettes, advancedThemeOverrides]
   );
 
   const toggleMode = useCallback(() => {
@@ -945,11 +1196,49 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
 
       setModePreferenceState(nextMode);
       writeLocalStorageValue(THEME_MODE_KEY, nextMode);
-      applyTheme(nextMode, palette, palettes);
+      applyTheme(nextMode, palette, palettes, advancedThemeOverrides);
 
       return nextMode;
     });
-  }, [currentSettings.enforceTheme, palette, palettes]);
+  }, [currentSettings.enforceTheme, palette, palettes, advancedThemeOverrides]);
+
+  const saveAdvancedThemeOverrides = useCallback(
+    async (overrides: AdvancedThemeOverrides | null) => {
+      if (!user?.id) {
+        throw new Error('Sign in to save advanced theme settings.');
+      }
+
+      const validation = validateAdvancedThemeOverrides(overrides);
+      if ('error' in validation) {
+        throw new Error(validation.error);
+      }
+
+      const { data } = await axios.post<{
+        advancedThemeOverrides: AdvancedThemeOverrides | null;
+      }>(`/api/v1/user/${user.id}/settings/advanced-theme`, {
+        overrides: validation.value,
+      });
+
+      setAdvancedThemeOverrides(data.advancedThemeOverrides);
+      applyTheme(mode, palette, palettes, data.advancedThemeOverrides);
+      await revalidate(
+        (currentUser) =>
+          currentUser
+            ? {
+                ...currentUser,
+                settings: {
+                  ...currentUser.settings,
+                  notificationTypes:
+                    currentUser.settings?.notificationTypes ?? {},
+                  advancedThemeOverrides: data.advancedThemeOverrides,
+                },
+              }
+            : currentUser,
+        false
+      );
+    },
+    [mode, palette, palettes, revalidate, user?.id]
+  );
 
   const value = useMemo(
     () => ({
@@ -960,10 +1249,12 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
       assets: getThemePalette(palette, palettes).assets,
       assetTypes: getThemePalette(palette, palettes).assetTypes,
       enforced: currentSettings.enforceTheme,
+      advancedThemeOverrides,
       setMode,
       setModePreference,
       setPalette,
       toggleMode,
+      saveAdvancedThemeOverrides,
     }),
     [
       currentSettings.enforceTheme,
@@ -975,6 +1266,8 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
       setModePreference,
       setPalette,
       toggleMode,
+      advancedThemeOverrides,
+      saveAdvancedThemeOverrides,
     ]
   );
 

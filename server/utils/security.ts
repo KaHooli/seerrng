@@ -345,15 +345,11 @@ export const isLocalOrPrivateAddress = (hostname: string): boolean => {
 };
 
 /**
- * Narrower than isLocalOrPrivateAddress: true only for loopback and
- * link-local addresses (which includes the 169.254.169.254 cloud metadata
- * address), not general RFC1918/CGNAT ranges. Callers that must allow
- * private-address targets (e.g. LAN player discovery) but still want to
- * refuse the handful of addresses that are never a legitimate third-party
- * device — the host itself, or a cloud metadata endpoint — should use this
- * instead of disabling private-address protection outright.
+ * Rejects local-only destinations that cannot represent a remote player:
+ * loopback, unspecified, and link-local addresses, including IPv4 embedded in
+ * IPv6 and NAT64 forms. Ordinary private LAN addresses remain allowed.
  */
-export const isLoopbackOrLinkLocalAddress = (hostname: string): boolean => {
+export const isUnsafeLocalAddress = (hostname: string): boolean => {
   const normalized = hostname
     .trim()
     .toLowerCase()
@@ -366,7 +362,7 @@ export const isLoopbackOrLinkLocalAddress = (hostname: string): boolean => {
   if (net.isIPv4(normalized)) {
     const parts = normalized.split('.').map(Number);
     const [a, b] = parts;
-    return a === 127 || (a === 169 && b === 254);
+    return a === 0 || a === 127 || (a === 169 && b === 254) || a >= 224;
   }
 
   if (net.isIPv6(normalized)) {
@@ -374,7 +370,33 @@ export const isLoopbackOrLinkLocalAddress = (hostname: string): boolean => {
     if (!words) {
       return true;
     }
-    return normalized === '::1' || (words[0] & 0xffc0) === 0xfe80;
+    const isIPv4Mapped =
+      words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff;
+    const isIPv4Translated =
+      words.slice(0, 4).every((word) => word === 0) &&
+      words[4] === 0xffff &&
+      words[5] === 0;
+    const isIPv4Compatible = words.slice(0, 6).every((word) => word === 0);
+    const isWellKnownNat64 =
+      words[0] === 0x64 &&
+      words[1] === 0xff9b &&
+      words.slice(2, 6).every((word) => word === 0);
+    const isLocalNat64 =
+      words[0] === 0x64 && words[1] === 0xff9b && words[2] === 1;
+    const embeddedIPv4 =
+      isIPv4Mapped || isIPv4Translated || isIPv4Compatible || isWellKnownNat64
+        ? `${words[6] >> 8}.${words[6] & 0xff}.${words[7] >> 8}.${words[7] & 0xff}`
+        : undefined;
+
+    return (
+      normalized === '::' ||
+      normalized === '::1' ||
+      (words[0] & 0xffc0) === 0xfe80 ||
+      (words[0] & 0xffc0) === 0xfec0 ||
+      (words[0] & 0xff00) === 0xff00 ||
+      isLocalNat64 ||
+      (embeddedIPv4 !== undefined && isUnsafeLocalAddress(embeddedIPv4))
+    );
   }
 
   return false;
@@ -442,7 +464,8 @@ const createCrossOriginRedirectError = (): NodeJS.ErrnoException => {
  */
 export const createSafeHttpLookup = (
   allowPrivateAddresses: PrivateAddressPolicy = false,
-  requireDirectConnection = false
+  requireDirectConnection = false,
+  rejectUnsafeLocalAddresses = false
 ) => {
   const lookup = (
     hostname: string,
@@ -464,8 +487,13 @@ export const createSafeHttpLookup = (
         }
 
         if (
-          !isPrivateAddressAllowed(allowPrivateAddresses) &&
-          addresses.some((address) => isLocalOrPrivateAddress(address.address))
+          addresses.some(
+            (address) =>
+              (!isPrivateAddressAllowed(allowPrivateAddresses) &&
+                isLocalOrPrivateAddress(address.address)) ||
+              (rejectUnsafeLocalAddresses &&
+                isUnsafeLocalAddress(address.address))
+          )
         ) {
           callback(createPrivateAddressError(hostname), []);
           return;
@@ -496,7 +524,7 @@ export const createSafeHttpLookup = (
     );
   };
 
-  if (requireDirectConnection) {
+  if (requireDirectConnection || rejectUnsafeLocalAddresses) {
     directConnectionLookups.add(lookup);
   }
 
@@ -506,10 +534,17 @@ export const createSafeHttpLookup = (
 export const createSafeHttpRequestOptions = (
   allowPrivateAddresses: PrivateAddressPolicy = false,
   allowCrossOriginRedirects = true,
-  requireDirectConnection = false
+  requireDirectConnection = false,
+  rejectUnsafeLocalAddresses = false
 ) => ({
-  lookup: createSafeHttpLookup(allowPrivateAddresses, requireDirectConnection),
-  ...(requireDirectConnection ? { proxy: false as const } : {}),
+  lookup: createSafeHttpLookup(
+    allowPrivateAddresses,
+    requireDirectConnection,
+    rejectUnsafeLocalAddresses
+  ),
+  ...(requireDirectConnection || rejectUnsafeLocalAddresses
+    ? { proxy: false as const }
+    : {}),
   beforeRedirect: (
     options: Record<string, unknown>,
     _response?: unknown,
@@ -551,10 +586,11 @@ export const createSafeHttpRequestOptions = (
       typeof options.hostname === 'string' ? options.hostname : '';
 
     if (
-      !isPrivateAddressAllowed(allowPrivateAddresses) &&
-      (!['http:', 'https:'].includes(protocol) ||
-        !hostname ||
-        isLocalOrPrivateAddress(hostname))
+      !['http:', 'https:'].includes(protocol) ||
+      !hostname ||
+      (!isPrivateAddressAllowed(allowPrivateAddresses) &&
+        isLocalOrPrivateAddress(hostname)) ||
+      (rejectUnsafeLocalAddresses && isUnsafeLocalAddress(hostname))
     ) {
       throw createPrivateAddressError(hostname || 'redirect target');
     }

@@ -1,6 +1,11 @@
+import MdblistAPI from '@server/api/mdblist';
 import IMDBRadarrProxy from '@server/api/rating/imdbRadarrProxy';
 import RottenTomatoes from '@server/api/rating/rottentomatoes';
-import { type RatingResponse } from '@server/api/ratings';
+import {
+  hasMdblistRatingScores,
+  parseMdblistRatingBatchIds,
+  type RatingResponse,
+} from '@server/api/ratings';
 import RadarrAPI from '@server/api/servarr/radarr';
 import TheMovieDb from '@server/api/themoviedb';
 import { MediaType } from '@server/constants/media';
@@ -15,19 +20,33 @@ import { mapMovieDetails } from '@server/models/Movie';
 import { mapMovieResult } from '@server/models/Search';
 import { filterEntityResponse } from '@server/utils/entityResponse';
 import {
+  parseNonNegativeInt,
   parseOptionalPositiveInt,
   parsePositiveInt,
 } from '@server/utils/pagination';
 import { parsePositiveRouteId } from '@server/utils/routeId';
+import { getRateLimitKey } from '@server/utils/security';
 import {
   parseOptionalBoundedString,
   parseOptionalLanguage,
 } from '@server/utils/validation';
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 
 const movieRoutes = Router();
 const maxTmdbId = 1_000_000_000;
 const maxShuffleSeedLength = 128;
+
+const mdblistRatingBatchRateLimit = rateLimit({
+  windowMs: 60_000,
+  limit: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) =>
+    req.user?.id ? `user:${req.user.id}` : getRateLimitKey(req),
+  skip: () =>
+    process.env.NODE_ENV === 'test' || process.env.E2E_TESTS === 'true',
+});
 
 const parseTmdbRouteId = (id: unknown): number | undefined =>
   parsePositiveRouteId(id, maxTmdbId);
@@ -96,6 +115,44 @@ const getMovieCoverService = (
 
   return undefined;
 };
+
+movieRoutes.post(
+  '/ratings/mdblist/batch',
+  mdblistRatingBatchRateLimit,
+  async (req, res) => {
+    const ids = parseMdblistRatingBatchIds(req.body?.ids);
+    if (!ids) {
+      return res.status(400).json({
+        status: 400,
+        message: 'Provide 1 to 200 valid TMDB movie IDs.',
+      });
+    }
+
+    try {
+      const ratings = await MdblistAPI.getInstance().getBatchRatings(
+        'movie',
+        ids.map((tmdbId) => ({ tmdbId }))
+      );
+      return res
+        .status(200)
+        .json(
+          Object.fromEntries(
+            [...ratings].filter(([, rating]) => hasMdblistRatingScores(rating))
+          )
+        );
+    } catch (e) {
+      logger.debug('Something went wrong retrieving MDBList rating batch', {
+        label: 'API',
+        errorMessage: e instanceof Error ? e.message : String(e),
+        itemCount: ids.length,
+      });
+      return res.status(502).json({
+        status: 502,
+        message: 'MDBList ratings are temporarily unavailable.',
+      });
+    }
+  }
+);
 
 movieRoutes.get('/:id', async (req, res, next) => {
   const tmdb = new TheMovieDb();
@@ -169,6 +226,7 @@ movieRoutes.get('/:id', async (req, res, next) => {
     return next({
       status: 500,
       message: 'Unable to retrieve movie.',
+      cause: e,
     });
   }
 });
@@ -186,15 +244,43 @@ movieRoutes.get('/:id/cover', async (req, res) => {
       : req.query.is4k === 'false'
         ? false
         : undefined;
+  const explicitServiceId = parseNonNegativeInt(
+    req.query.serviceId,
+    -1,
+    1_000_000_000
+  );
+  const explicitExternalServiceId = parseOptionalPositiveInt(
+    req.query.externalServiceId,
+    1_000_000_000
+  );
 
-  if (!mediaId) {
-    return res.status(404).send('Movie cover not found');
+  let coverService:
+    { server: RadarrSettings; movieId: number; is4k: boolean } | undefined;
+
+  if (
+    explicitServiceId >= 0 &&
+    explicitExternalServiceId !== undefined &&
+    is4k !== undefined
+  ) {
+    const server = getSettings().radarr.find(
+      (candidate) =>
+        candidate.id === explicitServiceId && Boolean(candidate.is4k) === is4k
+    );
+    if (server) {
+      coverService = {
+        server,
+        movieId: explicitExternalServiceId,
+        is4k,
+      };
+    }
   }
 
-  const media = await getRepository(Media).findOne({
-    where: { id: mediaId, mediaType: MediaType.MOVIE, tmdbId: movieId },
-  });
-  const coverService = getMovieCoverService(media ?? undefined, is4k);
+  if (!coverService && mediaId) {
+    const media = await getRepository(Media).findOne({
+      where: { id: mediaId, mediaType: MediaType.MOVIE, tmdbId: movieId },
+    });
+    coverService = getMovieCoverService(media ?? undefined, is4k);
+  }
 
   if (!coverService) {
     return res.status(404).send('Movie cover not found');
@@ -215,7 +301,7 @@ movieRoutes.get('/:id/cover', async (req, res) => {
     logger.warn('Failed to retrieve Radarr cover fallback', {
       label: 'Movie',
       movieId,
-      mediaId,
+      mediaId: mediaId ?? null,
       is4k: coverService.is4k,
       errorMessage: e instanceof Error ? e.message : 'Unknown error',
     });
@@ -260,7 +346,8 @@ movieRoutes.get('/:id/recommendations', async (req, res, next) => {
       rankedResults.map((result) => ({
         tmdbId: result.id,
         mediaType: MediaType.MOVIE,
-      }))
+      })),
+      { includeActiveRequest: true }
     );
 
     return res.status(200).json({
@@ -327,7 +414,8 @@ movieRoutes.get('/:id/similar', async (req, res, next) => {
       rankedResults.map((result) => ({
         tmdbId: result.id,
         mediaType: MediaType.MOVIE,
-      }))
+      })),
+      { includeActiveRequest: true }
     );
 
     return res.status(200).json({
@@ -406,6 +494,7 @@ movieRoutes.get('/:id/ratingscombined', async (req, res, next) => {
   const tmdb = new TheMovieDb();
   const rtapi = new RottenTomatoes();
   const imdbApi = new IMDBRadarrProxy();
+  const mdblistApi = MdblistAPI.getInstance();
   const movieId = parseTmdbRouteId(req.params.id);
   if (!movieId) {
     return next({ status: 404, message: 'Movie not found.' });
@@ -416,26 +505,39 @@ movieRoutes.get('/:id/ratingscombined', async (req, res, next) => {
       movieId,
     });
 
-    const rtratings = await rtapi.getMovieRatings(
-      movie.title,
-      Number(movie.release_date.slice(0, 4))
-    );
+    const [rtResult, imdbResult, mdblistResult] = await Promise.allSettled([
+      rtapi.getMovieRatings(
+        movie.title,
+        Number(movie.release_date.slice(0, 4))
+      ),
+      movie.imdb_id ? imdbApi.getMovieRatings(movie.imdb_id) : null,
+      mdblistApi.getRatings('movie', movieId),
+    ]);
+    const rtratings = rtResult.status === 'fulfilled' ? rtResult.value : null;
+    const imdbRatings =
+      imdbResult.status === 'fulfilled' ? imdbResult.value : null;
+    const mdblistRatings =
+      mdblistResult.status === 'fulfilled' &&
+      hasMdblistRatingScores(mdblistResult.value)
+        ? mdblistResult.value
+        : undefined;
 
-    let imdbRatings;
-    if (movie.imdb_id) {
-      imdbRatings = await imdbApi.getMovieRatings(movie.imdb_id);
-    }
-
-    if (!rtratings && !imdbRatings) {
+    if (!rtratings && !imdbRatings && !mdblistRatings) {
+      const providerFailed = [rtResult, imdbResult, mdblistResult].some(
+        (result) => result.status === 'rejected'
+      );
       return next({
-        status: 404,
-        message: 'No ratings found.',
+        status: providerFailed ? 502 : 404,
+        message: providerFailed
+          ? 'Rating providers are temporarily unavailable.'
+          : 'No ratings found.',
       });
     }
 
     const ratings: RatingResponse = {
       ...(rtratings ? { rt: rtratings } : {}),
       ...(imdbRatings ? { imdb: imdbRatings } : {}),
+      ...(mdblistRatings ? { mdblist: mdblistRatings } : {}),
     };
 
     return res.status(200).json(ratings);

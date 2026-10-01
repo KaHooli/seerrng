@@ -1,8 +1,10 @@
+import ButtonHelp from '@app/components/Common/ButtonHelp';
 import Layout from '@app/components/Layout';
 import LoadingBar from '@app/components/LoadingBar';
 import PWAHeader from '@app/components/PWAHeader';
 import { InteractionProvider } from '@app/context/InteractionContext';
 import { LanguageContext } from '@app/context/LanguageContext';
+import { NativeRuntimeProvider } from '@app/context/NativeRuntimeContext';
 import { SettingsProvider } from '@app/context/SettingsContext';
 import { ThemeProvider, useTheme } from '@app/context/ThemeContext';
 import { UserContext } from '@app/context/UserContext';
@@ -199,7 +201,7 @@ const CoreApp = ({ Component, pageProps, router }: AppProps) => {
         <IntlProvider
           locale={currentLocale}
           defaultLocale="en"
-          messages={loadedMessages}
+          messages={currentLocale === 'en' ? enMessages : loadedMessages}
         >
           <LoadingBar />
           <SettingsProvider>
@@ -214,7 +216,10 @@ const CoreApp = ({ Component, pageProps, router }: AppProps) => {
                 <AppHead />
                 <StatusChecker />
                 <ServiceWorkerSetup />
-                <UserContext>{component}</UserContext>
+                <UserContext>
+                  <NativeRuntimeProvider>{component}</NativeRuntimeProvider>
+                </UserContext>
+                <ButtonHelp key={router.asPath} />
                 <Toaster
                   position="top-right"
                   toastOptions={{ duration: 4000 }}

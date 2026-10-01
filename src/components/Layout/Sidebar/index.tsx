@@ -7,17 +7,21 @@ import { Permission, useUser } from '@app/hooks/useUser';
 import defineMessages from '@app/utils/defineMessages';
 import { isOptionalCatalogPathEnabled } from '@app/utils/serviceAvailability';
 import versionedAsset from '@app/utils/versionedAsset';
-import { Transition } from '@headlessui/react';
+import { Transition, TransitionChild } from '@headlessui/react';
 import {
   BookOpenIcon,
   ClockIcon,
   CogIcon,
+  CommandLineIcon,
   ExclamationTriangleIcon,
   EyeSlashIcon,
   FilmIcon,
+  MagnifyingGlassIcon,
   MusicalNoteIcon,
+  NewspaperIcon,
   SparklesIcon,
   SpeakerWaveIcon,
+  Square3Stack3DIcon,
   TvIcon,
   UsersIcon,
   XMarkIcon,
@@ -30,16 +34,22 @@ import { useIntl } from 'react-intl';
 
 export const menuMessages = defineMessages('components.Layout.Sidebar', {
   discover: 'Discover',
+  calendar: 'Calendar',
+  downloads: 'Download Inbox',
+  library: 'My Library',
+  indexerSearch: 'Indexer Search',
   browsemovies: 'Movies',
   browsemusic: 'Music',
   browsebooks: 'Books',
   browseaudiobooks: 'Audiobooks',
+  browsesoftware: 'Software',
+  browsecomics: 'Comics',
+  browsemagazines: 'Magazines',
   browsetv: 'Series',
   requests: 'Requests',
-  requeststatus: 'Requests',
   blocklist: 'Blocklist',
   issues: 'Issues',
-  users: 'Users',
+  users: 'User List',
   settings: 'Settings',
 });
 
@@ -69,6 +79,32 @@ const SidebarLinks: SidebarLinkProps[] = [
     messagesKey: 'discover',
     svgIcon: <SparklesIcon className="mr-3 h-6 w-6" />,
     activeRegExp: /^\/(discover\/?)?$/,
+  },
+  {
+    href: '/library',
+    messagesKey: 'library',
+    svgIcon: <BookOpenIcon className="mr-3 h-6 w-6" />,
+    activeRegExp: /^\/library$/,
+  },
+  {
+    href: '/downloads',
+    messagesKey: 'downloads',
+    svgIcon: <ClockIcon className="mr-3 h-6 w-6" />,
+    activeRegExp: /^\/downloads$/,
+    requiredPermission: Permission.MANAGE_DOWNLOADS,
+  },
+  {
+    href: '/indexer-search',
+    messagesKey: 'indexerSearch',
+    svgIcon: <MagnifyingGlassIcon className="mr-3 h-6 w-6" />,
+    activeRegExp: /^\/indexer-search$/,
+    requiredPermission: Permission.MANAGE_REQUESTS,
+  },
+  {
+    href: '/calendar',
+    messagesKey: 'calendar',
+    svgIcon: <ClockIcon className="mr-3 h-6 w-6" />,
+    activeRegExp: /^\/calendar$/,
   },
   {
     href: '/discover/movies',
@@ -101,16 +137,28 @@ const SidebarLinks: SidebarLinkProps[] = [
     activeRegExp: /^\/discover\/audiobooks$/,
   },
   {
-    href: '/discover/audiobooks',
-    messagesKey: 'browseaudiobooks',
-    svgIcon: <SpeakerWaveIcon className="mr-3 h-6 w-6" />,
-    activeRegExp: /^\/discover\/audiobooks$/,
+    href: '/discover/comics',
+    messagesKey: 'browsecomics',
+    svgIcon: <Square3Stack3DIcon className="mr-3 h-6 w-6" />,
+    activeRegExp: /^\/(?:discover\/comics(?:\/.*)?|comic\/)/,
   },
   {
-    href: '/requests/status',
-    messagesKey: 'requeststatus',
+    href: '/discover/magazines',
+    messagesKey: 'browsemagazines',
+    svgIcon: <NewspaperIcon className="mr-3 h-6 w-6" />,
+    activeRegExp: /^\/(?:discover\/magazines(?:\/.*)?|magazine\/)/,
+  },
+  {
+    href: '/software',
+    messagesKey: 'browsesoftware',
+    svgIcon: <CommandLineIcon className="mr-3 h-6 w-6" />,
+    activeRegExp: /^\/software(?:\/|$)/,
+  },
+  {
+    href: '/requests',
+    messagesKey: 'requests',
     svgIcon: <ClockIcon className="mr-3 h-6 w-6" />,
-    activeRegExp: /^\/requests\/status/,
+    activeRegExp: /^\/requests\/?$/,
   },
   {
     href: '/blocklist',
@@ -202,7 +250,7 @@ const Sidebar = ({
       <div className="lg:hidden">
         <Transition as={Fragment} show={open}>
           <div className="fixed inset-0 z-40 flex">
-            <Transition.Child
+            <TransitionChild
               as="div"
               enter="transition-opacity ease-linear duration-300"
               enterFrom="opacity-0"
@@ -214,8 +262,8 @@ const Sidebar = ({
               <div className="fixed inset-0">
                 <div className="absolute inset-0 bg-gray-900 opacity-90" />
               </div>
-            </Transition.Child>
-            <Transition.Child
+            </TransitionChild>
+            <TransitionChild
               as="div"
               enter="transition-transform ease-in-out duration-300"
               enterFrom="-translate-x-full"
@@ -270,8 +318,8 @@ const Sidebar = ({
                             tabIndex={0}
                             className={`flex items-center rounded-md px-2 py-2 text-base leading-6 font-medium text-white transition duration-150 ease-in-out focus:outline-none ${
                               router.pathname.match(sidebarLink.activeRegExp)
-                                ? 'bg-gradient-to-br from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500'
-                                : 'sidebar-link-idle'
+                                ? 'main-menu-link sidebar-link-selected'
+                                : 'main-menu-link sidebar-link-idle'
                             } `}
                             data-testid={`${sidebarLink.dataTestId}-mobile`}
                           >
@@ -294,7 +342,7 @@ const Sidebar = ({
                   {/* <!-- Force sidebar to shrink to fit close icon --> */}
                 </div>
               </>
-            </Transition.Child>
+            </TransitionChild>
           </div>
         </Transition>
       </div>
@@ -327,8 +375,8 @@ const Sidebar = ({
                       prefetch={false}
                       className={`group flex items-center rounded-md px-2 py-2 text-lg leading-6 font-medium text-white transition duration-150 ease-in-out focus:outline-none ${
                         router.pathname.match(sidebarLink.activeRegExp)
-                          ? 'bg-gradient-to-br from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500'
-                          : 'sidebar-link-idle'
+                          ? 'main-menu-link sidebar-link-selected'
+                          : 'main-menu-link sidebar-link-idle'
                       } `}
                       data-testid={sidebarLink.dataTestId}
                     >

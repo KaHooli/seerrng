@@ -10,7 +10,7 @@ import Link from 'next/link';
 import { useInView } from 'react-intersection-observer';
 import { useIntl } from 'react-intl';
 
-const REQUESTS_URL = '/api/v1/request?filter=all&take=10&sort=added&skip=0';
+const REQUESTS_URL = '/api/v1/request?filter=recent&take=10&sort=added&skip=0';
 
 const messages = defineMessages('components.Discover.RecentRequestsSlider', {
   unableToConnect:
@@ -69,16 +69,20 @@ const RecentRequestsSlider = () => {
         )}
 
       <Slider
+        compact
         sliderKey="requests"
+        disableItemContentVisibility
         isLoading={isLoading}
         isEmpty={!!requests && requests.results.length === 0 && !requestError}
         items={(requests?.results ?? []).map((request) => (
           <RequestCard
             key={`request-slider-item-${request.id}`}
             request={request}
+            compact
+            showApprovalActions={false}
           />
         ))}
-        placeholder={<RequestCard.Placeholder />}
+        placeholder={<RequestCard.Placeholder compact />}
       />
     </div>
   );

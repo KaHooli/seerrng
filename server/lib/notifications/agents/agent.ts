@@ -134,6 +134,10 @@ export const getMediaTypeLabel = (
       return intl.formatMessage(globalMessages.music);
     case MediaType.BOOK:
       return intl.formatMessage(globalMessages.book);
+    case MediaType.COMIC:
+      return intl.formatMessage(globalMessages.comic);
+    case MediaType.MAGAZINE:
+      return intl.formatMessage(globalMessages.magazine);
     default:
       return intl.formatMessage(globalMessages.series);
   }
@@ -175,6 +179,27 @@ export const getNotificationMediaUrl = (
       : undefined;
   }
 
+  if (payload.media.mediaType === 'comic') {
+    const comicVineId = payload.media.identifiers?.find(
+      (identifier) => identifier.provider === 'comicvine'
+    )?.value;
+
+    return comicVineId && /^\d+$/.test(comicVineId)
+      ? `/comic/${encodeURIComponent(comicVineId)}`
+      : undefined;
+  }
+
+  if (payload.media.mediaType === 'magazine') {
+    const magazineId =
+      payload.media.externalServiceSlug ??
+      payload.media.identifiers?.find(
+        (identifier) => identifier.provider === 'lazylibrarian'
+      )?.value;
+    return magazineId
+      ? `/magazine/${encodeURIComponent(magazineId)}`
+      : undefined;
+  }
+
   return `/${payload.media.mediaType}/${payload.media.tmdbId}`;
 };
 
@@ -193,6 +218,19 @@ export const getNotificationActionUrl = (
   const mediaUrl = getNotificationMediaUrl(payload);
 
   return mediaUrl ? `${applicationUrl}${mediaUrl}` : undefined;
+};
+
+export const getNotificationActionLabel = (
+  payload: Pick<NotificationPayload, 'issue' | 'mediaUrl'>
+) => {
+  if (payload.issue) return globalMessages.viewIssue;
+  if (
+    payload.mediaUrl?.startsWith('/requests/status?requestId=') ||
+    payload.mediaUrl?.startsWith('/requests/status?softwareRequestId=')
+  ) {
+    return globalMessages.viewRequestStatus;
+  }
+  return globalMessages.viewMedia;
 };
 
 export abstract class BaseAgent<T extends NotificationAgentConfig> {

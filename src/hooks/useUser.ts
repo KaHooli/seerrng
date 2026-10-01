@@ -2,11 +2,15 @@ import { isAuthenticationError } from '@app/utils/auth';
 import { UserType } from '@server/constants/user';
 import type {
   CardTextVisibility,
+  UserMediaFilterPins,
+  UserPreferredLanguages,
   UserSettingsCardTextResponse,
+  UserSettingsDetailDisclosuresByMedia,
 } from '@server/interfaces/api/userSettingsInterfaces';
 import type { PermissionCheckOptions } from '@server/lib/permissions';
 import { Permission, hasPermission } from '@server/lib/permissions';
 import type { NotificationAgentKey } from '@server/lib/settings';
+import type { AdvancedThemeOverrides } from '@server/utils/advancedThemeOverrides';
 import { useRouter } from 'next/router';
 import type { MutatorCallback } from 'swr';
 import useSWR from 'swr';
@@ -17,6 +21,7 @@ export type { PermissionCheckOptions };
 export interface User {
   id: number;
   warnings: string[];
+  plexId?: number | null;
   plexUsername?: string | null;
   jellyfinUsername?: string | null;
   username?: string;
@@ -37,17 +42,27 @@ export interface UserSettings {
   discoverRegion?: string;
   streamingRegion?: string;
   originalLanguage?: string;
+  preferredLanguages?: UserPreferredLanguages;
   locale?: string;
   notificationTypes: Partial<NotificationAgentTypes>;
   watchlistSyncMovies?: boolean;
   watchlistSyncTv?: boolean;
   watchlistSyncMusic?: boolean;
   watchlistSyncBooks?: boolean;
+  watchlistSyncComics?: boolean;
+  watchlistSyncMagazines?: boolean;
   cardTextVisibilityMovie?: CardTextVisibility;
   cardTextVisibilityTv?: CardTextVisibility;
   cardTextVisibilityAlbum?: CardTextVisibility;
   cardTextVisibilityBook?: CardTextVisibility;
   cardTextVisibility?: UserSettingsCardTextResponse;
+  detailDisclosureCastPinned?: boolean;
+  detailDisclosureCrewPinned?: boolean;
+  detailDisclosureArtistsPinned?: boolean;
+  detailDisclosureSubjectTagsPinned?: boolean;
+  detailDisclosurePins?: UserSettingsDetailDisclosuresByMedia;
+  mediaFilterPins?: UserMediaFilterPins;
+  advancedThemeOverrides?: AdvancedThemeOverrides | null;
 }
 
 interface UserHookResponse {

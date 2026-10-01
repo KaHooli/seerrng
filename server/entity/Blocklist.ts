@@ -176,7 +176,29 @@ export class Blocklist implements BlocklistItem {
               MediaIdentifierProvider.OPENLIBRARY,
               MediaIdentifierProvider.OPENLIBRARY_EDITION,
               MediaIdentifierProvider.ISBN,
-            ].includes(blocklistRequest.externalProvider))))
+            ].includes(blocklistRequest.externalProvider)))) ||
+      (blocklistRequest.mediaType === 'comic' &&
+        (!blocklistRequest.externalId ||
+          !isValidExternalMediaId(
+            blocklistRequest.externalId,
+            blocklistRequest.mediaType,
+            blocklistRequest.externalProvider
+          ) ||
+          blocklistRequest.tmdbId !== undefined ||
+          (blocklistRequest.externalProvider !== undefined &&
+            blocklistRequest.externalProvider !==
+              MediaIdentifierProvider.COMICVINE))) ||
+      (blocklistRequest.mediaType === 'magazine' &&
+        (!blocklistRequest.externalId ||
+          !isValidExternalMediaId(
+            blocklistRequest.externalId,
+            blocklistRequest.mediaType,
+            blocklistRequest.externalProvider
+          ) ||
+          blocklistRequest.tmdbId !== undefined ||
+          (blocklistRequest.externalProvider !== undefined &&
+            blocklistRequest.externalProvider !==
+              MediaIdentifierProvider.LAZYLIBRARIAN)))
     ) {
       throw new Error('Blocklist media identity is invalid.');
     }
@@ -197,6 +219,22 @@ export class Blocklist implements BlocklistItem {
         ...blocklistRequest,
         externalProvider: MediaIdentifierProvider.OPENLIBRARY,
       };
+    } else if (
+      blocklistRequest.mediaType === 'comic' &&
+      blocklistRequest.externalProvider === undefined
+    ) {
+      blocklistRequest = {
+        ...blocklistRequest,
+        externalProvider: MediaIdentifierProvider.COMICVINE,
+      };
+    } else if (
+      blocklistRequest.mediaType === 'magazine' &&
+      blocklistRequest.externalProvider === undefined
+    ) {
+      blocklistRequest = {
+        ...blocklistRequest,
+        externalProvider: MediaIdentifierProvider.LAZYLIBRARIAN,
+      };
     }
 
     const tmdbId = blocklistRequest.tmdbId ?? 0;
@@ -216,7 +254,7 @@ export class Blocklist implements BlocklistItem {
     });
 
     const mediaRepository = em.getRepository(Media);
-    let media: Media | null = null;
+    let media: Media | null;
 
     if (blocklistRequest.mediaType === 'music' && blocklistRequest.externalId) {
       media = await mediaRepository.findOne({
@@ -234,6 +272,36 @@ export class Blocklist implements BlocklistItem {
           provider:
             blocklistRequest.externalProvider ??
             MediaIdentifierProvider.OPENLIBRARY,
+          value: blocklistRequest.externalId,
+        },
+        relations: { media: true },
+      });
+      media =
+        identifier?.media.mediaType === blocklistRequest.mediaType
+          ? identifier.media
+          : null;
+    } else if (
+      blocklistRequest.mediaType === 'comic' &&
+      blocklistRequest.externalId
+    ) {
+      const identifier = await em.getRepository(MediaIdentifier).findOne({
+        where: {
+          provider: MediaIdentifierProvider.COMICVINE,
+          value: blocklistRequest.externalId,
+        },
+        relations: { media: true },
+      });
+      media =
+        identifier?.media.mediaType === blocklistRequest.mediaType
+          ? identifier.media
+          : null;
+    } else if (
+      blocklistRequest.mediaType === 'magazine' &&
+      blocklistRequest.externalId
+    ) {
+      const identifier = await em.getRepository(MediaIdentifier).findOne({
+        where: {
+          provider: MediaIdentifierProvider.LAZYLIBRARIAN,
           value: blocklistRequest.externalId,
         },
         relations: { media: true },
@@ -261,8 +329,6 @@ export class Blocklist implements BlocklistItem {
       blocklist.isMediaPlaceholder = true;
     }
 
-    await blocklistRepository.save(blocklist);
-
     if (!media) {
       media = new Media({
         tmdbId,
@@ -284,8 +350,25 @@ export class Blocklist implements BlocklistItem {
                   canonical: true,
                 }),
               ]
-            : undefined,
-        blocklist: Promise.resolve(blocklist),
+            : blocklistRequest.mediaType === 'comic' &&
+                blocklistRequest.externalId
+              ? [
+                  new MediaIdentifier({
+                    provider: MediaIdentifierProvider.COMICVINE,
+                    value: blocklistRequest.externalId,
+                    canonical: true,
+                  }),
+                ]
+              : blocklistRequest.mediaType === 'magazine' &&
+                  blocklistRequest.externalId
+                ? [
+                    new MediaIdentifier({
+                      provider: MediaIdentifierProvider.LAZYLIBRARIAN,
+                      value: blocklistRequest.externalId,
+                      canonical: true,
+                    }),
+                  ]
+                : undefined,
       });
 
       await mediaRepository.save(media);
@@ -296,5 +379,10 @@ export class Blocklist implements BlocklistItem {
 
       await mediaRepository.save(media);
     }
+
+    // Blocklist owns the one-to-one join column. Assigning the inverse
+    // Media.blocklist relation alone does not persist the association.
+    blocklist.media = media;
+    await blocklistRepository.save(blocklist);
   }
 }

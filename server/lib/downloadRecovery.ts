@@ -7,12 +7,14 @@ import { getRepository } from '@server/datasource';
 import DownloadRecoveryState, {
   type DownloadRecoveryServiceType,
 } from '@server/entity/DownloadRecoveryState';
+import { observeInterventionQueue } from '@server/lib/queueInterventions';
 import {
   getSettings,
   type DVRSettings,
   type ReadarrSettings,
 } from '@server/lib/settings';
 import logger from '@server/logger';
+import { mapWithConcurrency } from '@server/utils/concurrency';
 import { uniqWith } from 'lodash';
 import { LessThan, MoreThan } from 'typeorm';
 import { isMatchingReadarrDownloadServer } from './downloadtracker';
@@ -59,6 +61,7 @@ const MAX_RETRIES_PER_DOWNLOAD = 3;
 const MAX_RETRIES_PER_MEDIA = 3;
 const STALLED_AFTER_MS = 2 * 60 * 60 * 1000;
 const STALE_STATE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+export const DOWNLOAD_RECOVERY_MEDIA_CONCURRENCY = 5;
 
 const retryableFailurePattern =
   /\b(encrypted|password|unpack|crc|parity|failed|error|missing|blacklist|rejected|not close enough|couldn't find similar|unable to parse|wrong)\b/i;
@@ -96,6 +99,40 @@ export const deduplicateRecoveryQueue = <T extends { downloadId?: string }>(
     queueItems,
     (a, b) => !!a.downloadId && a.downloadId === b.downloadId
   );
+
+export const processRecoveryQueueByMedia = async <T>(
+  queueItems: readonly T[],
+  getExternalServiceId: (item: T) => number | undefined,
+  processItem: (item: T) => Promise<void>,
+  concurrency = DOWNLOAD_RECOVERY_MEDIA_CONCURRENCY
+): Promise<void> => {
+  const itemsByMedia = new Map<number, T[]>();
+
+  for (const item of queueItems) {
+    const externalServiceId = getExternalServiceId(item);
+    if (
+      !Number.isSafeInteger(externalServiceId) ||
+      externalServiceId === undefined ||
+      externalServiceId <= 0
+    ) {
+      continue;
+    }
+
+    const mediaItems = itemsByMedia.get(externalServiceId) ?? [];
+    mediaItems.push(item);
+    itemsByMedia.set(externalServiceId, mediaItems);
+  }
+
+  await mapWithConcurrency(
+    [...itemsByMedia.values()],
+    concurrency,
+    async (mediaItems) => {
+      for (const item of mediaItems) {
+        await processItem(item);
+      }
+    }
+  );
+};
 
 const isProgressState = (item: RecoveryQueueItem): boolean => {
   const status = normalize(item.status);
@@ -250,9 +287,20 @@ class DownloadRecovery {
       const queueItems = await service.api.getQueue();
       const uniqueQueueItems = deduplicateRecoveryQueue(queueItems);
       const activeDownloadIds = uniqueQueueItems.map((item) => item.downloadId);
+      await observeInterventionQueue(
+        service.serviceType,
+        service.server,
+        uniqueQueueItems
+      ).catch(() => {
+        logger.debug('Unable to update download intervention inbox.', {
+          label: 'Download Recovery',
+        });
+      });
 
-      await Promise.all(
-        uniqueQueueItems.map((item) => this.processQueueItem(service, item))
+      await processRecoveryQueueByMedia(
+        uniqueQueueItems,
+        service.getExternalId,
+        (item) => this.processQueueItem(service, item)
       );
 
       await stateRepository.delete({

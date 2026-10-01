@@ -4,9 +4,10 @@ import { getSafeHref } from '@app/utils/safeUrl';
 
 interface PlayButtonProps {
   links: PlayButtonLink[];
-  buttonSize?: 'default' | 'sm';
+  buttonSize?: 'standard' | 'default' | 'sm';
   unavailableLink?: Omit<PlayButtonLink, 'url'>;
   disabledReason?: string;
+  tooltip?: string;
 }
 
 export interface PlayButtonLink {
@@ -17,9 +18,10 @@ export interface PlayButtonLink {
 
 const PlayButton = ({
   links,
-  buttonSize = 'default',
+  buttonSize = 'standard',
   unavailableLink,
   disabledReason,
+  tooltip,
 }: PlayButtonProps) => {
   const safeLinks = links
     .map((link) => ({ ...link, url: getSafeHref(link.url) }))
@@ -46,6 +48,7 @@ const PlayButton = ({
       as="a"
       buttonType="playback"
       buttonSize={buttonSize}
+      title={tooltip}
       text={
         <span className="playback-button-label">
           {safeLinks[0].svg}

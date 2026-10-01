@@ -1,3 +1,5 @@
+import type { CacheStore } from '@server/lib/cache';
+import { recordCacheHit, recordExternalApiCall } from '@server/lib/metrics';
 import logger from '@server/logger';
 import { trackBackgroundTask } from '@server/utils/backgroundTasks';
 import { proxyRequestInterceptor } from '@server/utils/customProxyAgent';
@@ -7,10 +9,10 @@ import {
   createSafeHttpUrl,
   stringifySafeHttpUrl,
 } from '@server/utils/security';
+import { userAgentRequestInterceptor } from '@server/utils/userAgent';
 import type { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import axios from 'axios';
 import rateLimit from 'axios-rate-limit';
-import type NodeCache from 'node-cache';
 import { createHash } from 'node:crypto';
 
 // 5 minute default TTL (in seconds)
@@ -22,6 +24,13 @@ export const DEFAULT_EXTERNAL_API_TIMEOUT_MS = 10_000;
 export const DEFAULT_EXTERNAL_API_MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
 export const DEFAULT_EXTERNAL_API_MAX_BODY_LENGTH = 1024 * 1024;
 export const MAX_PENDING_EXTERNAL_API_REQUESTS = 256;
+
+export type ExternalAPIRequestFailure = {
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  hostname: string;
+  path: string;
+  error: unknown;
+};
 
 const CACHE_KEY_DIGEST_PREFIX = ':sha256:';
 const MAX_CACHE_KEY_VALUES = 100_000;
@@ -71,21 +80,25 @@ export const containsCredentialFields = (value: unknown): boolean => {
 
 export interface ExternalAPIOptions {
   allowPrivateAddresses?: boolean;
+  requireDirectConnection?: boolean;
+  rejectUnsafeLocalAddresses?: boolean;
   allowedBaseUrls?: string[];
-  nodeCache?: NodeCache;
+  nodeCache?: CacheStore;
   headers?: Record<string, unknown>;
   timeout?: number;
   maxContentLength?: number;
   maxBodyLength?: number;
   rateLimit?: {
-    maxRPS: number;
+    maxRPS?: number;
     maxRequests: number;
+    perMilliseconds?: number;
   };
   // Some callers (e.g. JellyfinAPI) build their base URL from structured
   // settings where an unset hostname is a normal "not yet configured" state,
   // not an admin-entered typo. For those, defer the failure to request time
   // instead of throwing during construction.
   allowUnconfiguredBaseUrl?: boolean;
+  onRequestFailure?: (failure: ExternalAPIRequestFailure) => void;
 }
 
 const getHttpOrigin = (
@@ -293,9 +306,65 @@ class ExternalAPI {
   private baseUrl: string;
   private allowedOrigins: ReadonlySet<string>;
   private cacheScope: string;
-  private cache?: NodeCache;
+  private cache?: CacheStore;
   private backgroundCacheRefreshEnabled: boolean;
+  private onRequestFailure?: ExternalAPIOptions['onRequestFailure'];
   private static pendingRequests = new Map<string | symbol, Promise<unknown>>();
+  private static explicitCacheKeys = new WeakMap<
+    CacheStore,
+    Map<string, { endpoint: string; scope: string }>
+  >();
+
+  protected getCached<T>(
+    endpoint: string,
+    config?: AxiosRequestConfig
+  ): T | undefined {
+    return this.cache?.get<T>(
+      this.serializeCacheKey(endpoint, {
+        params: config?.params,
+        headers: config?.headers,
+        baseURL: config?.baseURL,
+      })
+    );
+  }
+
+  protected setCached<T>(
+    endpoint: string,
+    value: T,
+    ttl: number = DEFAULT_TTL,
+    config?: AxiosRequestConfig
+  ): void {
+    if (!this.cache || ttl <= 0) return;
+    const key = this.serializeCacheKey(endpoint, {
+      params: config?.params,
+      headers: config?.headers,
+      baseURL: config?.baseURL,
+    });
+    if (!this.cache.set(key, value, ttl)) return;
+    let keys = ExternalAPI.explicitCacheKeys.get(this.cache);
+    if (!keys) {
+      keys = new Map();
+      ExternalAPI.explicitCacheKeys.set(this.cache, keys);
+    }
+    // Provider stores contain at most 500 entries; bound the shared index too.
+    if (keys.size >= 1024) {
+      for (const existing of keys.keys())
+        if (this.cache.getTtl(existing) == null) keys.delete(existing);
+      if (keys.size >= 1024) keys.delete(keys.keys().next().value!);
+    }
+    keys.set(key, { endpoint, scope: this.cacheScope });
+  }
+
+  protected removeCacheByEndpointPrefix(prefix: string): void {
+    if (!this.cache) return;
+    const keys = ExternalAPI.explicitCacheKeys.get(this.cache);
+    for (const [key, item] of keys ?? []) {
+      if (item.scope === this.cacheScope && item.endpoint.startsWith(prefix)) {
+        this.cache.del(key);
+        keys?.delete(key);
+      }
+    }
+  }
 
   constructor(
     baseUrl: string,
@@ -315,7 +384,9 @@ class ExternalAPI {
       params,
       ...createSafeHttpRequestOptions(
         options.allowPrivateAddresses ?? false,
-        false
+        false,
+        options.requireDirectConnection ?? false,
+        options.rejectUnsafeLocalAddresses ?? false
       ),
       timeout: options.timeout ?? DEFAULT_EXTERNAL_API_TIMEOUT_MS,
       maxContentLength:
@@ -341,11 +412,13 @@ class ExternalAPI {
       return config;
     });
     this.axios.interceptors.request.use(proxyRequestInterceptor);
+    this.axios.interceptors.request.use(userAgentRequestInterceptor);
 
     if (options.rateLimit) {
       this.axios = rateLimit(this.axios, {
         maxRequests: options.rateLimit.maxRequests,
         maxRPS: options.rateLimit.maxRPS,
+        perMilliseconds: options.rateLimit.perMilliseconds,
       });
     }
 
@@ -366,6 +439,7 @@ class ExternalAPI {
       containsCredentialFields(params) ||
       containsCredentialFields(options.headers)
     );
+    this.onRequestFailure = options.onRequestFailure;
   }
 
   protected async request<T>(
@@ -374,6 +448,7 @@ class ExternalAPI {
     data?: unknown,
     config?: AxiosRequestConfig
   ): Promise<AxiosResponse<T>> {
+    recordExternalApiCall(method);
     const normalizedEndpoint = normalizeExternalApiRequestTarget(
       endpoint,
       config?.baseURL ?? this.baseUrl,
@@ -396,42 +471,76 @@ class ExternalAPI {
 
     const requestTarget = stringifySafeHttpUrl(safeUrl);
 
-    switch (method) {
-      case 'GET':
-        // Servarr and other provider APIs can briefly refuse or time out a
-        // read while they are starting, refreshing, or applying configuration.
-        // Reads are safe to repeat, so absorb one transient transport/server
-        // failure before the caller turns it into a user-facing error.
-        return withTransientHttpRetry(() =>
-          this.axios.get<T>(requestTarget, config)
-        );
-      case 'POST':
-        return this.axios.post<T>(requestTarget, data, config);
-      case 'PUT':
-        return this.axios.put<T>(requestTarget, data, config);
-      case 'DELETE':
-        return this.axios.delete<T>(requestTarget, config);
+    try {
+      switch (method) {
+        case 'GET':
+          // Servarr and other provider APIs can briefly refuse or time out a
+          // read while they are starting, refreshing, or applying configuration.
+          // Reads are safe to repeat, so absorb one transient transport/server
+          // failure before the caller turns it into a user-facing error.
+          return await withTransientHttpRetry(() =>
+            this.axios.get<T>(requestTarget, config)
+          );
+        case 'POST':
+          // requestTarget is restricted to the constructor's allowed origins;
+          // provider payloads may intentionally originate in local config.
+          // codeql[js/file-access-to-http]
+          return await this.axios.post<T>(requestTarget, data, config);
+        case 'PUT':
+          // requestTarget is restricted to the constructor's allowed origins;
+          // provider payloads may intentionally originate in local config.
+          // codeql[js/file-access-to-http]
+          return await this.axios.put<T>(requestTarget, data, config);
+        case 'DELETE':
+          return await this.axios.delete<T>(requestTarget, config);
+      }
+    } catch (error) {
+      try {
+        this.onRequestFailure?.({
+          method,
+          hostname: safeUrl.hostname,
+          path: safeUrl.pathname,
+          error,
+        });
+      } catch {
+        // Diagnostics must not replace the original upstream request error.
+      }
+
+      throw error;
     }
   }
 
+  // transform runs before the cache write.
   protected async get<T>(
     endpoint: string,
     config?: AxiosRequestConfig,
     ttl?: number,
-    isUsableResponse?: (data: T) => boolean
+    options?:
+      | ((data: T) => boolean)
+      | {
+          cache?: CacheStore;
+          transform?: (data: T) => T;
+        }
   ): Promise<T> {
+    const cache =
+      typeof options === 'object' ? (options.cache ?? this.cache) : this.cache;
+    const isUsableResponse =
+      typeof options === 'function' ? options : undefined;
+    const transform =
+      typeof options === 'object' ? options.transform : undefined;
     const cacheKey = this.serializeCacheKey(endpoint, {
       params: config?.params,
       headers: config?.headers,
       baseURL: config?.baseURL,
     });
     if (ttl !== 0) {
-      const cachedItem = this.cache?.get<T>(cacheKey);
+      const cachedItem = cache?.get<T>(cacheKey);
       if (cachedItem !== undefined) {
         if (!isUsableResponse || isUsableResponse(cachedItem)) {
+          recordCacheHit('external-api');
           return cachedItem;
         }
-        this.cache?.del(cacheKey);
+        cache?.del(cacheKey);
       }
     }
 
@@ -440,7 +549,9 @@ class ExternalAPI {
       cacheKey,
       () => this.request<T>('GET', endpoint, undefined, config),
       ttl,
-      isUsableResponse
+      isUsableResponse,
+      cache,
+      transform
     );
 
     if (isUsableResponse && !isUsableResponse(response)) {
@@ -449,7 +560,9 @@ class ExternalAPI {
         cacheKey,
         () => this.request<T>('GET', endpoint, undefined, config),
         0,
-        isUsableResponse
+        isUsableResponse,
+        cache,
+        transform
       );
     }
 
@@ -473,6 +586,7 @@ class ExternalAPI {
     if (cacheable) {
       const cachedItem = this.cache?.get<T>(cacheKey);
       if (cachedItem !== undefined) {
+        recordCacheHit('external-api');
         return cachedItem;
       }
     }
@@ -498,6 +612,7 @@ class ExternalAPI {
     const cachedItem = ttl === 0 ? undefined : this.cache?.get<T>(cacheKey);
 
     if (cachedItem !== undefined) {
+      recordCacheHit('external-api');
       const keyTtl = this.cache?.getTtl(cacheKey) ?? 0;
 
       // If the item has passed our rolling check, fetch again in background
@@ -556,7 +671,9 @@ class ExternalAPI {
     cacheKey: string,
     request: () => Promise<{ data: T }>,
     ttl?: number,
-    isUsableResponse?: (data: T) => boolean
+    isUsableResponse?: (data: T) => boolean,
+    cache: CacheStore | undefined = this.cache,
+    transform?: (data: T) => T
   ): Promise<T> {
     const pendingKey = `${method}:${cacheKey}`;
     const cacheable =
@@ -584,13 +701,14 @@ class ExternalAPI {
     const pending = Promise.resolve()
       .then(request)
       .then((response) => {
+        const data = transform ? transform(response.data) : response.data;
         if (
-          this.cache &&
+          cache &&
           cacheable &&
-          (!isUsableResponse || isUsableResponse(response.data))
+          (!isUsableResponse || isUsableResponse(data))
         ) {
           try {
-            this.cache.set(cacheKey, response.data, ttl ?? DEFAULT_TTL);
+            cache.set(cacheKey, data, ttl ?? DEFAULT_TTL);
           } catch (error) {
             logger.warn('Unable to cache external API response', {
               label: 'External API',
@@ -600,7 +718,7 @@ class ExternalAPI {
           }
         }
 
-        return response.data;
+        return data;
       })
       .finally(() => {
         ExternalAPI.pendingRequests.delete(requestKey);

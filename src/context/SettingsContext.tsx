@@ -1,3 +1,4 @@
+import { DEFAULT_ENABLED_MEDIA_CATEGORIES } from '@server/constants/mediaCategories';
 import { MediaServerType } from '@server/constants/server';
 import type { PublicSettingsResponse } from '@server/interfaces/api/settingsInterfaces';
 import axios from 'axios';
@@ -15,12 +16,20 @@ const defaultSettings: PublicSettingsResponse = {
   applicationUrl: '',
   hideAvailable: false,
   hideBlocklisted: false,
+  hideRequested: false,
   localLogin: true,
   mediaServerLogin: true,
   movie4kEnabled: false,
   series4kEnabled: false,
   musicEnabled: false,
   booksEnabled: false,
+  ebookServiceEnabled: false,
+  audiobookServiceEnabled: false,
+  comicsEnabled: false,
+  magazinesEnabled: false,
+  softwareEnabled: false,
+  romarrEnabled: false,
+  enabledMediaCategories: DEFAULT_ENABLED_MEDIA_CATEGORIES,
   discoverRegion: '',
   streamingRegion: '',
   originalLanguage: '',

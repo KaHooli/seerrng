@@ -9,13 +9,21 @@ import CachedImage from '@app/components/Common/CachedImage';
 import MediaTypeBadge from '@app/components/Common/MediaTypeBadge';
 import StatusBadgeMini from '@app/components/Common/StatusBadgeMini';
 import Tooltip from '@app/components/Common/Tooltip';
+import WatchedBadge from '@app/components/Common/WatchedBadge';
 import ErrorCard from '@app/components/TitleCard/ErrorCard';
 import Placeholder from '@app/components/TitleCard/Placeholder';
-import { getTitleCardStatusBadges } from '@app/components/TitleCard/statusBadges';
+import PosterRatingPopover from '@app/components/TitleCard/PosterRatingPopover';
+import { getTitleCardBookDetailQuery } from '@app/components/TitleCard/bookDetailQuery';
+import {
+  getTitleCardStatusBadges,
+  getTitleCardStatusBadgeSlots,
+} from '@app/components/TitleCard/statusBadges';
+import useAlbumArtwork from '@app/hooks/useAlbumArtwork';
 import { useIsTouch } from '@app/hooks/useIsTouch';
 import useSettings from '@app/hooks/useSettings';
 import useToasts from '@app/hooks/useToasts';
 import { Permission, UserType, useUser } from '@app/hooks/useUser';
+import useWatchStatus from '@app/hooks/useWatchStatus';
 import globalMessages from '@app/i18n/globalMessages';
 import {
   encodeApiPathSegment,
@@ -37,7 +45,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { MediaStatus } from '@server/constants/media';
 import type { Watchlist } from '@server/entity/Watchlist';
-import type { MediaType } from '@server/models/Search';
+import type { AlbumResult, MediaType } from '@server/models/Search';
 import axios from 'axios';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
@@ -58,10 +66,15 @@ interface TitleCardProps {
   artist?: string;
   type?: string;
   userScore?: number;
-  mediaType: MediaType;
+  voteCount?: number;
+  bookRatingAverage?: number;
+  bookRatingCount?: number;
+  mediaType: Exclude<MediaType, 'author'>;
   status?: MediaStatus;
   status4k?: MediaStatus;
   canExpand?: boolean;
+  requestable?: boolean;
+  providerTracked?: boolean;
   inProgress?: boolean;
   inProgress4k?: boolean;
   canRequestAdditionalFormat?: boolean;
@@ -72,7 +85,9 @@ interface TitleCardProps {
   hideAssociationWhenEmpty?: boolean;
   priority?: boolean;
   preferredBookFormat?: 'ebook' | 'audiobook';
+  showAllBookFormats?: boolean;
   availableQualities?: ('MP3' | 'FLAC')[];
+  qualityStatuses?: AlbumResult['qualityStatuses'];
 }
 
 const messages = defineMessages('components.TitleCard', {
@@ -84,6 +99,12 @@ const messages = defineMessages('components.TitleCard', {
   watchlistCancel: 'watchlist for <strong>{title}</strong> canceled.',
   watchlistError: 'Something went wrong. Please try again.',
   requestBookFormat: 'Request {format}',
+  magazineTracked: 'Tracked',
+  magazineTrackedReason: 'This title is already tracked by LazyLibrarian.',
+  magazineRequestedReason: 'This magazine already has an active request.',
+  magazineAvailableReason: 'This magazine is already available.',
+  magazinePartiallyAvailableReason:
+    'Some issues of this magazine are already available.',
 });
 
 const TitleCard = ({
@@ -93,6 +114,10 @@ const TitleCard = ({
   year,
   title,
   artist,
+  userScore,
+  voteCount,
+  bookRatingAverage,
+  bookRatingCount,
   status,
   status4k,
   mediaType,
@@ -101,12 +126,16 @@ const TitleCard = ({
   inProgress4k = false,
   canRequestAdditionalFormat = false,
   canExpand = false,
+  requestable = true,
+  providerTracked = false,
   mutateParent,
   showText = false,
   hideAssociationWhenEmpty = false,
   priority = false,
   preferredBookFormat,
+  showAllBookFormats = false,
   availableQualities,
+  qualityStatuses,
 }: TitleCardProps) => {
   const isTouch = useIsTouch();
   const router = useRouter();
@@ -131,7 +160,10 @@ const TitleCard = ({
     inProgress,
     inProgress4k,
     availableQualities,
+    qualityStatuses,
   });
+  const { primary: primaryStatusBadge, secondary: secondaryStatusBadge } =
+    getTitleCardStatusBadgeSlots(statusBadges);
 
   // Just to get the year from the date
   if (year) {
@@ -154,6 +186,7 @@ const TitleCard = ({
         setCurrentStatus(newStatus);
       }
       mutateParent?.();
+      setIsUpdating(false);
       setShowRequestModal(false);
     },
     [mutateParent]
@@ -187,7 +220,9 @@ const TitleCard = ({
               mediaType: 'music',
               title,
             }
-          : mediaType === 'book'
+          : mediaType === 'book' ||
+              mediaType === 'comic' ||
+              mediaType === 'magazine'
             ? {
                 externalId: actionId,
                 mediaType,
@@ -269,11 +304,17 @@ const TitleCard = ({
           await axios.post(
             `/api/v1/blocklist/collection/${encodeApiPathSegment(id)}`
           );
-        } else if (isAlbum || isBook) {
+        } else if (isAlbum || isBook || isComic || isMagazine) {
           await axios.post('/api/v1/blocklist', {
             externalId: actionId,
-            externalProvider: isAlbum ? 'musicbrainz' : 'openlibrary',
-            mediaType: isAlbum ? 'music' : 'book',
+            externalProvider: isAlbum
+              ? 'musicbrainz'
+              : isBook
+                ? 'openlibrary'
+                : isComic
+                  ? 'comicvine'
+                  : 'lazylibrarian',
+            mediaType: isAlbum ? 'music' : mediaType,
             title,
             user: user?.id,
           });
@@ -406,18 +447,61 @@ const TitleCard = ({
     setIsUpdating(false);
   };
 
-  const closeModal = useCallback(() => setShowRequestModal(false), []);
+  const closeModal = useCallback(() => {
+    setIsUpdating(false);
+    setShowRequestModal(false);
+  }, []);
 
   const isAlbum = mediaType === 'album';
   const isArtist = mediaType === 'artist';
   const isBook = mediaType === 'book';
+  const isComic = mediaType === 'comic';
+  const isMagazine = mediaType === 'magazine';
   const canonicalId = normalizeExternalTitleId(mediaType, id);
+  const artwork = useAlbumArtwork(
+    isAlbum ? String(canonicalId) : undefined,
+    image,
+    cardRef
+  );
   const videoMediaType =
     mediaType === 'movie' || mediaType === 'collection' || mediaType === 'tv';
   const numericId = typeof id === 'number' ? id : Number(id);
+  const canShowWatchedStatus =
+    (mediaType === 'movie' || mediaType === 'tv') &&
+    (currentStatus === MediaStatus.AVAILABLE ||
+      currentStatus === MediaStatus.PARTIALLY_AVAILABLE ||
+      currentStatus4k === MediaStatus.AVAILABLE ||
+      currentStatus4k === MediaStatus.PARTIALLY_AVAILABLE);
+  const [watchStatusInView, setWatchStatusInView] = useState(false);
+  useEffect(() => {
+    if (!canShowWatchedStatus || watchStatusInView) return;
+    const card = cardRef.current;
+    if (!card || typeof IntersectionObserver === 'undefined') {
+      setWatchStatusInView(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setWatchStatusInView(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '200px' }
+    );
+    observer.observe(card);
+    return () => observer.disconnect();
+  }, [canShowWatchedStatus, watchStatusInView]);
+  const { data: watchedStatus } = useWatchStatus(
+    mediaType === 'tv' ? 'tv' : 'movie',
+    Number.isSafeInteger(numericId) ? numericId : undefined,
+    canShowWatchedStatus && watchStatusInView
+  );
   const canUseVideoActions = videoMediaType && Number.isFinite(numericId);
-  const canUseRequestActions = canUseVideoActions || isAlbum || isBook;
-  const canUseWatchlistActions = canUseVideoActions || isAlbum || isBook;
+  const canUseRequestActions =
+    canUseVideoActions || isAlbum || isBook || isComic || isMagazine;
+  const canUseWatchlistActions =
+    canUseVideoActions || isAlbum || isBook || isComic || isMagazine;
   const detailHref =
     mediaType === 'movie'
       ? `/movie/${id}`
@@ -430,12 +514,19 @@ const TitleCard = ({
             : mediaType === 'book'
               ? {
                   pathname: `/book/${encodeApiPathSegment(canonicalId)}`,
-                  query: preferredBookFormat
-                    ? { format: preferredBookFormat }
-                    : undefined,
+                  query: getTitleCardBookDetailQuery({
+                    canonicalId,
+                    preferredBookFormat,
+                    title,
+                  }),
                 }
-              : `/artist/${encodeApiPathSegment(canonicalId)}`;
-  const displayImage = getTmdbPosterImageUrl(image);
+              : mediaType === 'comic'
+                ? `/comic/${encodeApiPathSegment(canonicalId)}`
+                : mediaType === 'magazine'
+                  ? `/magazine/${encodeApiPathSegment(canonicalId)}`
+                  : `/artist/${encodeApiPathSegment(canonicalId)}`;
+  const displayImage = getTmdbPosterImageUrl(artwork);
+  // Resolved provider artwork is routed by URL when image caching is enabled.
   const imageCacheType =
     isResolvedImageUrl(displayImage) && isBook
       ? 'book'
@@ -451,7 +542,11 @@ const TitleCard = ({
         ? Permission.REQUEST_TV
         : isAlbum
           ? Permission.REQUEST_MUSIC
-          : Permission.REQUEST_BOOK,
+          : isComic
+            ? Permission.REQUEST_COMIC
+            : isMagazine
+              ? Permission.REQUEST_MAGAZINE
+              : Permission.REQUEST_BOOK,
   ];
 
   if (mediaType === 'movie') {
@@ -461,6 +556,7 @@ const TitleCard = ({
   }
 
   const showRequestButton =
+    requestable &&
     canUseRequestActions &&
     hasPermission(requestPermissions, { type: 'or' }) &&
     !isArtist;
@@ -469,7 +565,7 @@ const TitleCard = ({
     hasPermission([Permission.MANAGE_BLOCKLIST], {
       type: 'or',
     }) &&
-    (canUseVideoActions || isAlbum || isBook);
+    (canUseVideoActions || isAlbum || isBook || isComic || isMagazine);
   const canRequest4k =
     ((mediaType === 'movie' && settings.currentSettings.movie4kEnabled) ||
       (mediaType === 'tv' && settings.currentSettings.series4kEnabled)) &&
@@ -497,8 +593,9 @@ const TitleCard = ({
     !!currentStatus &&
     currentStatus !== MediaStatus.UNKNOWN &&
     currentStatus !== MediaStatus.DELETED;
-  const showTextOverlay = showText || !image || showDetail || showRequestModal;
-  const showFullDetailOverlay = !image || showDetail || showRequestModal;
+  const showTextOverlay =
+    showText || !artwork || showDetail || showRequestModal;
+  const showFullDetailOverlay = !artwork || showDetail || showRequestModal;
   const requestLabel =
     isBook && preferredBookFormat
       ? intl.formatMessage(messages.requestBookFormat, {
@@ -509,6 +606,44 @@ const TitleCard = ({
             ? globalMessages.request4k
             : globalMessages.request
         );
+  const magazineRequestState = (() => {
+    if (!isMagazine) return undefined;
+    if (
+      currentStatus === MediaStatus.PENDING ||
+      currentStatus === MediaStatus.PROCESSING
+    ) {
+      return {
+        label: intl.formatMessage(globalMessages.requested),
+        reason: intl.formatMessage(messages.magazineRequestedReason),
+      };
+    }
+    if (currentStatus === MediaStatus.AVAILABLE) {
+      return {
+        label: intl.formatMessage(globalMessages.available),
+        reason: intl.formatMessage(messages.magazineAvailableReason),
+      };
+    }
+    if (currentStatus === MediaStatus.PARTIALLY_AVAILABLE) {
+      return {
+        label: intl.formatMessage(globalMessages.partiallyavailable),
+        reason: intl.formatMessage(messages.magazinePartiallyAvailableReason),
+      };
+    }
+    if (providerTracked) {
+      return {
+        label: intl.formatMessage(messages.magazineTracked),
+        reason: intl.formatMessage(messages.magazineTrackedReason),
+      };
+    }
+    return undefined;
+  })();
+  const canShowBlocklistAction =
+    showDetail &&
+    showHideButton &&
+    currentStatus !== MediaStatus.PROCESSING &&
+    currentStatus !== MediaStatus.AVAILABLE &&
+    currentStatus !== MediaStatus.PARTIALLY_AVAILABLE &&
+    currentStatus !== MediaStatus.PENDING;
 
   if (wasBlocklistedHere) {
     return null;
@@ -516,7 +651,9 @@ const TitleCard = ({
 
   return (
     <div
-      className={canExpand ? 'w-full' : 'w-36 sm:w-36 md:w-44'}
+      className={`title-card-shell ${
+        canExpand ? 'w-full' : 'w-36 sm:w-36 md:w-44'
+      }`}
       data-testid="title-card"
       ref={cardRef}
     >
@@ -569,13 +706,31 @@ const TitleCard = ({
               onCancel={closeModal}
             />
           )}
+          {isComic && typeof canonicalId === 'string' && (
+            <RequestModal
+              comicId={canonicalId}
+              show={showRequestModal}
+              type="comic"
+              onComplete={requestComplete}
+              onUpdating={requestUpdating}
+              onCancel={closeModal}
+            />
+          )}
+          {isMagazine && typeof canonicalId === 'string' && (
+            <RequestModal
+              magazineTitle={canonicalId}
+              show={showRequestModal}
+              type="magazine"
+              onComplete={requestComplete}
+              onUpdating={requestUpdating}
+              onCancel={closeModal}
+            />
+          )}
         </>
       )}
       <div
-        className={`group relative aspect-[2/3] transform-gpu cursor-default overflow-hidden rounded-xl bg-gray-800 bg-cover ring-1 transition duration-300 outline-none ${
-          showDetail
-            ? 'scale-105 shadow-lg ring-gray-500'
-            : 'scale-100 shadow ring-gray-700'
+        className={`app-card-poster app-card-poster-interactive group aspect-[2/3] ${
+          showDetail ? 'app-card-poster-active' : ''
         }`}
         onMouseEnter={() => {
           if (!isTouch) {
@@ -602,82 +757,135 @@ const TitleCard = ({
             priority={priority}
           />
           <div className="absolute right-0 left-0 p-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                {isBook ? (
-                  <BookFormatBadge
-                    format={preferredBookFormat}
-                    variant="card"
-                    className="pointer-events-none z-40 self-start"
-                  />
-                ) : (
-                  <MediaTypeBadge
-                    mediaType={mediaType === 'person' ? 'artist' : mediaType}
-                    variant="card"
-                    className="pointer-events-none z-40 self-start"
-                  />
-                )}
-                {currentStatus !== MediaStatus.BLOCKLISTED && (
-                  <div className="z-40 flex items-center">
+            <div className="flex flex-col gap-1">
+              <div className="flex w-full min-w-0 items-start justify-between gap-1">
+                <div className="flex min-w-0 flex-col items-start gap-1">
+                  {isBook ? (
+                    showAllBookFormats ? (
+                      <>
+                        <BookFormatBadge
+                          format="ebook"
+                          variant="card"
+                          className="pointer-events-none z-40 self-start"
+                        />
+                        <BookFormatBadge
+                          format="audiobook"
+                          variant="card"
+                          className="pointer-events-none z-40 self-start"
+                        />
+                      </>
+                    ) : (
+                      <BookFormatBadge
+                        format={preferredBookFormat}
+                        variant="card"
+                        className="pointer-events-none z-40 self-start"
+                      />
+                    )
+                  ) : (
+                    <MediaTypeBadge
+                      mediaType={mediaType === 'person' ? 'artist' : mediaType}
+                      variant="card"
+                      className="pointer-events-none z-40 self-start"
+                    />
+                  )}
+                </div>
+                <div className="z-40 flex min-h-4 shrink-0 items-center justify-end">
+                  {primaryStatusBadge && (
+                    <StatusBadgeMini
+                      status={primaryStatusBadge.status}
+                      quality={primaryStatusBadge.quality}
+                      inProgress={primaryStatusBadge.inProgress}
+                      shrink
+                    />
+                  )}
+                  {!primaryStatusBadge && canShowBlocklistAction && (
+                    <Tooltip
+                      content={intl.formatMessage(
+                        globalMessages.addToBlocklist
+                      )}
+                    >
+                      <button
+                        type="button"
+                        className="poster-control poster-control-blocklist app-control-shadow-exempt z-40"
+                        aria-label={intl.formatMessage(
+                          globalMessages.addToBlocklist
+                        )}
+                        onClick={() => setShowBlocklistModal(true)}
+                      >
+                        <EyeSlashIcon />
+                      </button>
+                    </Tooltip>
+                  )}
+                </div>
+              </div>
+              <div className="flex w-full min-w-0 items-center justify-between gap-1">
+                <div className="z-40 flex min-h-4 min-w-0 items-center">
+                  {currentStatus !== MediaStatus.BLOCKLISTED && (
                     <AssociationBadge
                       mediaType={mediaType}
                       id={id}
                       variant="card"
                       hideWhenEmpty={hideAssociationWhenEmpty}
                     />
-                  </div>
-                )}
+                  )}
+                </div>
+                <div className="z-40 flex min-h-4 shrink-0 items-center justify-end">
+                  {secondaryStatusBadge && (
+                    <StatusBadgeMini
+                      status={secondaryStatusBadge.status}
+                      quality={secondaryStatusBadge.quality}
+                      inProgress={secondaryStatusBadge.inProgress}
+                      shrink
+                    />
+                  )}
+                </div>
               </div>
-              {showDetail && currentStatus !== MediaStatus.BLOCKLISTED && (
+              {watchedStatus && watchedStatus.watchedCount > 0 && (
+                <div className="z-40 flex w-full items-center justify-end">
+                  <WatchedBadge
+                    status={watchedStatus}
+                    incompleteLibrary={
+                      mediaType === 'tv' &&
+                      (currentStatus === MediaStatus.PARTIALLY_AVAILABLE ||
+                        (currentStatus !== MediaStatus.AVAILABLE &&
+                          currentStatus4k === MediaStatus.PARTIALLY_AVAILABLE))
+                    }
+                  />
+                </div>
+              )}
+            </div>
+            {showDetail && currentStatus !== MediaStatus.BLOCKLISTED && (
+              <div className="mt-1 flex justify-end">
                 <div className="flex flex-col items-end gap-1">
                   {canUseWatchlistActions &&
                     user?.userType !== UserType.PLEX &&
                     (toggleWatchlist ? (
                       <Button
                         buttonType={'ghost'}
-                        className="z-40"
+                        className="poster-control poster-control-icon z-40"
                         buttonSize={'sm'}
+                        iconOnly
                         onClick={onClickWatchlistBtn}
                       >
                         <StarIcon className={'h-3 text-amber-300'} />
                       </Button>
                     ) : (
                       <Button
-                        className="z-40"
+                        className="poster-control poster-control-icon z-40"
                         buttonSize={'sm'}
+                        iconOnly
                         onClick={onClickDeleteWatchlistBtn}
                       >
                         <MinusCircleIcon className={'h-3'} />
                       </Button>
                     ))}
-                  {showHideButton &&
-                    currentStatus !== MediaStatus.PROCESSING &&
-                    currentStatus !== MediaStatus.AVAILABLE &&
-                    currentStatus !== MediaStatus.PARTIALLY_AVAILABLE &&
-                    currentStatus !== MediaStatus.PENDING && (
-                      <Tooltip
-                        content={intl.formatMessage(
-                          globalMessages.addToBlocklist
-                        )}
-                      >
-                        <Button
-                          buttonType="ghost"
-                          className="z-40 h-6 w-6 rounded-full border-red-600/80 bg-red-950/75 p-0 text-red-600 hover:border-red-400 hover:bg-red-700/90 hover:text-white"
-                          buttonSize="sm"
-                          aria-label={intl.formatMessage(
-                            globalMessages.addToBlocklist
-                          )}
-                          onClick={() => setShowBlocklistModal(true)}
-                        >
-                          <EyeSlashIcon className="h-3.5 w-3.5" />
-                        </Button>
-                      </Tooltip>
-                    )}
                 </div>
-              )}
-              {showDetail &&
-                showHideButton &&
-                currentStatus == MediaStatus.BLOCKLISTED && (
+              </div>
+            )}
+            {showDetail &&
+              showHideButton &&
+              currentStatus == MediaStatus.BLOCKLISTED && (
+                <div className="mt-1 flex justify-end">
                   <Tooltip
                     content={intl.formatMessage(
                       globalMessages.removefromBlocklist
@@ -685,29 +893,16 @@ const TitleCard = ({
                   >
                     <Button
                       buttonType={'ghost'}
-                      className="z-40"
+                      className="poster-control poster-control-icon z-40"
                       buttonSize={'sm'}
+                      iconOnly
                       onClick={() => onClickShowBlocklistBtn()}
                     >
                       <EyeIcon className={'h-3'} />
                     </Button>
                   </Tooltip>
-                )}
-            </div>
-            {statusBadges.length > 0 && (
-              <div className="mt-1 flex justify-end gap-1">
-                {statusBadges.map((badge) => (
-                  <div key={badge.quality ?? 'status'} className="z-40 flex">
-                    <StatusBadgeMini
-                      status={badge.status}
-                      quality={badge.quality}
-                      inProgress={badge.inProgress}
-                      shrink
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
+                </div>
+              )}
           </div>
           <Transition
             as={Fragment}
@@ -719,7 +914,7 @@ const TitleCard = ({
             leaveFrom="opacity-100"
             leaveTo="opacity-0"
           >
-            <div className="absolute inset-0 z-40 flex items-center justify-center rounded-xl bg-gray-800/75 text-white">
+            <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-xl bg-gray-800/75 text-white">
               <Spinner className="h-10 w-10" />
             </div>
           </Transition>
@@ -781,7 +976,18 @@ const TitleCard = ({
               </Link>
 
               <div className="absolute right-0 bottom-0 left-0 flex justify-between px-2 py-2">
-                {canShowRequestButton && showFullDetailOverlay && (
+                {magazineRequestState && showFullDetailOverlay ? (
+                  <Button
+                    buttonType="default"
+                    buttonSize="sm"
+                    disabled
+                    disabledReason={magazineRequestState.reason}
+                    className="h-7 w-full"
+                    aria-label={magazineRequestState.label}
+                  >
+                    <span>{magazineRequestState.label}</span>
+                  </Button>
+                ) : canShowRequestButton && showFullDetailOverlay ? (
                   <Button
                     buttonType="primary"
                     buttonSize="sm"
@@ -791,6 +997,11 @@ const TitleCard = ({
                         void router.push({
                           pathname: `/book/${encodeApiPathSegment(canonicalId)}`,
                           query: {
+                            ...getTitleCardBookDetailQuery({
+                              canonicalId,
+                              preferredBookFormat,
+                              title,
+                            }),
                             format: preferredBookFormat ?? 'ebook',
                             request: '1',
                           },
@@ -804,12 +1015,30 @@ const TitleCard = ({
                     <ArrowDownTrayIcon />
                     <span>{requestLabel}</span>
                   </Button>
-                )}
+                ) : null}
               </div>
             </div>
           </Transition>
         </div>
       </div>
+      {showDetail &&
+        !isTouch &&
+        (mediaType === 'movie' ||
+          mediaType === 'tv' ||
+          mediaType === 'album' ||
+          mediaType === 'book') && (
+          <PosterRatingPopover
+            anchorRef={cardRef}
+            id={canonicalId}
+            mediaType={mediaType}
+            userScore={userScore}
+            voteCount={voteCount}
+            bookRatingAverage={bookRatingAverage}
+            bookRatingCount={bookRatingCount}
+            title={title}
+            artist={artist}
+          />
+        )}
     </div>
   );
 };

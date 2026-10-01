@@ -1,4 +1,6 @@
 import PlexAPI from '@server/api/plexapi';
+import TheMovieDb from '@server/api/themoviedb';
+import { getTmdbAuthSource } from '@server/api/themoviedb/auth';
 import dataSource, {
   enforceSqliteDatabasePermissions,
   getRepository,
@@ -8,8 +10,15 @@ import { Session } from '@server/entity/Session';
 import { User } from '@server/entity/User';
 import { initI18n } from '@server/i18n';
 import { startJobs, stopJobs } from '@server/job/schedule';
+import { resumeComicCatalogIndex } from '@server/lib/comicCatalogIndex';
 import { runWithConfigurationAdmission } from '@server/lib/configurationAdmission';
 import { loadExternalRuntimeConfig } from '@server/lib/externalRuntimeConfig';
+import {
+  METRICS_RATE_LIMIT,
+  metricsAuthMiddleware,
+  metricsHandler,
+  metricsMiddleware,
+} from '@server/lib/metrics';
 import notificationManager from '@server/lib/notifications';
 import DiscordAgent from '@server/lib/notifications/agents/discord';
 import EmailAgent from '@server/lib/notifications/agents/email';
@@ -49,7 +58,10 @@ import avatarproxy from '@server/routes/avatarproxy';
 import imageproxy from '@server/routes/imageproxy';
 import { appDataPermissions } from '@server/utils/appDataVolume';
 import { getAppVersion } from '@server/utils/appVersion';
-import { waitForBackgroundTasks } from '@server/utils/backgroundTasks';
+import {
+  trackBackgroundTask,
+  waitForBackgroundTasks,
+} from '@server/utils/backgroundTasks';
 import createCustomProxyAgent, {
   setForceIpv4First,
 } from '@server/utils/customProxyAgent';
@@ -58,6 +70,7 @@ import {
   createProcessShutdownController,
   drainForShutdown,
 } from '@server/utils/gracefulShutdown';
+import { getHttpErrorDetails } from '@server/utils/httpError';
 import { configureHttpServer, parseListenPort } from '@server/utils/httpServer';
 import restartFlag from '@server/utils/restartFlag';
 import { getRateLimitKey } from '@server/utils/security';
@@ -164,12 +177,20 @@ Promise.resolve()
     await getSettings().load();
   })
   .then(() => {
-    const app = next({ dev });
+    // Select Webpack independently of filesystem polling for Linux-local previews.
+    const app = next({
+      dev,
+      ...(dev &&
+      (process.env.WATCHPACK_POLLING === 'true' ||
+        process.env.SEERR_DEV_WEBPACK === 'true')
+        ? { webpack: true }
+        : {}),
+    });
     const handle = app.getRequestHandler();
 
     if (!appDataPermissions()) {
       logger.error(
-        'Something went wrong while checking config folder! Please ensure the config folder is set up properly.\nhttps://snapetech.github.io/seerrng/getting-started'
+        'Something went wrong while checking config folder! Please ensure the config folder is set up properly.\nhttps://github.com/YunoHost-Apps/seerrng/tree/main/docs/getting-started'
       );
     }
 
@@ -283,6 +304,15 @@ Promise.resolve()
 
       const userRepository = getRepository(User);
       const totalUsers = await userRepository.count();
+      if (!isE2eTest) {
+        try {
+          await resumeComicCatalogIndex();
+        } catch {
+          logger.warn(
+            'ComicVine catalog indexing could not resume at startup.'
+          );
+        }
+      }
       if (totalUsers > 0 && !isE2eTest) {
         startJobs();
       } else if (isE2eTest) {
@@ -317,6 +347,20 @@ Promise.resolve()
           parameterLimit: API_URLENCODED_PARAMETER_LIMIT,
         })
       );
+      server.use(metricsMiddleware);
+      if (isTruthyEnv(process.env.METRICS_ENABLED)) {
+        server.get(
+          '/metrics',
+          rateLimit({
+            ...METRICS_RATE_LIMIT,
+            standardHeaders: true,
+            legacyHeaders: false,
+            keyGenerator: getRateLimitKey,
+          }),
+          metricsAuthMiddleware,
+          metricsHandler
+        );
+      }
       if (settings.network.csrfProtection) {
         server.use(csrfProtection());
         server.use(csrfTokenCookie(requestUsesSecureTransport));
@@ -340,6 +384,9 @@ Promise.resolve()
           }) as Store);
       server.use(
         '/api',
+        // HTTP session cookies are an explicit compatibility mode controlled
+        // by allowHttpAuth; HTTPS-only deployments always force Secure.
+        // codeql[js/clear-text-cookie]
         session({
           secret: settings.sessionSecret,
           resave: false,
@@ -367,7 +414,9 @@ Promise.resolve()
       server.use('/avatarproxy', clearCookies, avatarproxy);
 
       server.get('*path', (req, res) => {
-        setStaticAssetCacheControl(req, res);
+        if (!dev) {
+          setStaticAssetCacheControl(req, res);
+        }
 
         return handle(req, res);
       });
@@ -379,6 +428,7 @@ Promise.resolve()
             errors?: string[];
             stack?: string;
             error?: string;
+            cause?: unknown;
           },
           req: Request,
           res: Response,
@@ -389,6 +439,10 @@ Promise.resolve()
           const status = normalizeApiErrorStatus(err.status);
 
           if (status >= 500) {
+            const causeDetails =
+              err.cause === undefined
+                ? undefined
+                : getHttpErrorDetails(err.cause);
             logger.error('Unhandled API request error', {
               label: 'API',
               method: req.method,
@@ -397,6 +451,38 @@ Promise.resolve()
               errorMessage: err.message,
               errorStack: err.stack,
               errors: err.errors,
+              ...(causeDetails
+                ? {
+                    causeName:
+                      err.cause instanceof Error ? err.cause.name : undefined,
+                    causeMessage: causeDetails.errorMessage,
+                    ...(causeDetails.errorCode
+                      ? { causeErrorCode: causeDetails.errorCode }
+                      : {}),
+                    ...(causeDetails.upstreamMethod
+                      ? { upstreamMethod: causeDetails.upstreamMethod }
+                      : {}),
+                    ...(causeDetails.upstreamHost
+                      ? { upstreamHost: causeDetails.upstreamHost }
+                      : {}),
+                    ...(causeDetails.upstreamPath
+                      ? { upstreamPath: causeDetails.upstreamPath }
+                      : {}),
+                    ...(causeDetails.status !== undefined
+                      ? { causeStatus: causeDetails.status }
+                      : {}),
+                    ...(causeDetails.upstreamStatusCode !== undefined
+                      ? {
+                          upstreamStatusCode: causeDetails.upstreamStatusCode,
+                        }
+                      : {}),
+                    ...(causeDetails.upstreamMessage
+                      ? { upstreamMessage: causeDetails.upstreamMessage }
+                      : {}),
+                    causeStack:
+                      err.cause instanceof Error ? err.cause.stack : undefined,
+                  }
+                : {}),
             });
           } else if (
             getRequestLogPath(req.originalUrl).startsWith('/api/v1/playback/')
@@ -486,6 +572,21 @@ Promise.resolve()
             httpsPort: tlsConfiguration.httpsPort,
           }
         );
+      }
+
+      if (process.env.NODE_ENV !== 'test' && !isE2eTest) {
+        trackBackgroundTask('TMDB authentication check', async () => {
+          try {
+            await new TheMovieDb().checkAuthentication();
+            logger.info('TMDB API authentication check succeeded', {
+              label: 'TMDB API',
+              credentialSource: getTmdbAuthSource(),
+            });
+          } catch {
+            // The TMDB client logs the sanitized upstream status/code and
+            // credential source for failures. Avoid a second generic log.
+          }
+        });
       }
 
       for (const target of listeners) {

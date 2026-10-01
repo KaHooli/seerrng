@@ -329,12 +329,24 @@ const MediaSlider = ({
           continue;
         }
 
+        if (
+          settings.currentSettings.hideRequested &&
+          (item.mediaType === 'movie' || item.mediaType === 'tv') &&
+          item.mediaInfo?.hasActiveRequest
+        ) {
+          continue;
+        }
+
         filteredTitles.push(item);
       }
     }
 
     return filteredTitles;
-  }, [data, settings.currentSettings.hideAvailable]);
+  }, [
+    data,
+    settings.currentSettings.hideAvailable,
+    settings.currentSettings.hideRequested,
+  ]);
   const renderableTitles = titles;
   const visibleTitles = useMemo(
     () => renderableTitles.slice(0, MEDIA_SLIDER_TITLE_LIMIT),
@@ -422,6 +434,7 @@ const MediaSlider = ({
               summary={title.overview}
               title={title.title}
               userScore={title.voteAverage}
+              voteCount={title.voteCount}
               year={title.releaseDate}
               mediaType={title.mediaType}
               inProgress={(title.mediaInfo?.downloadStatus ?? []).length > 0}
@@ -444,6 +457,7 @@ const MediaSlider = ({
               summary={title.overview}
               title={title.name}
               userScore={title.voteAverage}
+              voteCount={title.voteCount}
               year={title.firstAirDate}
               mediaType={title.mediaType}
               inProgress={(title.mediaInfo?.downloadStatus ?? []).length > 0}
@@ -479,6 +493,7 @@ const MediaSlider = ({
               }
               mediaType={title.mediaType}
               availableQualities={title.availableQualities}
+              qualityStatuses={title.qualityStatuses}
               inProgress={(title.mediaInfo?.downloadStatus ?? []).length > 0}
               needsCoverArt={title.needsCoverArt}
               showText={visibility.album === 'always'}
@@ -575,7 +590,7 @@ const MediaSlider = ({
           <Tooltip content={`Refresh ${title}`}>
             <Button
               type="button"
-              buttonType="default"
+              buttonType="trailer"
               buttonSize="sm"
               onClick={refreshRandomizedOrder}
               className="h-8 w-8 p-0"

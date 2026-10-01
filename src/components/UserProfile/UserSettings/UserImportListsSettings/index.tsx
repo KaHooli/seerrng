@@ -42,8 +42,8 @@ const messages = defineMessages(
     lastSynced: 'Last Synced',
     status: 'Status',
     never: 'Never',
-    modeRequest: 'Request',
-    modeWatchlist: 'Watchlist',
+    modeRequestShort: 'Request',
+    modeWatchlistShort: 'Watchlist',
     statusNever: 'Not yet synced',
     statusSuccess: 'Synced',
     statusPartial: 'Synced with problems',
@@ -253,8 +253,8 @@ const UserImportListsSettings = () => {
                 <Table.TD>
                   {intl.formatMessage(
                     list.mode === ImportListMode.WATCHLIST
-                      ? messages.modeWatchlist
-                      : messages.modeRequest
+                      ? messages.modeWatchlistShort
+                      : messages.modeRequestShort
                   )}
                   {list.is4k && <Badge className="ml-2">4K</Badge>}
                 </Table.TD>

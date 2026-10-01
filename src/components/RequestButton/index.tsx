@@ -1,17 +1,13 @@
 import Button, { type ButtonType } from '@app/components/Common/Button';
 import FormatRequestControl from '@app/components/Common/FormatRequestControl';
+import { isVideoQualityAvailable } from '@app/components/RequestModal/requestAvailability';
 import useSettings from '@app/hooks/useSettings';
 import useToasts from '@app/hooks/useToasts';
 import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
-import { mapWithConcurrency } from '@app/utils/concurrency';
 import defineMessages from '@app/utils/defineMessages';
 import { ArrowDownTrayIcon } from '@heroicons/react/24/outline';
-import {
-  CheckIcon,
-  InformationCircleIcon,
-  XMarkIcon,
-} from '@heroicons/react/24/solid';
+import { InformationCircleIcon } from '@heroicons/react/24/solid';
 import { MediaRequestStatus, MediaStatus } from '@server/constants/media';
 import type Media from '@server/entity/Media';
 import type { MediaRequest } from '@server/entity/MediaRequest';
@@ -32,18 +28,6 @@ const messages = defineMessages('components.RequestButton', {
   viewrequest4k: 'View 4K Request',
   requestmore: 'Request More',
   requestmore4k: 'Request More in 4K',
-  approverequest: 'Approve Request',
-  approverequest4k: 'Approve 4K Request',
-  declinerequest: 'Decline Request',
-  declinerequest4k: 'Decline 4K Request',
-  approverequests:
-    'Approve {requestCount, plural, one {Request} other {{requestCount} Requests}}',
-  declinerequests:
-    'Decline {requestCount, plural, one {Request} other {{requestCount} Requests}}',
-  approve4krequests:
-    'Approve {requestCount, plural, one {4K Request} other {{requestCount} 4K Requests}}',
-  decline4krequests:
-    'Decline {requestCount, plural, one {4K Request} other {{requestCount} 4K Requests}}',
   requestupdatesfailed:
     '{failed, plural, one {One request could not be updated.} other {{failed} requests could not be updated.}}',
   hd: 'HD',
@@ -53,8 +37,6 @@ const messages = defineMessages('components.RequestButton', {
   noService: 'No service is configured for this format.',
   blocklisted: 'This title is blocklisted.',
 });
-
-const REQUEST_MUTATION_CONCURRENCY = 5;
 
 interface ButtonOption {
   id: string;
@@ -71,7 +53,7 @@ interface RequestButtonProps {
   media?: Media;
   isShowComplete?: boolean;
   is4kShowComplete?: boolean;
-  buttonSize?: 'default' | 'sm';
+  buttonSize?: 'standard' | 'default' | 'sm';
   buttonType?: 'primary' | 'ghost' | 'success' | 'detailRequest';
   className?: string;
 }
@@ -83,7 +65,7 @@ const RequestButton = ({
   mediaType,
   isShowComplete = false,
   is4kShowComplete = false,
-  buttonSize = 'default',
+  buttonSize = 'standard',
   buttonType = 'primary',
   className = 'ml-2',
 }: RequestButtonProps) => {
@@ -154,51 +136,6 @@ const RequestButton = ({
     }
   };
 
-  const modifyRequests = async (
-    requests: MediaRequest[],
-    type: 'approve' | 'decline'
-  ): Promise<void> => {
-    if (!requests.length || modificationActiveRef.current) {
-      return;
-    }
-    modificationActiveRef.current = true;
-    setIsModifying(true);
-
-    try {
-      const outcomes = await mapWithConcurrency(
-        requests,
-        REQUEST_MUTATION_CONCURRENCY,
-        async (request) => {
-          try {
-            await axios.post(`/api/v1/request/${request.id}/${type}`);
-            return true;
-          } catch {
-            return false;
-          }
-        }
-      );
-      const succeeded = outcomes.filter(Boolean).length;
-      const failed = outcomes.length - succeeded;
-
-      if (succeeded > 0) {
-        onUpdate();
-        void mutate('/api/v1/request/count').catch(() => undefined);
-      }
-      if (failed > 0) {
-        addToast(
-          intl.formatMessage(messages.requestupdatesfailed, { failed }),
-          {
-            appearance: 'error',
-            autoDismiss: true,
-          }
-        );
-      }
-    } finally {
-      modificationActiveRef.current = false;
-      setIsModifying(false);
-    }
-  };
-
   const buttons: ButtonOption[] = [];
 
   // If there are pending requests, show request management options first
@@ -221,63 +158,6 @@ const RequestButton = ({
     }
 
     if (
-      activeRequest &&
-      hasPermission(Permission.MANAGE_REQUESTS) &&
-      mediaType === 'movie'
-    ) {
-      buttons.push(
-        {
-          id: 'approve-request',
-          buttonType: 'success',
-          text: intl.formatMessage(messages.approverequest),
-          action: () => {
-            void modifyRequest(activeRequest, 'approve');
-          },
-          svg: <CheckIcon />,
-        },
-        {
-          id: 'decline-request',
-          buttonType: 'danger',
-          text: intl.formatMessage(messages.declinerequest),
-          action: () => {
-            void modifyRequest(activeRequest, 'decline');
-          },
-          svg: <XMarkIcon />,
-        }
-      );
-    } else if (
-      activeRequests &&
-      activeRequests.length > 0 &&
-      hasPermission(Permission.MANAGE_REQUESTS) &&
-      mediaType === 'tv'
-    ) {
-      buttons.push(
-        {
-          id: 'approve-request-batch',
-          buttonType: 'success',
-          text: intl.formatMessage(messages.approverequests, {
-            requestCount: activeRequests.length,
-          }),
-          action: () => {
-            void modifyRequests(activeRequests, 'approve');
-          },
-          svg: <CheckIcon />,
-        },
-        {
-          id: 'decline-request-batch',
-          buttonType: 'danger',
-          text: intl.formatMessage(messages.declinerequests, {
-            requestCount: activeRequests.length,
-          }),
-          action: () => {
-            void modifyRequests(activeRequests, 'decline');
-          },
-          svg: <XMarkIcon />,
-        }
-      );
-    }
-
-    if (
       active4kRequest &&
       (active4kRequest.requestedBy?.id === user?.id ||
         (active4kRequests?.length === 1 &&
@@ -292,63 +172,6 @@ const RequestButton = ({
         },
         svg: <InformationCircleIcon />,
       });
-    }
-
-    if (
-      active4kRequest &&
-      hasPermission(Permission.MANAGE_REQUESTS) &&
-      mediaType === 'movie'
-    ) {
-      buttons.push(
-        {
-          id: 'approve-4k-request',
-          buttonType: 'success',
-          text: intl.formatMessage(messages.approverequest4k),
-          action: () => {
-            void modifyRequest(active4kRequest, 'approve');
-          },
-          svg: <CheckIcon />,
-        },
-        {
-          id: 'decline-4k-request',
-          buttonType: 'danger',
-          text: intl.formatMessage(messages.declinerequest4k),
-          action: () => {
-            void modifyRequest(active4kRequest, 'decline');
-          },
-          svg: <XMarkIcon />,
-        }
-      );
-    } else if (
-      active4kRequests &&
-      active4kRequests.length > 0 &&
-      hasPermission(Permission.MANAGE_REQUESTS) &&
-      mediaType === 'tv'
-    ) {
-      buttons.push(
-        {
-          id: 'approve-4k-request-batch',
-          buttonType: 'success',
-          text: intl.formatMessage(messages.approve4krequests, {
-            requestCount: active4kRequests.length,
-          }),
-          action: () => {
-            void modifyRequests(active4kRequests, 'approve');
-          },
-          svg: <CheckIcon />,
-        },
-        {
-          id: 'decline-4k-request-batch',
-          buttonType: 'danger',
-          text: intl.formatMessage(messages.decline4krequests, {
-            requestCount: active4kRequests.length,
-          }),
-          action: () => {
-            void modifyRequests(active4kRequests, 'decline');
-          },
-          svg: <XMarkIcon />,
-        }
-      );
     }
   }
 
@@ -498,14 +321,8 @@ const RequestButton = ({
     !!user &&
     !!active4kRequest &&
     hasAutoApprovePermission(user.permissions, mediaType, true);
-  const standardIsAvailable =
-    media?.status === MediaStatus.AVAILABLE ||
-    (mediaType === 'movie' &&
-      media?.status === MediaStatus.PARTIALLY_AVAILABLE);
-  const fourKIsAvailable =
-    media?.status4k === MediaStatus.AVAILABLE ||
-    (mediaType === 'movie' &&
-      media?.status4k === MediaStatus.PARTIALLY_AVAILABLE);
+  const standardIsAvailable = isVideoQualityAvailable(media, mediaType);
+  const fourKIsAvailable = isVideoQualityAvailable(media, mediaType, true);
   const canOpenStandardAlternate =
     canChooseAlternateTarget && hasStandardService && !isBlocklisted;
   const canOpen4kAlternate =
@@ -525,20 +342,23 @@ const RequestButton = ({
                     setShowRequestModal(true);
                   },
             disabled:
+              standardIsAvailable ||
               !hasStandardService ||
               isBlocklisted ||
               (!standardRequestButton &&
                 !(canApproveStandard && activeRequest) &&
                 !canOpenStandardAlternate),
-            disabledReason: !hasStandardService
-              ? intl.formatMessage(messages.noService)
-              : isBlocklisted
-                ? intl.formatMessage(messages.blocklisted)
-                : activeRequest
-                  ? intl.formatMessage(messages.pendingFormat)
-                  : standardIsAvailable
-                    ? intl.formatMessage(messages.availableFormat)
-                    : intl.formatMessage(messages.unavailableFormat),
+            disabledReason: standardIsAvailable
+              ? intl.formatMessage(messages.availableFormat)
+              : !hasStandardService
+                ? intl.formatMessage(messages.noService)
+                : isBlocklisted
+                  ? intl.formatMessage(messages.blocklisted)
+                  : activeRequest
+                    ? intl.formatMessage(messages.pendingFormat)
+                    : standardIsAvailable
+                      ? intl.formatMessage(messages.availableFormat)
+                      : intl.formatMessage(messages.unavailableFormat),
           },
         ]
       : []),
@@ -556,20 +376,23 @@ const RequestButton = ({
                     setShowRequest4kModal(true);
                   },
             disabled:
+              fourKIsAvailable ||
               !has4kService ||
               isBlocklisted ||
               (!request4kButton &&
                 !(canApprove4k && active4kRequest) &&
                 !canOpen4kAlternate),
-            disabledReason: !has4kService
-              ? intl.formatMessage(messages.noService)
-              : isBlocklisted
-                ? intl.formatMessage(messages.blocklisted)
-                : active4kRequest
-                  ? intl.formatMessage(messages.pendingFormat)
-                  : fourKIsAvailable
-                    ? intl.formatMessage(messages.availableFormat)
-                    : intl.formatMessage(messages.unavailableFormat),
+            disabledReason: fourKIsAvailable
+              ? intl.formatMessage(messages.availableFormat)
+              : !has4kService
+                ? intl.formatMessage(messages.noService)
+                : isBlocklisted
+                  ? intl.formatMessage(messages.blocklisted)
+                  : active4kRequest
+                    ? intl.formatMessage(messages.pendingFormat)
+                    : fourKIsAvailable
+                      ? intl.formatMessage(messages.availableFormat)
+                      : intl.formatMessage(messages.unavailableFormat),
           },
         ]
       : []),

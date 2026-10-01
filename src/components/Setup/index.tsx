@@ -6,6 +6,7 @@ import Button from '@app/components/Common/Button';
 import ImageFader from '@app/components/Common/ImageFader';
 import PageTitle from '@app/components/Common/PageTitle';
 import LanguagePicker from '@app/components/Layout/LanguagePicker';
+import type { LoginBackdrop } from '@app/components/Login';
 import SetupSteps from '@app/components/Setup/SetupSteps';
 import TransportSecurityNotice from '@app/components/TransportSecurityNotice';
 import { useTheme } from '@app/context/ThemeContext';
@@ -203,7 +204,7 @@ const Setup = () => {
     }
   }, [intl, mediaServerType, toasts]);
 
-  const { data: backdrops } = useSWR<string[]>('/api/v1/backdrops', {
+  const { data: backdrops } = useSWR<LoginBackdrop[]>('/api/v1/backdrops', {
     refreshInterval: 0,
     refreshWhenHidden: false,
     revalidateOnFocus: false,
@@ -273,7 +274,7 @@ const Setup = () => {
           themeBackground
             ? [themeBackground]
             : (backdrops?.map(
-                (backdrop) => `https://image.tmdb.org/t/p/w1280${backdrop}`
+                (backdrop) => `https://image.tmdb.org/t/p/w1280${backdrop.path}`
               ) ?? [])
         }
       />
@@ -292,10 +293,7 @@ const Setup = () => {
         </div>
         <AppDataWarning />
         <nav className="relative z-50">
-          <ul
-            className="divide-y divide-gray-600 rounded-md border border-gray-600 bg-gray-800/50 md:flex md:divide-y-0"
-            style={{ backdropFilter: 'blur(5px)' }}
-          >
+          <ul className="auth-frosted-surface divide-y divide-gray-600 rounded-md border border-gray-600 bg-gray-800/50 md:flex md:divide-y-0">
             <SetupSteps
               stepNumber={1}
               description={intl.formatMessage(messages.servertype)}
@@ -443,7 +441,7 @@ const Setup = () => {
             ) : (
               <div className="p-2">
                 {mediaServerType === MediaServerType.PLEX ? (
-                  <SettingsPlex onComplete={handleComplete} />
+                  <SettingsPlex isSetupSettings onComplete={handleComplete} />
                 ) : (
                   <SettingsJellyfin
                     isSetupSettings

@@ -1,8 +1,16 @@
+import BackIssueAPI from '@server/api/comics/backissue';
+import KapowarrAPI from '@server/api/comics/kapowarr';
+import MylarAPI from '@server/api/comics/mylar';
+import LazyLibrarianAPI from '@server/api/lazylibrarian';
 import LidarrAPI from '@server/api/servarr/lidarr';
 import RadarrAPI from '@server/api/servarr/radarr';
 import ReadarrAPI from '@server/api/servarr/readarr';
 import SonarrAPI from '@server/api/servarr/sonarr';
-import { MediaStatus, MediaType } from '@server/constants/media';
+import {
+  MediaRequestStatus,
+  MediaStatus,
+  MediaType,
+} from '@server/constants/media';
 import { MediaServerType } from '@server/constants/server';
 import { getRepository } from '@server/datasource';
 import { Blocklist } from '@server/entity/Blocklist';
@@ -45,9 +53,12 @@ import Season from './Season';
   where: `"mediaType" = 'music' AND "mbId" IS NOT NULL`,
 })
 class Media {
+  public hasActiveRequest?: boolean;
+
   public static async getRelatedMedia(
     user: User | undefined,
-    items: { tmdbId: number; mediaType: string }[] | number[] | string[]
+    items: { tmdbId: number; mediaType: string }[] | number[] | string[],
+    { includeActiveRequest = false }: { includeActiveRequest?: boolean } = {}
   ): Promise<Media[]> {
     const mediaRepository = getRepository(Media);
 
@@ -77,7 +88,7 @@ class Media {
           'watchlist',
           'media.id= watchlist.media and watchlist.requestedBy = :userId',
           { userId: user?.id }
-        ) //,
+        )
         .where(
           isMusicIdLookup
             ? 'media.mbId in (:...finalIds)'
@@ -90,15 +101,40 @@ class Media {
         (item) => restrictMediaRelationsForUser(item, user) as Media
       );
 
-      if (!isLegacyItem) {
-        return restrictedMedia;
+      const relatedMedia = !isLegacyItem
+        ? restrictedMedia
+        : restrictedMedia.filter((m) =>
+            (items as { tmdbId: number; mediaType: string }[]).some(
+              (i) => i.tmdbId === m.tmdbId && i.mediaType === m.mediaType
+            )
+          );
+
+      if (
+        includeActiveRequest &&
+        getSettings().main.hideRequested &&
+        relatedMedia.length > 0
+      ) {
+        const activeRequestMediaIds = await mediaRepository
+          .createQueryBuilder('media')
+          .select('media.id', 'id')
+          .distinct(true)
+          .innerJoin('media.requests', 'request')
+          .where('media.id IN (:...mediaIds)', {
+            mediaIds: relatedMedia.map((m) => m.id),
+          })
+          .andWhere('request.status IN (:...statuses)', {
+            statuses: [MediaRequestStatus.PENDING, MediaRequestStatus.APPROVED],
+          })
+          .getRawMany<{ id: number }>();
+
+        const activeIds = new Set(activeRequestMediaIds.map((row) => row.id));
+
+        relatedMedia.forEach((m) => {
+          m.hasActiveRequest = activeIds.has(m.id);
+        });
       }
 
-      return restrictedMedia.filter((m) =>
-        (items as { tmdbId: number; mediaType: string }[]).some(
-          (i) => i.tmdbId === m.tmdbId && i.mediaType === m.mediaType
-        )
-      );
+      return relatedMedia;
     } catch (e) {
       logger.error(e.message);
       return [];
@@ -283,6 +319,14 @@ class Media {
   @Column({ nullable: true, type: 'varchar' })
   public audiobookExternalServiceSlug?: string | null;
 
+  // Comics reuse the generic serviceId/externalServiceId/externalServiceSlug
+  // columns above (like MOVIE/TV/MUSIC do) rather than needing their own set,
+  // since a comic only ever has one destination. This column exists purely to
+  // disambiguate which settings array serviceId indexes into, since comics
+  // can be fulfilled by a Mylar, Kapowarr, or BackIssue instance.
+  @Column({ nullable: true, type: 'varchar' })
+  public comicServiceType?: 'mylar' | 'kapowarr' | 'backissue' | null;
+
   @Column({ nullable: true, type: 'varchar' })
   public ratingKey?: string | null;
 
@@ -330,13 +374,18 @@ class Media {
     Object.assign(this, init);
   }
 
-  public resetServiceDataForResolution(is4k: boolean): void {
+  public resetServiceDataForResolution(
+    is4k: boolean,
+    preserveMediaServerKeys = false
+  ): void {
     if (is4k) {
       this.serviceId4k = null;
       this.externalServiceId4k = null;
       this.externalServiceSlug4k = null;
-      this.ratingKey4k = null;
-      this.jellyfinMediaId4k = null;
+      if (!preserveMediaServerKeys) {
+        this.ratingKey4k = null;
+        this.jellyfinMediaId4k = null;
+      }
       return;
     }
 
@@ -344,8 +393,11 @@ class Media {
     this.availableMusicServiceIds = null;
     this.externalServiceId = null;
     this.externalServiceSlug = null;
-    this.ratingKey = null;
-    this.jellyfinMediaId = null;
+    this.comicServiceType = null;
+    if (!preserveMediaServerKeys) {
+      this.ratingKey = null;
+      this.jellyfinMediaId = null;
+    }
     this.ratingKeyMp3 = null;
     this.ratingKeyFlac = null;
     this.jellyfinMediaIdMp3 = null;
@@ -530,6 +582,56 @@ class Media {
         }
       }
     }
+
+    if (this.mediaType === MediaType.COMIC) {
+      if (this.serviceId !== null && this.externalServiceSlug !== null) {
+        const settings = getSettings();
+
+        if (this.comicServiceType === 'kapowarr') {
+          const server = settings.kapowarr.find(
+            (kapowarr) => kapowarr.id === this.serviceId
+          );
+          if (server) {
+            this.serviceUrl = server.externalUrl
+              ? `${server.externalUrl}/volumes/${this.externalServiceSlug}`
+              : KapowarrAPI.buildUrl(
+                  server,
+                  `/volumes/${this.externalServiceSlug}`
+                );
+          }
+        } else if (this.comicServiceType === 'backissue') {
+          const server = settings.backissue.find(
+            (backissue) => backissue.id === this.serviceId
+          );
+          if (server) {
+            this.serviceUrl =
+              server.externalUrl ?? BackIssueAPI.buildUrl(server);
+          }
+        } else {
+          const server = settings.mylar.find(
+            (mylar) => mylar.id === this.serviceId
+          );
+          if (server) {
+            this.serviceUrl = server.externalUrl
+              ? `${server.externalUrl}/comicDetails?ComicID=${this.externalServiceSlug}`
+              : MylarAPI.buildUrl(
+                  server,
+                  `/comicDetails?ComicID=${this.externalServiceSlug}`
+                );
+          }
+        }
+      }
+    }
+
+    if (this.mediaType === MediaType.MAGAZINE && this.serviceId != null) {
+      const server = getSettings().lazylibrarian.find(
+        (lazylibrarian) => lazylibrarian.id === this.serviceId
+      );
+      if (server) {
+        this.serviceUrl =
+          server.externalUrl ?? LazyLibrarianAPI.buildUrl(server);
+      }
+    }
   }
 
   @AfterLoad()
@@ -624,6 +726,21 @@ class Media {
           this.audiobookExternalServiceId
         );
       }
+    }
+
+    if (
+      this.mediaType === MediaType.COMIC &&
+      (this.comicServiceType === 'kapowarr' ||
+        this.comicServiceType === 'backissue') &&
+      this.externalServiceId !== undefined &&
+      this.externalServiceId !== null &&
+      this.serviceId !== undefined &&
+      this.serviceId !== null
+    ) {
+      this.downloadStatus = downloadTracker.getComicProgress(
+        this.serviceId,
+        this.externalServiceId
+      );
     }
   }
 }

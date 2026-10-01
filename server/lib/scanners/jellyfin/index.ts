@@ -4,13 +4,16 @@ import type {
   JellyfinLibraryItemExtended,
 } from '@server/api/jellyfin';
 import JellyfinAPI from '@server/api/jellyfin';
-import { getMetadataProvider } from '@server/api/metadata';
+import {
+  getMetadataProvider,
+  isTheMovieDbProvider,
+} from '@server/api/metadata';
 import MusicBrainz from '@server/api/musicbrainz';
-import TheMovieDb from '@server/api/themoviedb';
 import { ANIME_KEYWORD_ID } from '@server/api/themoviedb/constants';
 import type {
   TmdbKeyword,
   TmdbTvDetails,
+  TmdbTvScanDetails,
 } from '@server/api/themoviedb/interfaces';
 import { MediaServerType } from '@server/constants/server';
 import { classifyAudioPlaybackFormats } from '@server/lib/audioPlaybackFormat';
@@ -66,6 +69,45 @@ export class JellyfinScanner
     this.isRecentOnly = isRecentOnly ?? false;
   }
 
+  /** Refresh a verified collection member, never enumerate or clean up a library. */
+  public async refreshCollectionMember(
+    id: string,
+    kind: 'tv' | 'music'
+  ): Promise<void> {
+    if (!/^[a-zA-Z0-9-]{1,128}$/.test(id))
+      throw new Error('Invalid collection member');
+    const settings = getSettings();
+    this.enable4kShow = true;
+    this.configurationSnapshot = captureConfigurationAuthority(
+      'jellyfin',
+      settings
+    );
+    this.jellyfinSettingsSnapshot = structuredClone(settings.jellyfin);
+    this.ownerAuthoritySnapshot = await captureMediaServerUserAuthority(
+      1,
+      'jellyfin'
+    );
+    if (!this.ownerAuthoritySnapshot.jellyfinUserId)
+      throw new Error('Media server owner unavailable');
+    this.jfClient = new JellyfinAPI(
+      getHostname(this.jellyfinSettingsSnapshot),
+      this.jellyfinSettingsSnapshot.apiKey,
+      this.ownerAuthoritySnapshot.jellyfinDeviceId
+    );
+    this.jfClient.setUserId(this.ownerAuthoritySnapshot.jellyfinUserId);
+    this.processedAnidbSeason = new Map();
+    const item = await this.withConfigurationSnapshot(() =>
+      this.jfClient.getItemData(id)
+    );
+    if (
+      item?.Id !== id ||
+      item.Type !== (kind === 'tv' ? 'Series' : 'MusicAlbum')
+    )
+      throw new Error('Collection member identity changed');
+    if (kind === 'tv') await this.processJellyfinShow(item);
+    else await this.processJellyfinMusic(item);
+  }
+
   private async extractMovieIds(jellyfinitem: JellyfinLibraryItem): Promise<{
     tmdbId: number;
     imdbId?: string;
@@ -94,10 +136,9 @@ export class JellyfinScanner
     }
 
     if (imdbId && !tmdbId) {
-      const tmdbMovie = await this.tmdb.getMediaByImdbId({
+      tmdbId = await this.tmdb.resolveImdbIdForScan({
         imdbId: imdbId,
       });
-      tmdbId = tmdbMovie.id;
     }
 
     if (!tmdbId) {
@@ -215,15 +256,15 @@ export class JellyfinScanner
   }: {
     tmdbId?: number;
     tvdbId?: number;
-  }): Promise<TmdbTvDetails> {
+  }): Promise<TmdbTvScanDetails | TmdbTvDetails> {
     let tvShow;
 
     if (tmdbId) {
-      tvShow = await this.tmdb.getTvShow({
+      tvShow = await this.tmdb.getTvShowForScan({
         tvId: Number(tmdbId),
       });
     } else if (tvdbId) {
-      tvShow = await this.tmdb.getShowByTvdbId({
+      tvShow = await this.tmdb.getShowByTvdbIdForScan({
         tvdbId: Number(tvdbId),
       });
     } else {
@@ -236,9 +277,9 @@ export class JellyfinScanner
       ? await getMetadataProvider('anime')
       : await getMetadataProvider('tv');
 
-    if (!(metadataProvider instanceof TheMovieDb)) {
+    if (!isTheMovieDbProvider(metadataProvider)) {
       tvShow = await metadataProvider.getTvShow({
-        tvId: Number(tmdbId),
+        tvId: Number(tvShow.id),
       });
     }
 
@@ -246,7 +287,7 @@ export class JellyfinScanner
   }
 
   private async processJellyfinShow(jellyfinitem: JellyfinLibraryItem) {
-    let tvShow: TmdbTvDetails | null = null;
+    let tvShow: TmdbTvScanDetails | TmdbTvDetails | null = null;
 
     try {
       const Id =
@@ -293,7 +334,7 @@ export class JellyfinScanner
         tvdbSeasonFromAnidb = result?.tvdbSeason;
         if (result?.tvdbId) {
           try {
-            tvShow = await this.tmdb.getShowByTvdbId({
+            tvShow = await this.tmdb.getShowByTvdbIdForScan({
               tvdbId: result.tvdbId,
             });
           } catch {

@@ -221,7 +221,7 @@ const messages = defineMessages('components.Requests', {
   modifyFailed: 'Unable to update this request.',
   watchAheadLabel: 'Episode Queue',
   watchAheadDescription:
-    'After this TV request is approved, SeerrNG follows your linked media server playback and keeps this many upcoming episodes requested in Sonarr. Generated episode requests use the parent approval and do not count against your request quota. Turning this off does not cancel episodes already requested.',
+    'This optional queue is Off by default for every TV request. If you turn it on, SeerrNG follows your linked media server playback and keeps this many upcoming episodes requested in Sonarr after the request is approved. Episodes use the parent approval and do not count against your request quota. Turning it off stops future additions but does not cancel episodes already requested.',
   watchAheadOff: 'Off',
   watchAheadOption: '{count, plural, one {# episode} other {# episodes}}',
   watchAheadUpdated: 'Requested episode queue updated.',
@@ -501,8 +501,13 @@ const isMagazine = (details: MediaDetails): details is MagazineDetails =>
 
 const getBookId = (item: RequestStatusItem): string | undefined =>
   item.request.media.identifiers?.find(
-    (identifier) => identifier.provider === 'openlibrary'
+    (identifier) =>
+      identifier.provider === 'openlibrary' ||
+      identifier.provider === 'bookshelf'
   )?.value;
+
+const normalizeBookRouteId = (bookId: string): string =>
+  bookId.startsWith('bookshelf:') ? bookId : normalizeOpenLibraryWorkId(bookId);
 
 const getComicId = (item: RequestStatusItem): string | undefined =>
   item.request.media.identifiers?.find(
@@ -535,7 +540,7 @@ const getDetailsUrl = (item: RequestStatusItem): string | null => {
   }
   const bookId = getBookId(item);
   return bookId
-    ? `/api/v1/book/${encodeApiPathSegment(normalizeOpenLibraryWorkId(bookId))}`
+    ? `/api/v1/book/${encodeApiPathSegment(normalizeBookRouteId(bookId))}`
     : null;
 };
 
@@ -558,7 +563,7 @@ const getDetailHref = (item: RequestStatusItem): string | null => {
   const bookId = getBookId(item);
   const bookFormat = getRequestedBookFormat(item.request.bookFormat);
   return bookId
-    ? `/book/${encodeApiPathSegment(normalizeOpenLibraryWorkId(bookId))}?format=${bookFormat}`
+    ? `/book/${encodeApiPathSegment(normalizeBookRouteId(bookId))}?format=${bookFormat}`
     : null;
 };
 

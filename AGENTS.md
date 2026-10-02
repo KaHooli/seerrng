@@ -33,7 +33,8 @@ These interaction rules are standard for all model interfaces used with this rep
   size to work around either source.
 - Verify shared styling changes in the existing development preview at desktop
   and narrow widths before calling them accepted. Do not create a pull request
-  until John explicitly asks for one.
+  until John explicitly asks for one. This does not apply to work done under
+  the `KaHooli` GitHub account, which may open pull requests without waiting.
 - Do not implement visual styling with inline Tailwind utility strings or
   arbitrary-value Tailwind classes. Tailwind utilities in components are
   limited to structural layout and responsive placement that the visual

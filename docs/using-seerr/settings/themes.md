@@ -69,7 +69,7 @@ Each `surface`, `primary`, and `secondary` array must contain exactly eleven six
 
 `logoDark` and `logoLight` replace the wide sidebar logo. `logoStackedDark` and `logoStackedLight` replace the taller sign-in, setup, and password-reset logo; when they are absent the wide logo is used there instead, which suits a stacked lockup better than a long wordmark.
 
-Supply `iconDark`, `iconLight`, `faviconDark`, and `faviconLight` as PNG or ICO where you need them on Apple devices: iOS ignores SVG home-screen icons, and older Safari ignores SVG favicons. The bundled icons stay declared as fallbacks either way.
+Supply `iconDark`, `iconLight`, `faviconDark`, and `faviconLight` as PNG or ICO where you need them on Apple devices: iOS ignores SVG home-screen icons, and older Safari ignores SVG favicons. When a theme icon is an SVG, the bundled SeerrNG icons stay declared beside it as a fallback for those clients. When it is a PNG or ICO, the bundled icons are left out so the theme's icon is the only one offered.
 
 ## Packaging a release
 

@@ -9,6 +9,11 @@ interface PWAHeaderProps {
 const assetVersion = encodeURIComponent(process.env.commitTag ?? 'local');
 const versionedAsset = (path: string): string => `${path}?v=${assetVersion}`;
 
+// Only an SVG needs a bundled raster beside it: every client that reads these
+// links can decode PNG and ICO, but iOS and older Safari cannot decode SVG.
+const needsRasterFallback = (href?: string, type?: string): boolean =>
+  !href || type === 'image/svg+xml';
+
 const PWAHeader = ({
   applicationTitle = 'SeerrNG',
   favicon,
@@ -19,11 +24,16 @@ const PWAHeader = ({
   return (
     <>
       {/*
-        A theme's icons are additions, never replacements. iOS ignores SVG for
-        apple-touch-icon and older Safari ignores SVG favicons, so dropping the
-        bundled PNGs left those clients with no icon at all. Declaring both lets
-        each browser pick the format it can actually decode; sizes="any" marks
-        the vector as the preferred choice where it is supported.
+        A theme's SVG icons are additions, never replacements. iOS ignores SVG
+        for apple-touch-icon and older Safari ignores SVG favicons, so dropping
+        the bundled PNGs left those clients with no icon at all. Declaring both
+        lets each browser pick the format it can actually decode; sizes="any"
+        marks the vector as the preferred choice where it is supported.
+
+        A raster theme icon is different: every client can decode it, so the
+        bundled PNGs would only compete with it. Their explicit sizes let a
+        browser prefer them over the unsized theme icon and show the SeerrNG
+        icon instead of the theme's. Leave them out in that case.
       */}
       {touchIcon && (
         <link
@@ -33,11 +43,13 @@ const PWAHeader = ({
           sizes={touchIconType === 'image/svg+xml' ? 'any' : undefined}
         />
       )}
-      <link
-        rel="apple-touch-icon"
-        sizes="180x180"
-        href={versionedAsset('/apple-touch-icon.png')}
-      />
+      {needsRasterFallback(touchIcon, touchIconType) && (
+        <link
+          rel="apple-touch-icon"
+          sizes="180x180"
+          href={versionedAsset('/apple-touch-icon.png')}
+        />
+      )}
       {favicon && (
         <link
           rel="icon"
@@ -46,18 +58,22 @@ const PWAHeader = ({
           sizes={faviconType === 'image/svg+xml' ? 'any' : undefined}
         />
       )}
-      <link
-        rel="icon"
-        type="image/png"
-        sizes="32x32"
-        href={versionedAsset('/favicon-32x32.png')}
-      />
-      <link
-        rel="icon"
-        type="image/png"
-        sizes="16x16"
-        href={versionedAsset('/favicon-16x16.png')}
-      />
+      {needsRasterFallback(favicon, faviconType) && (
+        <link
+          rel="icon"
+          type="image/png"
+          sizes="32x32"
+          href={versionedAsset('/favicon-32x32.png')}
+        />
+      )}
+      {needsRasterFallback(favicon, faviconType) && (
+        <link
+          rel="icon"
+          type="image/png"
+          sizes="16x16"
+          href={versionedAsset('/favicon-16x16.png')}
+        />
+      )}
       <link
         rel="apple-touch-startup-image"
         href="/apple-splash-2048-2732.jpg"

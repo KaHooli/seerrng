@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
 import Tvdb from './index';
 
+type MockableTvdb = { refreshToken: () => Promise<void> };
+type MockableExternalApi = { get: (...args: unknown[]) => Promise<unknown> };
+
 describe('TheTVDB remote-ID video lookup', () => {
   afterEach(() => {
     mock.restoreAll();
@@ -11,12 +14,12 @@ describe('TheTVDB remote-ID video lookup', () => {
   it('uses the v4 remote-ID endpoint and filters to the requested media type', async () => {
     const tvdb = new Tvdb();
     mock.method(
-      tvdb as unknown as object,
+      tvdb as unknown as MockableTvdb,
       'refreshToken',
       async () => undefined
     );
     const request = mock.method(
-      ExternalAPI.prototype,
+      ExternalAPI.prototype as unknown as MockableExternalApi,
       'get',
       async () =>
         ({
@@ -39,12 +42,12 @@ describe('TheTVDB remote-ID video lookup', () => {
   it('rejects an ambiguous same-type remote-ID match', async () => {
     const tvdb = new Tvdb();
     mock.method(
-      tvdb as unknown as object,
+      tvdb as unknown as MockableTvdb,
       'refreshToken',
       async () => undefined
     );
     mock.method(
-      ExternalAPI.prototype,
+      ExternalAPI.prototype as unknown as MockableExternalApi,
       'get',
       async () =>
         ({

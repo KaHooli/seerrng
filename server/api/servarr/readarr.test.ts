@@ -33,6 +33,27 @@ type MockableReadarr = {
     data?: Record<string, unknown>,
     options?: { params?: Record<string, unknown> }
   ) => Promise<ReadarrBook>;
+  runCommand: (
+    commandName: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+};
+
+const mockBookSearchCommand = () =>
+  mock.method(
+    ReadarrAPI.prototype as unknown as MockableReadarr,
+    'runCommand',
+    async () => ({ id: 91, name: 'BookSearch', status: 'queued' })
+  );
+
+const assertSearchedExistingBook = (
+  commandMock: ReturnType<typeof mockBookSearchCommand>
+) => {
+  assert.strictEqual(commandMock.mock.calls.length, 1);
+  assert.deepStrictEqual(commandMock.mock.calls[0].arguments, [
+    'BookSearch',
+    { bookIds: [9] },
+  ]);
 };
 
 describe('ReadarrAPI.getReleaseCalendar', () => {
@@ -656,7 +677,7 @@ describe('ReadarrAPI.addBook', () => {
     mock.restoreAll();
   });
 
-  it('returns an existing monitored book without posting', async () => {
+  it('searches an existing monitored book without re-adding it', async () => {
     const api = new ReadarrAPI({
       url: 'http://localhost:8787/api/v1',
       apiKey: 'key',
@@ -672,11 +693,14 @@ describe('ReadarrAPI.addBook', () => {
       async () => existingBook({ id: 10 })
     );
 
+    const commandMock = mockBookSearchCommand();
+
     const result = await api.addBook(bookOptions);
 
     assert.strictEqual(result.id, 9);
     assert.strictEqual(getMock.mock.calls.length, 1);
     assert.strictEqual(postMock.mock.calls.length, 0);
+    assertSearchedExistingBook(commandMock);
   });
 
   it('matches existing books with normalized ISBNs', async () => {
@@ -706,10 +730,13 @@ describe('ReadarrAPI.addBook', () => {
       async () => existingBook({ id: 10 })
     );
 
+    const commandMock = mockBookSearchCommand();
+
     const result = await api.addBook(bookOptions);
 
     assert.strictEqual(result.id, 9);
     assert.strictEqual(postMock.mock.calls.length, 0);
+    assertSearchedExistingBook(commandMock);
   });
 
   it('matches existing books with foreign edition IDs', async () => {
@@ -739,10 +766,13 @@ describe('ReadarrAPI.addBook', () => {
       async () => existingBook({ id: 10 })
     );
 
+    const commandMock = mockBookSearchCommand();
+
     const result = await api.addBook(bookOptions);
 
     assert.strictEqual(result.id, 9);
     assert.strictEqual(postMock.mock.calls.length, 0);
+    assertSearchedExistingBook(commandMock);
   });
 
   it('matches existing books with canonicalized Open Library work and edition IDs', async () => {
@@ -772,6 +802,8 @@ describe('ReadarrAPI.addBook', () => {
       async () => existingBook({ id: 10 })
     );
 
+    const commandMock = mockBookSearchCommand();
+
     const result = await api.addBook({
       ...bookOptions,
       foreignBookId: 'OL123W',
@@ -786,6 +818,7 @@ describe('ReadarrAPI.addBook', () => {
 
     assert.strictEqual(result.id, 9);
     assert.strictEqual(postMock.mock.calls.length, 0);
+    assertSearchedExistingBook(commandMock);
   });
 
   it('monitors and searches an existing unmonitored book', async () => {

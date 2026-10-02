@@ -49,6 +49,24 @@ export interface WikidataVideoMetadata {
 
 const MAX_RELATED_ENTITY_IDS = 40;
 const MAX_SEARCH_RESULTS = 10;
+
+// Search snippets only carry highlight markup. Scan instead of using a tag
+// regex so fragments such as "<<b>script" cannot reassemble into markup: text
+// inside a tag is dropped and no angle bracket ever reaches the output.
+const stripSnippetMarkup = (snippet: string): string => {
+  let text = '';
+  let inTag = false;
+  for (const char of snippet) {
+    if (char === '<') {
+      inTag = true;
+    } else if (char === '>') {
+      inTag = false;
+    } else if (!inTag) {
+      text += char;
+    }
+  }
+  return text;
+};
 const asClaimString = (claim?: WikidataClaimValue): string | undefined => {
   const value = claim?.mainsnak?.datavalue?.value;
   if (typeof value === 'string') {
@@ -193,12 +211,9 @@ class WikidataVideoMetadataAPI extends ExternalAPI {
       if (!id || !/^Q\d+$/.test(id)) {
         return [];
       }
-      // Drop any angle bracket left after tag stripping (e.g. "<<b>script")
-      // so a nested fragment cannot reassemble into markup.
       const plainSnippet = item.snippet
-        ?.replace(/<[^>]*>/g, '')
-        .replace(/[<>]/g, '')
-        .trim();
+        ? stripSnippetMarkup(item.snippet).trim()
+        : undefined;
       return [{ id, label: plainSnippet?.slice(0, 300) || id }];
     });
   }

@@ -193,7 +193,12 @@ class WikidataVideoMetadataAPI extends ExternalAPI {
       if (!id || !/^Q\d+$/.test(id)) {
         return [];
       }
-      const plainSnippet = item.snippet?.replace(/<[^>]*>/g, '').trim();
+      // Drop any angle bracket left after tag stripping (e.g. "<<b>script")
+      // so a nested fragment cannot reassemble into markup.
+      const plainSnippet = item.snippet
+        ?.replace(/<[^>]*>/g, '')
+        .replace(/[<>]/g, '')
+        .trim();
       return [{ id, label: plainSnippet?.slice(0, 300) || id }];
     });
   }

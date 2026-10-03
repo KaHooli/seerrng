@@ -79,7 +79,7 @@ const ImportListsSummary = ({
   return (
     <>
       <div className="slider-header">
-        <Link href={settingsHref} className="slider-title">
+        <Link href={settingsHref} className="page-heading">
           <span>{intl.formatMessage(messages.importLists)}</span>
           <ArrowRightCircleIcon />
         </Link>

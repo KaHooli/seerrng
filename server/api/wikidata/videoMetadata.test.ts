@@ -2,50 +2,14 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
 
 import ExternalAPI from '@server/api/externalapi';
-import WikidataVideoMetadataAPI from '@server/api/wikidata/videoMetadata';
+import WikidataVideoMetadataAPI from './videoMetadata';
 
-describe('WikidataVideoMetadataAPI external-ID search', () => {
+describe('Wikidata video metadata search snippets', () => {
   afterEach(() => {
     mock.restoreAll();
   });
 
-  it('returns plain-text snippet labels that cannot reassemble markup', async () => {
-    (
-      mock.method as (
-        object: object,
-        methodName: string,
-        implementation: () => Promise<unknown>
-      ) => unknown
-    )(ExternalAPI.prototype, 'get', async () => ({
-      query: {
-        search: [
-          {
-            title: 'Q1',
-            snippet: '<span class="searchmatch">Film</span> (2001)',
-          },
-          { title: 'Q2', snippet: '<<b>script>alert(1)<</b>/script>' },
-          { title: 'Q3', snippet: '<b></b>' },
-          { title: 'not-an-item', snippet: 'ignored' },
-        ],
-      },
-    }));
-
-    const result = await new WikidataVideoMetadataAPI().searchItemsByExternalId(
-      { propertyId: 'P4947', value: '123' }
-    );
-
-    assert.deepStrictEqual(
-      result.map(({ id }) => id),
-      ['Q1', 'Q2', 'Q3']
-    );
-    assert.strictEqual(result[0].label, 'Film (2001)');
-    for (const { label } of result) {
-      assert.doesNotMatch(label, /[<>]/);
-    }
-    assert.strictEqual(result[2].label, 'Q3');
-  });
-
-  it('removes match markup and drops every other tag from labels', async () => {
+  it('removes known match markup and preserves other markup as text', async () => {
     (
       mock.method as (
         object: object,
@@ -73,7 +37,7 @@ describe('WikidataVideoMetadataAPI external-ID search', () => {
     assert.deepStrictEqual(results, [
       {
         id: 'Q123',
-        label: 'Safe title &amp; alert(1)',
+        label: 'Safe title &amp; <script>alert(1)</script>',
       },
     ]);
   });

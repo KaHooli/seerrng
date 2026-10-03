@@ -158,6 +158,101 @@ that are not called out here.
 
 # Changelog
 
+# Changelog
+
+# Changelog
+
+# Changelog
+
+## [3.48.0](https://github.com/snapetech/seerrng/compare/v3.47.0..v3.48.0) - 2026-10-03
+
+### User-facing changes
+
+#### Added
+
+- **Media Server:** Series details now offer an expandable season/episode selection tree and per-user disclosure ordering. Linked users can manage the Series in Plex Watchlist, Jellyfin/Emby Favorites, and existing authorized server Collections without creating Collections or changing download requests.
+
+#### Changed
+
+- **Development:** Interface guidance separates focused checks from cumulative review, preserves Requests and shared visual roles alongside Series changes, and supplies an integration checklist. Unrelated backend failures require scope review. Before expensive cumulative runs, contributors verify complete repository fixtures and native tooling; an app snapshot alone is insufficient.
+- **Development:** `pnpm validate:development` provides an explicit comprehensive gate for existing tests and visual regressions. Public builds retain translation and shared-visual checks, while the commit hook retains attribution and staged lint checks. Portable agent instructions route contributors through the separate UI standards, repair procedure and forward-merge guide. Existing GitHub workflows are unchanged.
+- **Series:** Series Overview now expands below a pinnable, reorderable button row and defaults to the left. Metadata sources and production credits are grouped at the bottom of Details.
+- **Series:** Series Details now opens the request screen from one Request button, with HD and 4K selection available inside the screen.
+- **Development:** Ordinary commands retain upstream validation. Builds still check translations and approved visual contracts. The comprehensive runner remains available explicitly, instead of repeating every test during builds and commits. Commit-message checks use the pinned package manager to avoid an incompatible bundled npm launcher.
+
+#### Fixed
+
+- **Interface:** Browse filters, titles and loading states retain shared styling. Request pins expand and collapse correctly. Series browsing gains a yellow watchlist visibility action. Series requests reuse the season/episode tree with existing submission rules and a compact Episode Queue beside it. Missing metadata blocks submission until recovered. Streaming-service choices retain accessible native controls.
+- **Media Server:** Plex Series Watchlist and Collection actions now refresh membership correctly. Compatible Collections are recognized, and removal affects only the selected item's membership. Playback menus use the shared solid-black surface and open above their card frame without clipping.
+- **Interface:** Single-option Request controls now use the same shared icon sizing as multi-option Quality/Request controls, instead of a competing local utility.
+- **Requests:** Requests dropdowns, pagination, filter disclosures, card surfaces and tooltips use shared native styling, preserving geometry, palette variants and keyboard focus while respecting reduced motion. Software request cards reuse shared padding and card-spacing rules.
+- **Requests:** Recent Requests loading placeholders now match the compact cards at narrow and wide screen sizes, keeping the slider consistent as items load.
+- **Requests:** Requesters can again fail a downloading release and start a replacement search from its request card. Discover now respects the hide-blocklisted setting for managers as well as ordinary users, without changing the approved compact controls.
+- **Discovery:** Movie discovery now keeps saved Popular and Upcoming cards available during TMDB outages, and expired metadata no longer discards poster URLs that can still load from SeerrNG’s image cache.
+- **Media Details:** Native saved actions recognize the signed-in user's linked media account and show specific unavailable-state help. Media Server buttons align left, overview paragraphs are justified, and Discover headings avoid duplicate spacing.
+- **Requests:** Retrying a failed request now records a waiting-for-dispatch history entry instead of leaving stale download progress in its latest visible status.
+- **Interface:** Series request summaries, advanced options and quality controls now reuse shared interface styling, keeping compact dropdowns, table text and card alignment consistent.
+
+### 🚀 Features
+- *(ui)* Integrate shared visuals and native series controls - ([05fe80e](https://github.com/snapetech/seerrng/commit/05fe80e9549904232a42f61cf71f2974136792fb))
+- *(ui)* Preserve shared visuals and native series actions - ([6a7b058](https://github.com/snapetech/seerrng/commit/6a7b058b650445ba06bc25acaa40f7710855e8b5))
+- *(ui)* Preserve shared visuals and native series actions - ([4639a76](https://github.com/snapetech/seerrng/commit/4639a761316d11036696f5bc985b995bf58a50cb))
+
+### 🐛 Bug Fixes
+- *(discover)* Keep movie shelves and posters during outages - ([a59d744](https://github.com/snapetech/seerrng/commit/a59d74479579ddc06b877ecbf5392f4fdd681189))
+- *(tooling)* Preserve UI contracts and current browser fixtures - ([509b8cf](https://github.com/snapetech/seerrng/commit/509b8cf69d66efebcc180188295f52d1784dcb62))
+- *(ui)* Restore request actions and reconcile browser contracts - ([088ed0c](https://github.com/snapetech/seerrng/commit/088ed0c3280f6c9bc569d5c9c0ac91dbce9ecc43))
+
+### 🧪 Testing
+- *(cypress)* Prevent cached metadata from bypassing intercepts - ([0203f79](https://github.com/snapetech/seerrng/commit/0203f798c5c84ceb984629df2353c60705924674))
+
+## [3.47.0](https://github.com/snapetech/seerrng/compare/v3.46.1..v3.47.0) - 2026-10-03
+
+### User-facing changes
+
+#### Added
+
+- **Bookshelf:** SeerrNG now detects BookshelfNG's versioned capability response and uses its ebook or audiobook API route when available, while retaining standard Readarr routes for older BookshelfNG releases.
+
+#### Changed
+
+- **Bookshelf:** SeerrNG now reads ChaptarrNG's explicit capabilities contract to select its provider-ID dialect, while older Chaptarr builds keep using the existing settings fallback.
+- **Bookshelf:** SeerrNG's guide now documents the restricted BookshelfNG key's exact permissions for builds that support it, including allowed reads, author/book changes, one-book searches, and excluded system, key-management, command, and delete operations.
+
+#### Fixed
+
+- **Integration:** ROMarrNG providers using the legacy contract can now browse the catalog through the matching legacy routes. Unknown contract versions fail clearly instead of silently falling back to an incompatible API.
+
+#### Security
+
+- **Metadata:** External video summaries now decode encoded markup only once, and Wikidata search snippets preserve unrecognized markup as text instead of using broad tag removal.
+
+### 🚀 Features
+- *(integrations)* Negotiate provider capability contracts - ([e0dab7a](https://github.com/snapetech/seerrng/commit/e0dab7a8caf9ce64dd1f933fa704098bf175da44))
+
+### 🐛 Bug Fixes
+- *(metadata)* Avoid double-decoding external markup - ([73c6e58](https://github.com/snapetech/seerrng/commit/73c6e582d8f4a293da97951abb52d2d0cad9dcc3))
+
+### 📖 Documentation
+- *(bookshelf)* Note restricted key availability - ([2b1c7db](https://github.com/snapetech/seerrng/commit/2b1c7dba4fc59facd77bd6876fa43a5970601b25))
+- *(bookshelf)* Document restricted key access - ([744ce1b](https://github.com/snapetech/seerrng/commit/744ce1b0f0ae9d45982f792269e0a0eb5400c6e2))
+- *(release)* Document BookshelfNG API key scope - ([c295bfd](https://github.com/snapetech/seerrng/commit/c295bfdee3dec3cd1e43841774d1d8a7e3310ced))
+
+## [3.46.1](https://github.com/snapetech/seerrng/compare/v3.46.0..v3.46.1) - 2026-10-02
+
+### User-facing changes
+
+#### Fixed
+
+- **Bookshelf:** Book requests now start a Bookshelf search even when the requested title is already monitored, so an existing entry cannot silently skip acquisition.
+
+### 🐛 Bug Fixes
+- *(bookshelf)* Search already monitored requests - ([137480f](https://github.com/snapetech/seerrng/commit/137480f5164ed71421a3edbae11ce51ea2f1b0d8))
+
+### 🧪 Testing
+- *(bookshelf)* Verify BookSearch dispatch for monitored requests - ([7ee1c55](https://github.com/snapetech/seerrng/commit/7ee1c556b01a0592ebf25a9008ee27a5b2e6d4b6))
+- *(bookshelf)* Cover search for monitored requests - ([22c80d9](https://github.com/snapetech/seerrng/commit/22c80d9c15bed507d42fda1f2d1eb4ad1d0d3acc))
+
 ## [3.46.0](https://github.com/snapetech/seerrng/compare/v3.45.3..v3.46.0) - 2026-10-02
 
 ### User-facing changes

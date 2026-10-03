@@ -153,6 +153,7 @@ describe('video metadata catalog', () => {
       mediaId: media.id,
       title: 'Cached title',
       overview: 'Cached overview',
+      posterPath: '/cached-poster.jpg',
       searchText: 'cached title cached overview',
       videoMetadataExpiresAt: records[0].expiresAt,
     });
@@ -167,6 +168,7 @@ describe('video metadata catalog', () => {
     ).findOneByOrFail({ mediaId: media.id });
     assert.equal(clearedSearchMetadata.title, null);
     assert.equal(clearedSearchMetadata.overview, null);
+    assert.equal(clearedSearchMetadata.posterPath, '/cached-poster.jpg');
     assert.equal(clearedSearchMetadata.searchText, '');
     assert.equal(clearedSearchMetadata.videoMetadataExpiresAt, null);
   });
@@ -367,7 +369,7 @@ describe('video metadata catalog', () => {
         id: 55,
         name: 'Series from Wikidata',
         url: 'https://www.tvmaze.com/shows/55/series-from-wikidata',
-        summary: '<p>TVmaze summary.</p>',
+        summary: '<p>TVmaze summary &amp; sound and &amp;lt;script&amp;gt;</p>',
         premiered: '2018-04-01',
         genres: ['Comedy'],
         network: { name: 'TVmaze Network' },
@@ -402,7 +404,10 @@ describe('video metadata catalog', () => {
     assert.equal(result.details.name, 'Series from Wikidata');
     assert.equal(result.details.id, seriesId);
     assert.equal(result.details.external_ids.wikidata_id, 'Q202');
-    assert.equal(result.details.overview, 'TVmaze summary.');
+    assert.equal(
+      result.details.overview,
+      'TVmaze summary & sound and &lt;script&gt;'
+    );
     assert.deepEqual(
       result.details.networks.map(({ name }) => name),
       ['TVmaze Network']

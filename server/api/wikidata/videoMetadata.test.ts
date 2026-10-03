@@ -44,4 +44,37 @@ describe('WikidataVideoMetadataAPI external-ID search', () => {
     }
     assert.strictEqual(result[2].label, 'Q3');
   });
+
+  it('removes match markup and drops every other tag from labels', async () => {
+    (
+      mock.method as (
+        object: object,
+        methodName: string,
+        implementation: () => Promise<unknown>
+      ) => unknown
+    )(ExternalAPI.prototype, 'get', async () => ({
+      query: {
+        search: [
+          {
+            title: 'Q123',
+            snippet:
+              '<span class="searchmatch">Safe title</span> &amp; <script>alert(1)</script>',
+          },
+        ],
+      },
+    }));
+
+    const results =
+      await new WikidataVideoMetadataAPI().searchItemsByExternalId({
+        propertyId: 'P4983',
+        value: '123',
+      });
+
+    assert.deepStrictEqual(results, [
+      {
+        id: 'Q123',
+        label: 'Safe title &amp; alert(1)',
+      },
+    ]);
+  });
 });

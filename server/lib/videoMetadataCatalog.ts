@@ -221,7 +221,7 @@ const htmlToText = (value?: string | null): string | undefined => {
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
-    // Decode &amp; last so "&amp;lt;" stays the literal text "&lt;".
+    // Decode ampersands last so double-encoded markup stays text.
     .replace(/&amp;/gi, '&')
     .replace(/[ \t]+/g, ' ')
     .replace(/\s*\n\s*/g, '\n')
@@ -1345,7 +1345,9 @@ export const pruneExpiredVideoMetadata = async (
     .set({
       title: null,
       overview: null,
-      posterPath: null,
+      // Keep the last known poster URL after the metadata snapshot expires.
+      // The image proxy can continue serving its disk-cached copy while the
+      // metadata providers are unavailable; clearing this path would orphan it.
       alternateTitle: null,
       releaseDate: null,
       genres: null,

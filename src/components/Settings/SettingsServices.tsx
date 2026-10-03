@@ -631,16 +631,7 @@ const SettingsServices = () => {
           }}
         />
       )}
-      <Transition
-        as={Fragment}
-        show={deleteServerModal.open}
-        enter="transition-opacity ease-in-out duration-300"
-        enterFrom="opacity-0"
-        enterTo="opacity-100"
-        leave="transition-opacity ease-in-out duration-300"
-        leaveFrom="opacity-100"
-        leaveTo="opacity-0"
-      >
+      <Transition as={Fragment} show={deleteServerModal.open}>
         <Modal
           okText={intl.formatMessage(globalMessages.delete)}
           okButtonType="danger"
@@ -962,7 +953,7 @@ const SettingsServices = () => {
                 {!hasSharedBookshelf && (
                   <a
                     className="text-primary-400 hover:underline"
-                    href="https://github.com/YunoHost-Apps/seerrng/blob/main/docs/using-seerr/bookshelf-backend.md"
+                    href="https://github.com/snapetech/seerrng/blob/main/docs/using-seerr/bookshelf-backend.md"
                     target="_blank"
                     rel="noopener noreferrer"
                   >

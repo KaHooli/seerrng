@@ -56,6 +56,12 @@ const RecentlyAddedSlider = () => {
             tmdbId={item.tmdbId}
             tvdbId={item.tvdbId}
             type={item.mediaType === 'tv' ? 'tv' : 'movie'}
+            title={item.title ?? undefined}
+            posterPath={item.posterPath ?? undefined}
+            summary={item.overview ?? undefined}
+            year={item.releaseDate?.slice(0, 4)}
+            status={item.status}
+            status4k={item.status4k}
           />
         )),
     [currentSettings, media?.results]
@@ -76,12 +82,14 @@ const RecentlyAddedSlider = () => {
 
   return (
     <div ref={ref}>
-      <div className="slider-header">
-        <div className="slider-title">
-          <span>{intl.formatMessage(messages.recentlyAdded)}</span>
-        </div>
-      </div>
       <Slider
+        heading={
+          <>
+            <div className="page-heading">
+              <span>{intl.formatMessage(messages.recentlyAdded)}</span>
+            </div>
+          </>
+        }
         sliderKey="media"
         isLoading={isLoading}
         isEmpty={!!media && !recentlyAddedCards.length && !mediaError}

@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <img src="https://github.com/YunoHost-Apps/seerrng/actions/workflows/ci.yml/badge.svg" alt="SeerrNG CI" />
-  <a href="https://github.com/YunoHost-Apps/seerrng/blob/main/LICENSE"><img src="https://img.shields.io/github/license/YunoHost-Apps/seerrng" alt="License" /></a>
+  <img src="https://github.com/snapetech/seerrng/actions/workflows/ci.yml/badge.svg" alt="SeerrNG CI" />
+  <a href="https://github.com/snapetech/seerrng/blob/main/LICENSE"><img src="https://img.shields.io/github/license/snapetech/seerrng" alt="License" /></a>
   <a href="https://discord.gg/5PyXBfvS6T"><img src="https://img.shields.io/badge/support-Discord-5865F2?logo=discord&logoColor=white" alt="Support on Discord" /></a>
 </p>
 
@@ -32,6 +32,7 @@ This fork is maintained by snapetech. Upstream Seerr remains the base project fo
   - [Move Bookshelf media paths](./docs/using-seerr/bookshelf-media-path-migration.md)
   - [Configure comics](./docs/using-seerr/comics-backend.md)
   - [Configure magazines](./docs/using-seerr/magazines-backend.md)
+  - [Companion services and SeerrNG NG forks](./docs/using-seerr/companion-services.md)
   - [Indexer searches by media category](./docs/using-seerr/indexer-searches.md)
   - [Configure services](./docs/using-seerr/settings/services.md)
 - [Screenshots](#screenshots)
@@ -105,7 +106,7 @@ SeerrNG fork, not the upstream Seerr repository.
 
 ## Documentation
 
-SeerrNG documentation is maintained in the [docs folder](https://github.com/YunoHost-Apps/seerrng/tree/main/docs). The links below open the corresponding guides directly:
+SeerrNG documentation is maintained in the [docs folder](https://github.com/snapetech/seerrng/tree/main/docs). The links below open the corresponding guides directly:
 
 - [Install SeerrNG](./docs/getting-started/index.mdx)
 - [Install on Unraid](./docs/getting-started/third-parties/unraid.mdx)
@@ -156,7 +157,7 @@ docker run -d \
   -p 5055:5055 \
   -v /path/to/seerrng/config:/app/config \
   --restart unless-stopped \
-  ghcr.io/yunohost-apps/seerrng:main
+  ghcr.io/snapetech/seerrng:main
 ```
 
 Open `http://localhost:5055` and complete setup.
@@ -166,7 +167,7 @@ Open `http://localhost:5055` and complete setup.
 ```yaml
 services:
   seerrng:
-    image: ghcr.io/yunohost-apps/seerrng:main
+    image: ghcr.io/snapetech/seerrng:main
     container_name: seerrng
     environment:
       LOG_LEVEL: info
@@ -183,7 +184,7 @@ services:
 
 ### Unraid
 
-Install SeerrNG from Community Applications with the [Unraid template](https://raw.githubusercontent.com/YunoHost-Apps/seerrng/main/packaging/unraid/seerrng.xml). It uses the stable `latest` image, maps HTTP port `5055` and optional HTTPS port `5056`, and persists `/app/config`. The image runs as UID/GID `1000:1000`, so make the selected appdata directory writable by that user before the first start. Optional BookshelfNG, ChaptarrNG, ROMarrNG, and QuestarrNG templates live in each fork's own repository; the [Unraid guide](docs/getting-started/third-parties/unraid.mdx) links to their templates and to the existing Community Apps listings for LazyLibrarian, Mylar3, and Kapowarr. BackIssue has its own Docker image and Unraid template; see its [getting-started guide](https://backissue.app/getting-started).
+Install SeerrNG from Community Applications with the [Unraid template](https://raw.githubusercontent.com/snapetech/seerrng/main/packaging/unraid/seerrng.xml). It uses the stable `latest` image, maps HTTP port `5055` and optional HTTPS port `5056`, and persists `/app/config`. The image runs as UID/GID `1000:1000`, so make the selected appdata directory writable by that user before the first start. Optional BookshelfNG, ChaptarrNG, ROMarrNG, and QuestarrNG templates live in each fork's own repository; the [Unraid guide](docs/getting-started/third-parties/unraid.mdx) links to their templates and to the existing Community Apps listings for LazyLibrarian, Mylar3, and Kapowarr. BackIssue has its own Docker image and Unraid template; see its [getting-started guide](https://backissue.app/getting-started).
 
 ### Linux Packages
 
@@ -224,6 +225,25 @@ Software requests:
 - Software requests support global and per-user quotas. Requesters can withdraw pending requests and cancel active QuestarrNG work that is linked to their request. ROMarrNG requests can be cancelled before download-client handoff; active transfers must be stopped in ROMarrNG or the download client.
 - Provider hostnames and ports must be reachable from the SeerrNG server or container. Use each provider's SeerrNG integration API key; keys stay server-side.
 - See the [software requests guide](./docs/using-seerr/software-acquisition.md) for provider setup, request targets, status, retries, notifications, and downloads. See [Request Status](./docs/using-seerr/request-status.md) for the shared Download copy workflow.
+
+## Companion services
+
+Media servers and acquisition tools run as separate optional services; they
+are not bundled into the SeerrNG container. Use only the providers for the
+categories you enable. For book and software workflows that depend on
+SeerrNG-specific API behavior, the recommended Snapetech NG forks are
+[BookshelfNG](https://github.com/snapetech/bookshelfng),
+[ChaptarrNG](https://github.com/snapetech/chaptarrng),
+[QuestarrNG](https://github.com/snapetech/QuestarrNG), and
+[ROMarrNG](https://github.com/snapetech/ROMarrNG). BookshelfNG or ChaptarrNG
+can each handle Book and Audiobook formats; one BookshelfNG instance can serve
+both. QuestarrNG handles PC game acquisition, while ROMarrNG handles emulation
+systems and ROM acquisition.
+
+Radarr, Sonarr, Lidarr, LazyLibrarian, Mylar3, Kapowarr, and BackIssue are
+separate upstream or third-party integrations. They are not NG forks. The
+[companion services guide](./docs/using-seerr/companion-services.md) compares
+providers and explains when each NG fork is needed.
 
 ## Bookshelf and Hardcover
 
@@ -646,8 +666,8 @@ SeerrNG is intended for lawful personal media management. The project does not p
 ## Support
 
 - Discord: https://discord.gg/5PyXBfvS6T
-- Issues: https://github.com/YunoHost-Apps/seerrng/issues
-- Discussions: https://github.com/YunoHost-Apps/seerrng/discussions
+- Issues: https://github.com/snapetech/seerrng/issues
+- Discussions: https://github.com/snapetech/seerrng/discussions
 
 Use upstream Seerr documentation when you need background on inherited deployment or video-library behavior, but report SeerrNG-specific music, book, cache, packaging, and branding issues in this repository.
 

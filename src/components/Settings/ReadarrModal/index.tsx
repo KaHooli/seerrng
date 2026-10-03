@@ -301,17 +301,7 @@ const ReadarrModal = ({
   }, [copyFormat, copyFrom, readarr, testConnection]);
 
   return (
-    <Transition
-      as="div"
-      appear
-      show
-      enter="transition-opacity ease-in-out duration-300"
-      enterFrom="opacity-0"
-      enterTo="opacity-100"
-      leave="transition-opacity ease-in-out duration-300"
-      leaveFrom="opacity-100"
-      leaveTo="opacity-0"
-    >
+    <Transition as="div" appear show>
       <Formik
         initialValues={{
           name: readarr?.name ?? '',
@@ -443,7 +433,7 @@ const ReadarrModal = ({
               <p className="description mt-2">
                 {intl.formatMessage(messages.migrationNote)}{' '}
                 <a
-                  href="https://github.com/YunoHost-Apps/seerrng/blob/main/docs/using-seerr/bookshelf-hardcover-migration.md"
+                  href="https://github.com/snapetech/seerrng/blob/main/docs/using-seerr/bookshelf-hardcover-migration.md"
                   target="_blank"
                   rel="noreferrer"
                   className="text-indigo-500 transition duration-300 hover:text-indigo-400"

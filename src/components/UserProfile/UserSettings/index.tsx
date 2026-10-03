@@ -127,6 +127,11 @@ const UserSettings = ({ children }: UserSettingsProps) => {
   }
 
   settingsRoutes.forEach((settingsRoute) => {
+    if (settingsRoute.route === '/advanced-theme') {
+      settingsRoute.route = '/profile/advanced-theme';
+      return;
+    }
+
     settingsRoute.route = router.asPath.includes('/profile')
       ? `/profile${settingsRoute.route}`
       : `/users/${user.id}${settingsRoute.route}`;

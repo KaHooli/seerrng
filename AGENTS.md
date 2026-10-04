@@ -86,6 +86,9 @@ Every user-facing feature, fix, security, operational, or documentation change
 needs a new structured fragment under `release-notes/`, following
 `release-notes/README.md`. Fragments are append-only. Internal-only work selects
 the internal-only box in the PR template (or writes `release-note: none`).
+Upstream sync PRs that bring in upstream fragments select the fragment box, not
+internal-only: CI's contract rejects internal-only when the diff adds
+fragments, and reads the PR body only on push, so a wrong box needs a new push.
 Preview notes with `pnpm release-notes:preview --base <base> --head <head>`.
 Changing release or tag history also requires
 `node scripts/check-changelog-tags.mjs`.

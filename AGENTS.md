@@ -31,7 +31,12 @@ is no human code review step, so:
   (removing a feature, changing defaults, data loss risk), not for code review.
 - Never deploy to or change the owner's live server (Unraid containers, DNS,
   Traefik, Cloudflare) without the owner asking for it in the current
-  conversation.
+  conversation. The one standing exception is the daily sync routine's final
+  step: after it merges a sync PR and the `Publish Container` run for that
+  merge succeeds, it may update the `seerr` container on Unraid and verify it,
+  following the routine's instructions. It must not change any other
+  container, DNS, Traefik or Cloudflare, and must not try to repair the server
+  if the update goes wrong; it reports instead.
 - Explain outcomes in plain language: what changed for the person using
   SeerrNG, what was verified, and what was not.
 

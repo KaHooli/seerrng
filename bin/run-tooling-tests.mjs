@@ -5,7 +5,6 @@ const portableTests = [
   'bin/check-current-batch-contract-lib.test.mjs',
   'bin/check-i18n-lib.test.mjs',
   'bin/extract-messages-lib.test.mjs',
-  'bin/check-pr-template.test.mjs',
   'bin/check-refreshed-ui-style-lib.test.mjs',
   'bin/duplicate-detector/index.test.mjs',
   'bin/duplicate-detector/triage.test.mjs',

@@ -1,6 +1,6 @@
-# Agent Instructions — SeerrNG
+# Agent Instructions — SeerrNG (KaHooli fork)
 
-## Existing communication contract
+## Communication contract
 
 These rules apply to all model interfaces using this repository:
 
@@ -13,113 +13,79 @@ These rules apply to all model interfaces using this repository:
 - Surface negative conclusions directly; optimize for accuracy, not approval.
 - If you do not know, say so. Never fabricate.
 
-## Communication and authority
+## How this fork is maintained
 
-Answer accurately, directly, and without invented evidence. Say when a result is
-unknown. Distinguish implemented code, automated verification, human visual
-acceptance, and live integration verification. Give numbered review items.
-Do not claim a build or source assertion proves the rendered interface works.
-Read and follow `CONTRIBUTING.md`; preserve attribution and disclose AI assistance.
-Human review remains required. Never publish, merge, or deploy without the
-maintainer's applicable authorization.
-Work done under the `KaHooli` GitHub account may open pull requests without
-waiting for John to ask; merging and deploying still need that authorization.
+This fork has one owner, who does not write or review code. All code changes
+are made by AI agents, and **the automated test suite is the reviewer**. There
+is no human code review step, so:
 
-## Required development reading
+- Agents may open, update, and merge pull requests into `main` once every
+  required CI check is green. No human approval is needed.
+- Upstream sync pull requests (from `snapetech/seerrng`) are merged
+  automatically by the daily sync routine when CI is green. "Green" means
+  every check on the PR's latest commit passed or was skipped, with one
+  exception: a CodeQL failure whose alerts all sit in upstream code the fork
+  has not changed may be merged, listing those alerts in the PR and the
+  report. Any other failure is fixed on the PR branch first; never merge red.
+- Ask the owner only for decisions that change behaviour they would notice
+  (removing a feature, changing defaults, data loss risk), not for code review.
+- Never deploy to or change the owner's live server (Unraid containers, DNS,
+  Traefik, Cloudflare) without the owner asking for it in the current
+  conversation.
+- Explain outcomes in plain language: what changed for the person using
+  SeerrNG, what was verified, and what was not.
 
-Before implementation or merge conflict resolution, read these complete files:
+Upstream's `CONTRIBUTING.md` describes upstream's contribution policy. It does
+not apply to work inside this fork, and agents must not open pull requests
+against `snapetech/seerrng`.
 
-1. `docs/maintainers/ui-style-standard.md` — established asset appearance and
-   interaction standards.
-2. `docs/maintainers/ui-fix-it.md` — scope, audit, repair, verification, and
-   evidence procedure. This complements the standard; it does not replace it.
-3. For forward integration, `docs/maintainers/ui-forward-merge-guide.md`.
+## Because CI is the reviewer
 
-Read applicable existing task/security/contribution instructions too. These
-instructions supplement existing functional, security, migration, and release
-requirements; a visual change never authorizes bypassing them. Keep this file a
-router, not a second copy of the standards. Resolve conflicting decisions from
-documented current acceptance, not a retired trial or whichever branch wins.
+With no human reviewer, the tests are the only safeguard. Therefore:
 
-## Shared ownership
+- Fix failures at their source. Never skip, delete, or weaken a test or
+  assertion, disable a check, or add a blanket exclusion to get a green
+  result. If an accepted behaviour change supersedes a check, replace it with
+  an equally meaningful check in the same change and say why.
+- Treat a failing test as real until proven otherwise; "flaky" is not a root
+  cause.
+- Never aim tests at live configuration, accounts, queues, or databases.
+- Before merging, run the repository's own checks for the area you touched:
+  `pnpm lint`, `pnpm typecheck`, `pnpm format:check`, affected unit tests, and
+  `pnpm current-batch:check` plus `pnpm ui-style:check` for UI changes.
+- Database and settings migrations must be safe for the owner's existing
+  data: keep existing migration names, never renumber shipped permission bits,
+  and add a migration (with a test) whenever stored data must change.
 
-`src/styles/globals.css` owns reusable appearance and layout. Components select
-descriptive semantic asset roles and independently named configuration variables.
-Do not add Tailwind presentation OR structural utilities to migrated assets or
-new UI; page/card/poster/table layout belongs to the same shared semantic system.
-Do not copy values already owned by a role, invent utility-alias classes, use
-fixed inline presentation, or restore retired owners. Runtime measurements may
-use documented custom properties when static CSS cannot express the data.
-Existing legacy consumers are unfinished audit work, not permission to add drift.
-Keep application, poster, and filter control owners distinct while reusing tokens.
+## Fork features to preserve during upstream syncs
 
-Change CSS, consumers, standards, and regression checks together. Trace all
-rendered consumers affected by a shared change. Preserve existing permissions,
-provider identity, selected quality, selection ordering, recovery, and user data.
-Missing rules or conflicting approved appearances require a maintainer decision;
-do not choose a new design merely to make a check pass.
+Resolve conflicts so both sides keep working. Fork-specific behaviour:
 
-## Required verification
+- Import lists, including the `MANAGE_IMPORT_LISTS` permission at bit 2^52
+  (check upstream has not claimed that bit) and the import-list Trakt client
+  at `server/api/trakt/importList.ts`.
+- Theme packages, the admin default theme (Aurora), enforced theme, and the
+  three-way light/dark/auto mode.
+- The fork's deploy and Helm gating in `.github/workflows`, and
+  `.github/codeql/codeql-config.yml`.
+- This `AGENTS.md`, the absence of `.github/CODEOWNERS`, the short PR
+  template, and the removed PR-template and `ai-generated` workflow jobs. When
+  upstream changes those files, keep the fork's version.
 
-Work in approved page/asset batches. During editing, run affected focused checks
-and record a preview as an iteration, not a release candidate. Run the complete
-`pnpm validate:development` gate for the exact final review candidate before
-commit/PR and again on the integrated tree after conflicts. Use the same gate on
-contributor and maintainer sides. This comprehensive runner remains an explicit
-command; do not add it to ordinary build, development, or commit-hook commands.
-Public builds keep their translation and shared-visual checks, and the commit
-hook keeps attribution and staged lint checks. Avoid repeating the full gate
-immediately before `pnpm build`.
-Follow the fix-it audit too: prose instructions are not executable tests.
-Inspect the plan/inventory for connected native/source/DOM/style suites; report
-actual execution, counts, skips and exclusions separately from discovery.
-Before the cumulative run, follow the fix-it prerequisite procedure: verify a
-complete pinned repository/snapshot and the native tooling required by its tests.
-An app source volume, Linux platform or discovery plan alone does not prove that
-workflow/release fixtures and native tools are available.
-Do not treat unrun suites as passing, or partial failure output as success.
+## User interface work
 
-A page-by-page audit does not narrow the contribution's preservation scope.
-Retain accepted Request-page and shared title/heading, page-status/spinner,
-button, poster and layout work alongside Series changes. Trace affected shared
-consumers, but do not turn visual cleanup into an unrelated backend repair
-mission. Record an unrelated failure, stop finalization, and request direction
-before expanding implementation scope. See the integration checkpoint for the
-preservation inventory, current evidence and pending gates.
-
-Checkpoint: `docs/maintainers/interface-integration-checkpoint.md`.
-
-Fix failed rules at their source. Do not skip tests, weaken assertions, alter
-standards, disable hooks, or add blanket exclusions to obtain a green result.
-When an accepted design supersedes an old check, replace that check with an
-equally meaningful current behavioral/role check and document the reason.
-Record genuine pre-existing failures and stop finalization until they are
-resolved. A maintainer may defer work, but a deferred required failure is not a
-passing gate or permission to claim the final candidate complete.
-
-Build and check the exact final source, using the pinned repository runtime and
-lockfile. Run affected integration/e2e checks in disposable environments where
-available. Never aim tests at live configuration, accounts, queues, playlists,
-collections, watchlists, or databases. A mocked provider pass is not a live
-round-trip pass. Perform desktop/narrow and interaction review of changed roles;
-John's visual acceptance remains a release gate for this interface work.
-
-## Safe collaboration and records
-
-Recommend a helper when an independent task can proceed while the user reviews
-other work. Give each helper non-overlapping file ownership and the authoritative
-source target; root reviews and verifies integration. Helpers do not independently
-publish or mutate live services. Preserve a recoverable source checkpoint before
-merging, and maintain a ledger of changes, decisions, checks, pending acceptance,
-and recovery identities. No credentials or runtime backups belong in a PR.
+`src/styles/globals.css` owns reusable appearance and layout; components use
+its semantic classes rather than inline Tailwind presentation utilities. Read
+`docs/maintainers/ui-style-standard.md` before changing shared UI, and keep the
+standard, CSS, and its contract checks in sync. A build passing does not prove
+the rendered page looks right; say so when a change was not checked visually.
 
 ## Release-note contract
 
 Every user-facing feature, fix, security, operational, or documentation change
 needs a new structured fragment under `release-notes/`, following
-`release-notes/README.md`. Preserve shipped fragments and append-only release
-history. Preview notes with `pnpm release-notes:preview --base <base> --head <head>`.
-Internal-only work must explicitly select `release-note: none` under the existing
-PR contract. Before declaring a release complete, verify notes reach the GitHub
-release and announcement. Existing attribution and release-history checks remain
-required; changing tag history also requires `node scripts/check-changelog-tags.mjs`.
+`release-notes/README.md`. Fragments are append-only. Internal-only work selects
+the internal-only box in the PR template (or writes `release-note: none`).
+Preview notes with `pnpm release-notes:preview --base <base> --head <head>`.
+Changing release or tag history also requires
+`node scripts/check-changelog-tags.mjs`.

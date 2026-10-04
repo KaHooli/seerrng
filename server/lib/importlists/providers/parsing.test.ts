@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it, mock } from 'node:test';
 
 import { ImportListProviderId } from '@server/constants/importList';
 import { MediaType } from '@server/constants/media';
@@ -11,7 +11,9 @@ import {
 import anilistProvider from './anilist';
 import goodreadsProvider from './goodreads';
 import imdbProvider, {
+  buildImdbListQuery,
   extractImdbEntriesFromHtml,
+  imdbClients,
   walkForImdbTitles,
 } from './imdb';
 import { getAllImportListProviders, getImportListProvider } from './index';
@@ -151,6 +153,210 @@ describe('IMDb page parsing', () => {
     const html =
       '<script id="__NEXT_DATA__" type="application/json">{not json</script>';
     assert.deepEqual(extractImdbEntriesFromHtml(html), []);
+  });
+});
+
+describe('IMDb list fetching through GraphQL', () => {
+  afterEach(() => mock.restoreAll());
+
+  const edge = (id: string, text: string, type = 'movie', year = 2000) => ({
+    title: {
+      id,
+      titleText: { text },
+      titleType: { id: type },
+      releaseYear: { year },
+    },
+  });
+
+  const page = (
+    edges: unknown[],
+    pageInfo: { hasNextPage: boolean; endCursor?: string }
+  ) => ({
+    data: { list: { titleListItemSearch: { total: 0, pageInfo, edges } } },
+  });
+
+  const watchlist = imdbProvider.parse('ur31669188');
+
+  it('builds a watchlist query against the predefined WATCH_LIST', () => {
+    const query = buildImdbListQuery({
+      kind: 'watchlist',
+      userId: 'ur31669188',
+    });
+    assert.match(
+      query,
+      /predefinedList\(classType: WATCH_LIST, userId: "ur31669188"\)/
+    );
+    assert.match(query, /first: 250/);
+    assert.doesNotMatch(query, /after:/);
+
+    const next = buildImdbListQuery(
+      { kind: 'list', listId: 'ls012345678' },
+      'c"1'
+    );
+    assert.match(next, /list\(id: "ls012345678"\)/);
+    // The cursor is opaque; it must arrive as one correctly escaped string.
+    assert.match(next, /after: "c\\"1"/);
+  });
+
+  it('reads every page of a watchlist in list order without touching the web page', async () => {
+    const graphql = mock.method(
+      imdbClients,
+      'graphql',
+      async (query: string) =>
+        query.includes('after:')
+          ? page([edge('tt0903747', 'Breaking Bad', 'tvSeries', 2008)], {
+              hasNextPage: false,
+            })
+          : page(
+              [edge('tt0111161', 'The Shawshank Redemption', 'movie', 1994)],
+              {
+                hasNextPage: true,
+                endCursor: 'cursor-1',
+              }
+            )
+    );
+    const htmlPage = mock.method(imdbClients, 'page', async () => {
+      throw new Error('the web page must not be read');
+    });
+
+    const result = await imdbProvider.fetch(watchlist, { maxItems: 100 });
+
+    assert.equal(graphql.mock.callCount(), 2);
+    assert.match(graphql.mock.calls[1].arguments[0], /after: "cursor-1"/);
+    assert.equal(htmlPage.mock.callCount(), 0);
+    assert.equal(result.truncated, false);
+    assert.deepEqual(result.entries, [
+      {
+        imdbId: 'tt0111161',
+        title: 'The Shawshank Redemption',
+        year: 1994,
+        mediaType: MediaType.MOVIE,
+      },
+      {
+        imdbId: 'tt0903747',
+        title: 'Breaking Bad',
+        year: 2008,
+        mediaType: MediaType.TV,
+      },
+    ]);
+  });
+
+  it('stops at the item limit and reports truncation', async () => {
+    const graphql = mock.method(imdbClients, 'graphql', async () =>
+      page(
+        [
+          edge('tt0111161', 'A'),
+          edge('tt0068646', 'B'),
+          edge('tt0071562', 'C'),
+        ],
+        {
+          hasNextPage: true,
+          endCursor: 'more',
+        }
+      )
+    );
+
+    const result = await imdbProvider.fetch(watchlist, { maxItems: 2 });
+
+    assert.equal(graphql.mock.callCount(), 1);
+    assert.equal(result.entries.length, 2);
+    assert.equal(result.truncated, true);
+  });
+
+  it('returns an empty public watchlist as a legitimate empty result', async () => {
+    mock.method(imdbClients, 'graphql', async () =>
+      page([], { hasNextPage: false })
+    );
+
+    const result = await imdbProvider.fetch(watchlist, { maxItems: 100 });
+
+    assert.deepEqual(result, { entries: [], truncated: false });
+  });
+
+  it('tells the user a private watchlist must be made public, without falling back', async () => {
+    mock.method(imdbClients, 'graphql', async () => ({
+      data: { list: null },
+      errors: [
+        { message: 'Permission denied', extensions: { code: 'FORBIDDEN' } },
+      ],
+    }));
+    const htmlPage = mock.method(imdbClients, 'page', async () => '');
+
+    await assert.rejects(
+      () => imdbProvider.fetch(watchlist, { maxItems: 100 }),
+      (error: unknown) =>
+        error instanceof ImportListUnavailableError &&
+        /private/.test(error.message) &&
+        /public/.test(error.message)
+    );
+    assert.equal(htmlPage.mock.callCount(), 0);
+  });
+
+  it('falls back to the web page when the GraphQL read fails for another reason', async () => {
+    mock.method(imdbClients, 'graphql', async () => {
+      throw new Error('socket hang up');
+    });
+    const htmlPage = mock.method(
+      imdbClients,
+      'page',
+      async () =>
+        `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+          items: [{ id: 'tt0068646', titleText: { text: 'The Godfather' } }],
+        })}</script>`
+    );
+
+    const result = await imdbProvider.fetch(watchlist, { maxItems: 100 });
+
+    assert.equal(htmlPage.mock.callCount(), 1);
+    assert.equal(
+      htmlPage.mock.calls[0].arguments[0],
+      '/user/ur31669188/watchlist'
+    );
+    assert.equal(result.entries[0].imdbId, 'tt0068646');
+  });
+
+  it('still reports the bot check when both paths fail', async () => {
+    mock.method(imdbClients, 'graphql', async () => ({
+      errors: [{ message: 'Validation error: field undefined' }],
+    }));
+    mock.method(imdbClients, 'page', async () => '<html>challenge</html>');
+
+    await assert.rejects(
+      () => imdbProvider.fetch(watchlist, { maxItems: 100 }),
+      (error: unknown) =>
+        error instanceof ImportListUnavailableError &&
+        /bot check/.test(error.message)
+    );
+  });
+
+  it('flags a GraphQL page whose rows it cannot read instead of syncing nothing', async () => {
+    mock.method(imdbClients, 'graphql', async () =>
+      page([{ somethingElse: true }], { hasNextPage: false })
+    );
+
+    await assert.rejects(
+      () => imdbProvider.fetch(watchlist, { maxItems: 100 }),
+      ImportListUnavailableError
+    );
+  });
+
+  it('reads charts from the web page only', async () => {
+    const graphql = mock.method(imdbClients, 'graphql', async () => ({}));
+    mock.method(
+      imdbClients,
+      'page',
+      async () =>
+        `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+          items: [{ id: 'tt0111161', titleText: { text: 'X' } }],
+        })}</script>`
+    );
+
+    const result = await imdbProvider.fetch(imdbProvider.parse('top'), {
+      maxItems: 100,
+    });
+
+    assert.equal(graphql.mock.callCount(), 0);
+    assert.equal(result.entries.length, 1);
   });
 });
 

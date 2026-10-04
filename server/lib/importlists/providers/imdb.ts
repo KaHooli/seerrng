@@ -13,20 +13,24 @@ import {
   ImportListIdentifierError,
   ImportListUnavailableError,
   asHttpUrl,
+  assertUnderstoodResponse,
   requireNonEmptyIdentifier,
 } from '@server/lib/importlists/types';
 import logger from '@server/logger';
+import axios from 'axios';
 
 /**
  * IMDb lists, charts and watchlists.
  *
- * IMDb has no list API. list-sync reads these with a headless browser and falls
- * back to a browser-free HTTP path; only the latter is viable inside this
- * server, so this is that path with no fallback behind it. IMDb answers plain
- * HTTP clients with a bot-check interstitial some of the time — when that
- * happens the sync fails loudly (ImportListUnavailableError) rather than
- * reporting an empty list, because "your list is empty" and "IMDb blocked us"
- * must not look the same to the person who configured it.
+ * IMDb has no public list API. Custom lists and watchlists are read through
+ * the GraphQL endpoint IMDb's own web app uses, which is not behind the
+ * bot-check interstitial that www.imdb.com serves to non-browser clients.
+ * Charts, and lists whose GraphQL read fails for a reason other than "private
+ * or missing", fall back to reading the web page. IMDb answers plain HTTP
+ * clients with a bot-check interstitial much of the time — when that happens
+ * the sync fails loudly (ImportListUnavailableError) rather than reporting an
+ * empty list, because "your list is empty" and "IMDb blocked us" must not look
+ * the same to the person who configured it.
  *
  * Identifiers:
  *   custom list   https://www.imdb.com/list/ls012345678/  ->  ls012345678
@@ -35,6 +39,14 @@ import logger from '@server/logger';
  */
 
 const IMDB_BASE_URL = 'https://www.imdb.com';
+const IMDB_GRAPHQL_URL = 'https://api.graphql.imdb.com';
+/** IMDb's GraphQL API refuses pages larger than this. */
+const GRAPHQL_PAGE_SIZE = 250;
+/** 40 pages of 250 is 10,000 titles — beyond any watchlist we should mirror. */
+const MAX_GRAPHQL_PAGES = 40;
+/** GraphQL error codes IMDb returns for a private or nonexistent list. */
+const GRAPHQL_DENIED_PATTERN =
+  /resource_not_found|not found|forbidden|permission denied/i;
 const IMDB_CHARTS = ['top', 'boxoffice', 'moviemeter', 'tvmeter'] as const;
 type ImdbChart = (typeof IMDB_CHARTS)[number];
 
@@ -283,6 +295,47 @@ class ImdbPageAPI extends ExternalAPI {
   }
 }
 
+class ImdbGraphQLAPI extends ExternalAPI {
+  constructor() {
+    super(
+      IMDB_GRAPHQL_URL,
+      {},
+      {
+        nodeCache: cacheManager.getCache('importlist').data,
+        headers: {
+          // The API answers without this, but it is what IMDb's web app sends
+          // and keeps us on the same, best-supported code path.
+          'x-imdb-client-name': 'imdb-web-next',
+        },
+        timeout: 30_000,
+      }
+    );
+  }
+
+  public async query(query: string): Promise<unknown> {
+    try {
+      return await this.post<unknown>('/', { query }, undefined, 3600);
+    } catch (e) {
+      // IMDb reports GraphQL errors with a non-2xx status too; the body still
+      // says why, and "private" must not be mistaken for a transient failure.
+      if (axios.isAxiosError(e) && isRecord(e.response?.data)) {
+        return e.response.data;
+      }
+      throw e;
+    }
+  }
+}
+
+/**
+ * The network edges of this provider, as an object so tests can replace them
+ * without reaching IMDb.
+ */
+export const imdbClients = {
+  graphql: (query: string): Promise<unknown> =>
+    new ImdbGraphQLAPI().query(query),
+  page: (path: string): Promise<string> => new ImdbPageAPI().getPage(path),
+};
+
 type ImdbTarget =
   | { kind: 'list'; listId: string }
   | { kind: 'chart'; chart: ImdbChart }
@@ -310,6 +363,120 @@ const targetToPath = (target: ImdbTarget): string =>
     : target.kind === 'list'
       ? `/list/${target.listId}/`
       : `/user/${target.userId}/watchlist`;
+
+/** IMDb said the list is private or does not exist; retrying will not help. */
+class ImdbListDeniedError extends Error {}
+
+/**
+ * Builds the query with literal arguments rather than variables: the ids are
+ * already validated against strict patterns, the cursor is JSON-quoted (a valid
+ * GraphQL string literal), and literals spare us depending on IMDb's exact
+ * variable types, which it does not publish.
+ */
+export const buildImdbListQuery = (
+  target: Exclude<ImdbTarget, { kind: 'chart' }>,
+  after?: string
+): string => {
+  const root =
+    target.kind === 'watchlist'
+      ? `predefinedList(classType: WATCH_LIST, userId: ${JSON.stringify(target.userId)})`
+      : `list(id: ${JSON.stringify(target.listId)})`;
+  const args = [
+    `first: ${GRAPHQL_PAGE_SIZE}`,
+    'sort: { by: LIST_ORDER, order: ASC }',
+    ...(after ? [`after: ${JSON.stringify(after)}`] : []),
+  ].join(', ');
+
+  return `query { list: ${root} { titleListItemSearch(${args}) { total pageInfo { hasNextPage endCursor } edges { title { id titleText { text } originalTitleText { text } titleType { id } releaseYear { year } } } } } }`;
+};
+
+interface ImdbListPage {
+  edges: unknown[];
+  hasNextPage: boolean;
+  endCursor?: string;
+}
+
+/** Reads one GraphQL response, throwing on anything but a usable page. */
+export const readImdbListPage = (response: unknown): ImdbListPage => {
+  if (!isRecord(response)) {
+    throw new Error('IMDb returned a response that is not JSON.');
+  }
+
+  const errors = Array.isArray(response.errors) ? response.errors : [];
+  const errorText = errors
+    .map((error) =>
+      isRecord(error)
+        ? [
+            error.message,
+            isRecord(error.extensions) ? error.extensions.code : undefined,
+          ]
+            .filter((part) => typeof part === 'string')
+            .join(' ')
+        : ''
+    )
+    .join('; ');
+
+  const data = isRecord(response.data) ? response.data : undefined;
+  const list = data && isRecord(data.list) ? data.list : undefined;
+  const search =
+    list && isRecord(list.titleListItemSearch)
+      ? list.titleListItemSearch
+      : undefined;
+
+  if (!search) {
+    if (GRAPHQL_DENIED_PATTERN.test(errorText) || (data && !list)) {
+      throw new ImdbListDeniedError(errorText || 'list not found');
+    }
+    throw new Error(
+      errorText || 'IMDb returned no list data and gave no reason.'
+    );
+  }
+
+  const pageInfo = isRecord(search.pageInfo) ? search.pageInfo : {};
+  return {
+    edges: Array.isArray(search.edges) ? search.edges : [],
+    hasNextPage: pageInfo.hasNextPage === true,
+    endCursor:
+      typeof pageInfo.endCursor === 'string' ? pageInfo.endCursor : undefined,
+  };
+};
+
+/** Reads a custom list or watchlist through IMDb's GraphQL API, in list order. */
+export const fetchImdbListViaGraphql = async (
+  target: Exclude<ImdbTarget, { kind: 'chart' }>,
+  maxItems: number
+): Promise<ImportListFetchResult> => {
+  const found = new Map<string, ImportListEntry>();
+  let received = 0;
+  let after: string | undefined;
+  let more = false;
+
+  for (let page = 0; page < MAX_GRAPHQL_PAGES; page += 1) {
+    const result = readImdbListPage(
+      await imdbClients.graphql(buildImdbListQuery(target, after))
+    );
+    received += result.edges.length;
+    walkForImdbTitles(result.edges, found);
+
+    more = result.hasNextPage && !!result.endCursor;
+    if (!more || found.size > maxItems) {
+      break;
+    }
+    after = result.endCursor;
+  }
+
+  const entries = [...found.values()];
+  assertUnderstoodResponse({
+    received,
+    parsed: entries.length,
+    source: 'IMDb',
+  });
+
+  return {
+    entries: entries.slice(0, maxItems),
+    truncated: entries.length > maxItems || more,
+  };
+};
 
 class ImdbImportListProvider implements ImportListProvider {
   public readonly id = ImportListProviderId.IMDB;
@@ -384,11 +551,36 @@ class ImdbImportListProvider implements ImportListProvider {
     options: ImportListFetchOptions
   ): Promise<ImportListFetchResult> {
     const target = resolveImdbTarget(list.listId);
+
+    if (target.kind !== 'chart') {
+      try {
+        return await fetchImdbListViaGraphql(target, options.maxItems);
+      } catch (e) {
+        if (e instanceof ImdbListDeniedError) {
+          throw new ImportListUnavailableError(
+            target.kind === 'watchlist'
+              ? 'IMDb says this watchlist is private or does not exist. Set it to public in your IMDb account settings, then sync again.'
+              : 'IMDb says this list is private or does not exist. Make it public on IMDb, then sync again.'
+          );
+        }
+        if (e instanceof ImportListUnavailableError) {
+          throw e;
+        }
+        // Anything else may be IMDb changing its API; the web page may still
+        // work, so try it before giving up.
+        logger.warn('IMDb GraphQL read failed; falling back to the web page', {
+          label: 'Import List Sync',
+          listId: list.listId,
+          errorMessage: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
     const path = targetToPath(target);
 
     let html: string;
     try {
-      html = await new ImdbPageAPI().getPage(path);
+      html = await imdbClients.page(path);
     } catch (e) {
       throw new ImportListUnavailableError(
         `IMDb did not return the list: ${

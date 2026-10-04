@@ -164,6 +164,70 @@ that are not called out here.
 
 # Changelog
 
+# Changelog
+
+# Changelog
+
+# Changelog
+
+## [3.48.3](https://github.com/snapetech/seerrng/compare/v3.48.2..v3.48.3) - 2026-10-04
+
+### User-facing changes
+
+#### Changed
+
+- **Yunohost:** Until YunoHost approves SeerrNG for its app catalog, the installation instructions use the testing package branch so new installs receive the current published SeerrNG release.
+  - **Action required:** Use the testing branch URL for new installations until catalog approval.
+
+#### Security
+
+- **Bookshelf:** BookshelfNG connections now send API keys in the `X-Api-Key` header, so servers that reject query-string keys can be tested and used successfully. API keys are no longer added to request URLs.
+
+### 🐛 Bug Fixes
+- *(bookshelf)* Send Servarr API keys in headers - ([346f167](https://github.com/snapetech/seerrng/commit/346f16700fe370ecf94e35cf067004bd199c85a0))
+
+### 📖 Documentation
+- *(yunohost)* Point pending installs to testing - ([33899cf](https://github.com/snapetech/seerrng/commit/33899cff08ad730a24f75c46af5356563d566f8b))
+
+### 🧪 Testing
+- *(e2e)* Remove Cypress server alias import - ([9c6a4bd](https://github.com/snapetech/seerrng/commit/9c6a4bd7ea89ebcdec6a67fea73e2346c0499f4d))
+- *(e2e)* Pin permission state in Cypress setup - ([7b4e1b4](https://github.com/snapetech/seerrng/commit/7b4e1b48e8271f4ffd90a97d4b224319f09898d9))
+
+### ⚙️ Miscellaneous Tasks
+- *(yunohost)* Align package with v3.48.2 - ([fff85a9](https://github.com/snapetech/seerrng/commit/fff85a9e7a146500aab57f0fa4253ff33d5f2a39))
+
+## [3.48.2](https://github.com/snapetech/seerrng/compare/v3.48.1..v3.48.2) - 2026-10-04
+
+### User-facing changes
+
+#### Fixed
+
+- **Metadata:** Movie and series cards can now use TVDB or TVmaze posters when TMDB artwork is missing or unavailable. SeerrNG saves verified backup artwork in its image cache so posters keep loading through later provider outages.
+
+### 🐛 Bug Fixes
+- *(media)* Cache fallback video posters - ([68d780e](https://github.com/snapetech/seerrng/commit/68d780ebd90216863788b74c96b4147d81f85e4d))
+
+### 🧪 Testing
+- *(e2e)* Stub discovery detail responses - ([1042f14](https://github.com/snapetech/seerrng/commit/1042f1429008315b2f8abccf1c4cc4c56a7a7a94))
+
+### ⚙️ Miscellaneous Tasks
+- *(yunohost)* Align package with v3.48.1 - ([277d76f](https://github.com/snapetech/seerrng/commit/277d76f9dc1328264b7d77f5097178af65b0174f))
+
+## [3.48.1](https://github.com/snapetech/seerrng/compare/v3.48.0..v3.48.1) - 2026-10-03
+
+### User-facing changes
+
+#### Changed
+
+- **Packaging:** YunoHost packages now follow stable SeerrNG releases with matching archive checksums, so new installs use the same build and version as GitHub releases.
+
+### 🐛 Bug Fixes
+- *(ci)* Tighten YunoHost sync workflow - ([8ed171b](https://github.com/snapetech/seerrng/commit/8ed171b8bdee1ea7cff37e67970eadc274df3827))
+- *(yunohost)* Sync package releases automatically - ([780c77b](https://github.com/snapetech/seerrng/commit/780c77b5269ce1c5a47580b9fa3f23215ddf2c49))
+
+### 🧪 Testing
+- *(release)* Include YunoHost sync in final release gate - ([fbca81d](https://github.com/snapetech/seerrng/commit/fbca81da7999491d332de8822f37e4df07a78c88))
+
 ## [3.48.0](https://github.com/snapetech/seerrng/compare/v3.47.0..v3.48.0) - 2026-10-03
 
 ### User-facing changes

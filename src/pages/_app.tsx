@@ -9,7 +9,6 @@ import { SettingsProvider } from '@app/context/SettingsContext';
 import { ThemeProvider, useTheme } from '@app/context/ThemeContext';
 import { UserContext } from '@app/context/UserContext';
 import useSettings from '@app/hooks/useSettings';
-import enMessages from '@app/i18n/locale/en.json';
 import '@app/styles/globals.css';
 import { polyfillIntl } from '@app/utils/polyfillIntl';
 import '@fontsource-variable/inter';
@@ -115,6 +114,9 @@ const loadLocaleData = (locale: AvailableLocale): Promise<any> => {
 };
 
 type MessagesType = Record<string, string>;
+// English defaults live on each message descriptor; avoid bundling the full
+// catalogue into the shared app entry.
+const emptyMessages: MessagesType = {};
 
 // Reads settings from context (populated client-side by SettingsProvider)
 // to set the document title and PWA meta tags.
@@ -140,9 +142,7 @@ const AppHead = () => {
 
 const CoreApp = ({ Component, pageProps, router }: AppProps) => {
   let component: React.ReactNode;
-  const [loadedMessages, setMessages] = useState<MessagesType>(
-    enMessages as MessagesType
-  );
+  const [loadedMessages, setMessages] = useState<MessagesType>(emptyMessages);
   const [currentLocale, setLocale] = useState<AvailableLocale>('en');
   const loadedLocale = useRef<AvailableLocale>('en');
 
@@ -152,6 +152,12 @@ const CoreApp = ({ Component, pageProps, router }: AppProps) => {
 
   useEffect(() => {
     if (currentLocale === loadedLocale.current) {
+      return;
+    }
+
+    if (currentLocale === 'en') {
+      loadedLocale.current = 'en';
+      setMessages(emptyMessages);
       return;
     }
 
@@ -201,7 +207,7 @@ const CoreApp = ({ Component, pageProps, router }: AppProps) => {
         <IntlProvider
           locale={currentLocale}
           defaultLocale="en"
-          messages={currentLocale === 'en' ? enMessages : loadedMessages}
+          messages={currentLocale === 'en' ? emptyMessages : loadedMessages}
         >
           <LoadingBar />
           <SettingsProvider>

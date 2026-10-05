@@ -30,6 +30,31 @@ describe('Public app smoke checks', () => {
     visitLoginWithoutConsoleErrors(390, 844);
   });
 
+  it('wraps a long login backdrop title instead of widening the page', () => {
+    cy.intercept('GET', '/api/v1/backdrops', {
+      body: [
+        {
+          path: '/smoke-backdrop.jpg',
+          title:
+            'An Unusually Long Trending Title That Would Overflow A Single Line Of Text',
+          year: 2026,
+          mediaType: 'movie',
+        },
+      ],
+    }).as('backdrops');
+    cy.viewport(1440, 900);
+    cy.visit('/login');
+    cy.wait('@backdrops');
+    cy.get('.auth-backdrop-title')
+      .should('be.visible')
+      .and('contain.text', 'An Unusually Long Trending Title');
+    cy.document().then((document) => {
+      expect(document.documentElement.scrollWidth).to.be.at.most(
+        document.documentElement.clientWidth
+      );
+    });
+  });
+
   it('redirects signed-out visitors to login', () => {
     cy.visit('/');
     cy.location('pathname').should('eq', '/login');

@@ -7112,6 +7112,9 @@
     bottom: calc(1rem + env(safe-area-inset-bottom));
     z-index: 1;
     max-width: min(32rem, calc(100vw - 2rem));
+    /* .page-title is single-line; long backdrop titles must wrap instead of
+       widening the login page. */
+    white-space: normal;
     overflow-wrap: anywhere;
     text-align: right;
     filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.95))

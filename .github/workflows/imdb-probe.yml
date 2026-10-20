@@ -19,7 +19,6 @@ jobs:
               -H 'content-type: application/json' -H 'x-imdb-client-name: imdb-web-next' \
               -H "user-agent: $UA" --data @- | head -c 4000; echo
           }
-          gql "{ userProfile(input: { profileId: \"$PID\" }) { userId } }"
-          gql "{ userProfile(input: { profileId: \"p.zzzzzzzzzzzzzzzzzzzzzzzzzz\" }) { userId } }"
-          gql "{ userProfile(input: { profileId: \"ur31669188\" }) { userId } }"
-          gql '{ list: predefinedList(classType: WATCH_LIST, userId: "ur31669188") { titleListItemSearch(first: 5, sort: { by: LIST_ORDER, order: ASC }) { total pageInfo { hasNextPage endCursor } edges { title { id titleText { text } } } } } }'
+          gql "{ list: predefinedList(classType: WATCH_LIST, userId: \"ur31669188\") { titleListItemSearch(first: 3, sort: { by: LIST_ORDER, order: DESC }) { total edges { listItem: title { id titleText { text } } } } } }"
+          gql "{ list: predefinedList(classType: WATCH_LIST, userId: \"ur31669188\") { titleListItemSearch(first: 3, sort: { by: DATE_ADDED, order: DESC }) { total edges { listItem: title { id titleText { text } } } } } }"
+          gql "{ list: predefinedList(classType: WATCH_LIST, userId: \"ur31669188\") { titleListItemSearch(first: 3, sort: { by: DATE_ADDED, order: ASC }) { total edges { listItem: title { id titleText { text } } } } } }"

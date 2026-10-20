@@ -6,4 +6,4 @@ action: none
 breaking: false
 ---
 
-IMDb watchlists now sync through IMDb's own data service instead of its web page, so they no longer fail on IMDb's automated access check. A private watchlist now says it must be made public.
+IMDb watchlists, including those on the newer profile links, now sync through IMDb's own data service instead of its web page, so they no longer fail on IMDb's automated access check. Syncs take the most recently added titles first, and a private watchlist says it must be made public.

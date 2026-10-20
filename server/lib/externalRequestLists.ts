@@ -321,31 +321,20 @@ const IMDB_GRAPHQL_DENIED_PATTERN =
 export class ImdbWatchlistDeniedError extends Error {}
 
 /**
- * The user ID is validated by parseExternalRequestListUrl and the cursor is
- * JSON-quoted (a valid GraphQL string literal), so literals are safe and spare
- * us depending on IMDb's unpublished variable types.
+ * The IDs are validated by parseExternalRequestListUrl or come from IMDb, so
+ * JSON-quoted literals (valid GraphQL strings) are safe and spare us depending
+ * on IMDb's unpublished variable types.
  */
-export const buildImdbWatchlistQuery = (
-  userId: string,
-  after?: string
-): string => {
-  const args = [
-    `first: ${MAX_EXTERNAL_REQUEST_LIST_ITEMS}`,
-    'sort: { by: LIST_ORDER, order: ASC }',
-    ...(after ? [`after: ${JSON.stringify(after)}`] : []),
-  ].join(', ');
-  return `query { list: predefinedList(classType: WATCH_LIST, userId: ${JSON.stringify(userId)}) { titleListItemSearch(${args}) { total pageInfo { hasNextPage endCursor } edges { title { id titleText { text } } } } } }`;
-};
+export const buildImdbProfileQuery = (profileId: string): string =>
+  `query { userProfile(input: { profileId: ${JSON.stringify(profileId)} }) { userId } }`;
 
-export const parseImdbWatchlistGraphqlResponse = (
-  response: unknown
-): ExternalRequestListItem[] => {
-  if (!isRecord(response)) {
-    throw new Error('IMDb returned an invalid watchlist response.');
-  }
+// Newest additions first: only the first page is read, and the titles a
+// person added most recently are the ones they are waiting on.
+export const buildImdbWatchlistQuery = (userId: string): string =>
+  `query { list: predefinedList(classType: WATCH_LIST, userId: ${JSON.stringify(userId)}) { titleListItemSearch(first: ${MAX_EXTERNAL_REQUEST_LIST_ITEMS}, sort: { by: DATE_ADDED, order: DESC }) { total edges { title { id titleText { text } } } } } }`;
 
-  const errors = Array.isArray(response.errors) ? response.errors : [];
-  const errorText = errors
+const imdbGraphqlErrorText = (response: Record<string, unknown>): string =>
+  (Array.isArray(response.errors) ? response.errors : [])
     .map((error) =>
       isRecord(error)
         ? [
@@ -358,6 +347,44 @@ export const parseImdbWatchlistGraphqlResponse = (
     )
     .join('; ')
     .slice(0, 512);
+
+/**
+ * IMDb's newer profile URLs carry a p.… profile ID, which the watchlist query
+ * rejects, so it is first mapped to the account's ur… user ID.
+ */
+export const parseImdbProfileResponse = (response: unknown): string => {
+  if (!isRecord(response)) {
+    throw new Error('IMDb returned an invalid profile response.');
+  }
+  const data = isRecord(response.data) ? response.data : undefined;
+  const profile =
+    data && isRecord(data.userProfile) ? data.userProfile : undefined;
+  if (
+    typeof profile?.userId === 'string' &&
+    /^ur[0-9]{1,20}$/.test(profile.userId)
+  ) {
+    return profile.userId;
+  }
+  // IMDb answers an unknown profile ID with a null profile (and an internal
+  // error), so a null profile means the profile does not exist.
+  if (data && data.userProfile === null) {
+    throw new ImdbWatchlistDeniedError(
+      imdbGraphqlErrorText(response) || 'profile not found'
+    );
+  }
+  throw new Error(
+    imdbGraphqlErrorText(response) || 'IMDb returned no profile data.'
+  );
+};
+
+export const parseImdbWatchlistGraphqlResponse = (
+  response: unknown
+): ExternalRequestListItem[] => {
+  if (!isRecord(response)) {
+    throw new Error('IMDb returned an invalid watchlist response.');
+  }
+
+  const errorText = imdbGraphqlErrorText(response);
 
   const data = isRecord(response.data) ? response.data : undefined;
   const list = data && isRecord(data.list) ? data.list : undefined;
@@ -427,17 +454,23 @@ export const imdbWatchlistClients = {
     ),
 };
 
+const resolveImdbUserId = async (userId: string): Promise<string> =>
+  userId.startsWith('ur')
+    ? userId
+    : parseImdbProfileResponse(
+        await imdbWatchlistClients.graphql(buildImdbProfileQuery(userId))
+      );
+
 export const fetchImdbWatchlist = async (
   userId: string
 ): Promise<ExternalRequestListItem[]> => {
   try {
+    const imdbUserId = await resolveImdbUserId(userId);
     return parseImdbWatchlistGraphqlResponse(
-      await imdbWatchlistClients.graphql(buildImdbWatchlistQuery(userId))
+      await imdbWatchlistClients.graphql(buildImdbWatchlistQuery(imdbUserId))
     );
   } catch (error) {
-    // Only ur… IDs are known to work with the GraphQL API; a denial for a
-    // p.… profile ID may just mean the API does not take that form.
-    if (error instanceof ImdbWatchlistDeniedError && userId.startsWith('ur')) {
+    if (error instanceof ImdbWatchlistDeniedError) {
       throw new Error(
         'IMDb says this watchlist is private or does not exist. Set it to public in your IMDb account settings, then sync again.',
         { cause: error }

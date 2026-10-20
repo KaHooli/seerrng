@@ -1,0 +1,35 @@
+name: IMDb profile ID probe
+on:
+  push:
+    branches: ['probe/imdb-profile-id']
+permissions: {}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe
+        env:
+          PID: p.mqcc26fvagqmqbomwbssqddwh4
+          UA: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36'
+        run: |
+          gql() {
+            echo "=== GQL: $1"
+            jq -n --arg q "$1" '{query:$q}' | curl -sS -m 20 -X POST https://api.graphql.imdb.com/ \
+              -H 'content-type: application/json' -H 'x-imdb-client-name: imdb-web-next' \
+              -H "user-agent: $UA" --data @- | head -c 4000; echo
+          }
+          gql '{ __schema { queryType { fields { name args { name } } } } }' | tr ',' '\n' | grep -i -E 'user|profile|predefined|"name":"(list|me)"' | head -80
+          gql '{ __type(name: "Query") { fields { name } } }'
+          gql "{ userProfile(input: { profileId: \"$PID\" }) { userId } }"
+          gql "{ userProfile(profileId: \"$PID\") { userId } }"
+          gql "{ user(id: \"$PID\") { id } }"
+          gql "{ userProfile(id: \"$PID\") { id } }"
+          gql "{ profile(id: \"$PID\") { id } }"
+          for path in "/user/$PID/watchlist/" "/user/$PID/" ; do
+            echo "=== PAGE: $path"
+            curl -sS -m 20 -L -A "$UA" -H 'accept-language: en-US' -o page.html -w 'status=%{http_code} final=%{url_effective} size=%{size_download}\n' "https://www.imdb.com$path"
+            grep -o -E 'ur[0-9]{5,12}' page.html | sort | uniq -c | sort -rn | head -5
+            grep -c -i 'awswaf\|gokuProps' page.html || true
+            grep -o -E '"(userId|authorId|ownerId|profileId|listId|id)":"(ur|ls|p\.)[^"]{1,40}"' page.html | sort | uniq -c | head -20
+          done

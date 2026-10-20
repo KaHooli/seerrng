@@ -1,0 +1,92 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Publish Branch Container
+
+# ci.yml publishes the upstream image from self-hosted runners and to the
+# upstream registries, so a fork cannot use it. This publishes a test image of
+# a feature branch to this repository's own GitHub Packages registry from a
+# GitHub-hosted runner, using the automatic GITHUB_TOKEN. Images are tagged
+# with the branch name and commit, never `latest`.
+
+on:
+  push:
+    branches: ['feat/**']
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Publish container to GitHub Packages
+    timeout-minutes: 60
+    # Never publish from upstream, and never from main: the upstream image
+    # owns those tags.
+    if: github.repository_owner != 'snapetech-org' && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Commit timestamp
+        id: ts
+        run: echo "TIMESTAMP=$(git log -1 --pretty=%ct)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=sha
+          labels: |
+            org.opencontainers.image.created=${{ steps.ts.outputs.TIMESTAMP }}
+
+      - name: Build and push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            COMMIT_TAG=${{ github.sha }}
+            BUILD_VERSION=${{ steps.meta.outputs.version }}
+            SOURCE_DATE_EPOCH=${{ steps.ts.outputs.TIMESTAMP }}
+          cache-from: type=gha,scope=publish-branch-container
+          cache-to: type=gha,mode=max,scope=publish-branch-container
+          provenance: false
+
+      - name: Summarise published image
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Published container"
+            echo
+            while IFS= read -r tag; do
+              [ -n "$tag" ] && echo "- \`${tag}\`"
+            done <<< "$IMAGE_TAGS"
+          } >> "$GITHUB_STEP_SUMMARY"

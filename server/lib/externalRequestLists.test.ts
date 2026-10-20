@@ -12,8 +12,12 @@ import {
 } from '@server/entity/MediaRequest';
 import { User } from '@server/entity/User';
 import {
+  buildImdbWatchlistQuery,
+  fetchImdbWatchlist,
+  imdbWatchlistClients,
   parseExternalRequestListUrl,
   parseGoodreadsToReadFeed,
+  parseImdbWatchlistGraphqlResponse,
   parseImdbWatchlistHtml,
   parseImdbWatchlistResponse,
   resolveGoodreadsItem,
@@ -125,6 +129,100 @@ describe('external request list synchronization', () => {
       () => parseImdbWatchlistResponse({ body: '', status: 202 }),
       /automated access verification page instead of the watchlist/
     );
+  });
+
+  it('builds an IMDb watchlist GraphQL query with quoted literals', () => {
+    const query = buildImdbWatchlistQuery('ur12345678', 'cursor"1');
+    assert.match(
+      query,
+      /predefinedList\(classType: WATCH_LIST, userId: "ur12345678"\)/
+    );
+    assert.match(query, /first: 100/);
+    assert.match(query, /after: "cursor\\"1"/);
+  });
+
+  it('parses IMDb GraphQL watchlist pages in list order', () => {
+    assert.deepEqual(
+      parseImdbWatchlistGraphqlResponse({
+        data: {
+          list: {
+            titleListItemSearch: {
+              total: 3,
+              pageInfo: { hasNextPage: false },
+              edges: [
+                {
+                  title: { id: 'tt0111161', titleText: { text: 'Shawshank' } },
+                },
+                { title: { id: 'tt0068646' } },
+                { title: { id: 'tt0111161' } },
+                { title: { id: 'not-an-id' } },
+              ],
+            },
+          },
+        },
+      }),
+      [{ id: 'tt0111161', title: 'Shawshank' }, { id: 'tt0068646' }]
+    );
+    assert.deepEqual(
+      parseImdbWatchlistGraphqlResponse({
+        data: { list: { titleListItemSearch: { edges: [] } } },
+      }),
+      []
+    );
+    assert.throws(
+      () =>
+        parseImdbWatchlistGraphqlResponse({
+          data: { list: { titleListItemSearch: { edges: [{ x: 1 }] } } },
+        }),
+      /unknown format/
+    );
+  });
+
+  it('reports a private IMDb watchlist instead of falling back to the page', async () => {
+    mock.method(imdbWatchlistClients, 'graphql', async () => ({
+      errors: [
+        { message: 'Not found', extensions: { code: 'RESOURCE_NOT_FOUND' } },
+      ],
+      data: { list: null },
+    }));
+    const page = mock.method(imdbWatchlistClients, 'page', async () => ({
+      body: '',
+      status: 200,
+    }));
+
+    await assert.rejects(
+      fetchImdbWatchlist('ur12345678'),
+      /private or does not exist/
+    );
+    assert.equal(page.mock.callCount(), 0);
+  });
+
+  it('falls back to the IMDb watchlist page when GraphQL fails', async () => {
+    mock.method(imdbWatchlistClients, 'graphql', async () => {
+      throw new Error('IMDb GraphQL returned HTTP 500.');
+    });
+    mock.method(imdbWatchlistClients, 'page', async () => ({
+      body: '<a href="/title/tt0111161/">Watchlist</a>',
+      status: 200,
+    }));
+
+    assert.deepEqual(await fetchImdbWatchlist('ur12345678'), [
+      { id: 'tt0111161' },
+    ]);
+  });
+
+  it('falls back to the page when GraphQL denies a profile-ID watchlist', async () => {
+    mock.method(imdbWatchlistClients, 'graphql', async () => ({
+      data: { list: null },
+    }));
+    mock.method(imdbWatchlistClients, 'page', async () => ({
+      body: '<a href="/title/tt0068646/">Watchlist</a>',
+      status: 200,
+    }));
+
+    assert.deepEqual(await fetchImdbWatchlist('p.abc123'), [
+      { id: 'tt0068646' },
+    ]);
   });
 
   it('resolves Goodreads ISBNs to a requestable Open Library work', async () => {
